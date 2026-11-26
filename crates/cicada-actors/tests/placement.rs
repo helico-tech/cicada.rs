@@ -4,7 +4,8 @@
 //! bounds of an offer and of the pool. And asks (ADR 0068): placement by needs and free places, refusals, the line that
 //! skips asks it cannot place, the holder limit, releases and cancels, repeated asks, grants from the line and the
 //! grant nobody received. And holders that go away: the pool watches each target with `watch_existing` while it
-//! holds or waits, and a deleted target frees its places and leaves the line.
+//! holds or waits, and a deleted target frees its places and leaves the line. And an operator's drain, undrain and gone:
+//! a draining node gets no new places and keeps its holders, and a silent node declared gone tells each holder once.
 
 mod common;
 
@@ -1014,4 +1015,192 @@ async fn an_ask_to_the_pool_itself_is_refused() {
     assert_eq!(failed(&test).await.last(), Some(&("Ask".to_owned(), FailureCause::Refused)));
     assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
     assert!(watched(&test).await.is_empty());
+}
+
+fn gone(grant: u64, node: &str) -> (PlacementAnswerKind, Option<u64>, Option<String>) {
+    (PlacementAnswerKind::Gone, Some(grant), Some(node.to_owned()))
+}
+
+/// Scenario: Draining a node with work. The ask only it could take waits, its holders keep their places, and after
+/// `Undrain` the ask is granted.
+#[tokio::test(start_paused = true)]
+async fn a_draining_node_gets_no_new_places_and_keeps_its_holders_until_undrain() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 3).await;
+    offer(&test, "x86-1", &["x86_64"], 3).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    send(&test, PlacementMsg::drain("mac-1").unwrap()).await;
+    assert!(held(&test).await.nodes["mac-1"].draining);
+    ask(&test, "r3", &["arm64"]).await;
+    assert_eq!(answers(&test, "r3").await, [QUEUED], "queued, not refused: the never-meet check counts it");
+    ask(&test, "x1", &["x86_64"]).await;
+    assert_eq!(answers(&test, "x1").await, [granted(3, "x86-1")], "another node still grants");
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1"), holder("x1", 3, "x86-1")]);
+    release(&test, "r1", 1).await;
+    assert_eq!(line(&test).await, ["r3"], "a freed place on a draining node grants nothing");
+    send(&test, PlacementMsg::undrain("mac-1").unwrap()).await;
+    assert!(!held(&test).await.nodes["mac-1"].draining);
+    assert_eq!(answers(&test, "r3").await, [QUEUED, granted(4, "mac-1")], "undrain scans the line");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// An offer keeps the drain, also after the node went silent and came back; repeated drains and undrains change
+/// nothing.
+#[tokio::test(start_paused = true)]
+async fn an_offer_keeps_the_drain_and_repeats_change_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    send(&test, PlacementMsg::drain("mac-1").unwrap()).await;
+    let before = held(&test).await;
+    let m = send(&test, PlacementMsg::drain("mac-1").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(held(&test).await, before, "draining a draining node");
+    offer(&test, "mac-1", &["arm64", "docker"], 4).await;
+    assert!(held(&test).await.nodes["mac-1"].draining, "an offer keeps the drain");
+    test.advance_time_by(secs(60)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent);
+    offer(&test, "mac-1", &["arm64"], 4).await;
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-1"), PlacementNodeStatus::Live);
+    assert!(state.nodes["mac-1"].draining, "back from silence, still draining");
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(answers(&test, "r1").await, [QUEUED]);
+    send(&test, PlacementMsg::undrain("mac-1").unwrap()).await;
+    let before = held(&test).await;
+    let m = send(&test, PlacementMsg::undrain("mac-1").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(held(&test).await, before, "undraining a node that is not draining");
+    assert_eq!(answers(&test, "r1").await, [QUEUED, granted(1, "mac-1")]);
+}
+
+/// Scenario: An unknown node. `Drain`, `Undrain` and `Gone` of a node the pool does not know, or with a node id out of
+/// bounds, are refused for good and change nothing.
+#[tokio::test(start_paused = true)]
+async fn drain_undrain_and_gone_of_an_unknown_node_are_refused() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let messages = [
+        PlacementMsg::drain("mac-9").unwrap(),
+        PlacementMsg::undrain("mac-9").unwrap(),
+        PlacementMsg::gone("mac-9").unwrap(),
+        PlacementMsg::Drain { node: " ".into() },
+        PlacementMsg::Undrain { node: "n".repeat(201) },
+        PlacementMsg::Gone { node: String::new() },
+    ];
+    let count = messages.len();
+    for message in messages {
+        let m = send(&test, message.clone()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{message:?}");
+    }
+    let told = failed(&test).await;
+    assert_eq!(told.len(), count, "{told:?}");
+    assert!(told.iter().all(|(_, cause)| *cause == FailureCause::Refused), "{told:?}");
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
+    assert!(PlacementMsg::drain("").is_err() && PlacementMsg::undrain("a\0").is_err());
+    assert!(PlacementMsg::gone("n".repeat(201)).is_err());
+}
+
+/// Scenario: Gone for a live node. Also one whose silence ended but whose check has not run yet.
+#[tokio::test(start_paused = true)]
+async fn gone_of_a_live_node_is_refused_and_changes_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let m = send(&test, PlacementMsg::gone("mac-1").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
+    assert_eq!(failed(&test).await, [("Gone".to_owned(), FailureCause::Refused)]);
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
+}
+
+/// Scenario: A machine that will not come back. Both holders get one `gone` answer, the node is removed, a later release
+/// of those grants frees nothing, waiting asks stay, and the node offering again is a new node.
+#[tokio::test(start_paused = true)]
+async fn gone_of_a_silent_node_frees_its_places_and_tells_each_holder_once() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64", "gpu"], 2).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    ask(&test, "r3", &["arm64"]).await;
+    ask(&test, "g1", &["gpu"]).await;
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1"), holder("r3", 3, "mac-2")]);
+    send(&test, PlacementMsg::drain("mac-1").unwrap()).await;
+    test.advance_time_by(secs(30)).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(30)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent);
+    ask(&test, "r4", &["arm64"]).await;
+    let m = send(&test, PlacementMsg::gone("mac-1").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1"), gone(1, "mac-1")]);
+    assert_eq!(answers(&test, "r2").await, [granted(2, "mac-1"), gone(2, "mac-1")]);
+    assert_eq!(answers(&test, "r3").await, [granted(3, "mac-2")], "a holder of another node hears nothing");
+    let state = held(&test).await;
+    assert!(!state.nodes.contains_key("mac-1"));
+    assert_eq!(holders(&test).await, [holder("r3", 3, "mac-2")]);
+    assert_eq!(line(&test).await, ["g1", "r4"], "waiting asks stay");
+    assert_eq!(done(&test, "TellGone").await, 2);
+    for grant in [1, 2] {
+        let m = release(&test, &format!("r{grant}"), grant).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!(holders(&test).await, [holder("r3", 3, "mac-2")], "a late release frees nothing");
+    assert_eq!(watched(&test).await, ["run/g1", "run/r3", "run/r4"], "the told holders are unwatched");
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    let entry = &held(&test).await.nodes["mac-1"];
+    assert!(!entry.draining && entry.status == PlacementNodeStatus::Live, "a new node: {entry:?}");
+    assert_eq!(answers(&test, "r4").await, [QUEUED, granted(4, "mac-1")], "the line is served by the new node");
+    assert_eq!(line(&test).await, ["g1"], "no node has gpu now: it still waits");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: One holder's target is gone. It is deleted after the `Gone` commits and before its `TellGone`: only its own
+/// answer fails, and the other two holders are told.
+#[tokio::test(start_paused = true)]
+async fn a_gone_target_does_not_stop_the_other_holders_answers() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 3).await;
+    for id in ["r1", "r2", "r3"] {
+        ask(&test, id, &["arm64"]).await;
+    }
+    test.advance_time_by(secs(60)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent);
+    let m = test.send(&pool(), PlacementMsg::gone("mac-1").unwrap()).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    test.system().delete_actor(&addr(&run("r2"))).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1"), gone(1, "mac-1")]);
+    assert_eq!(answers(&test, "r3").await, [granted(3, "mac-1"), gone(3, "mac-1")]);
+    assert_eq!(failed(&test).await, [("TellGone".to_owned(), FailureCause::Commit)]);
+    let state = held(&test).await;
+    assert!(state.nodes.is_empty() && state.holders.is_empty(), "{state:?}");
+}
+
+/// Scenario: A TellGone from someone else. From a client or another actor it is refused for good and changes nothing.
+#[tokio::test(start_paused = true)]
+async fn a_tell_gone_from_another_sender_is_refused() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let tell = PlacementMsg::TellGone {
+        holder: "r1".into(),
+        grant: 1,
+        node: "mac-1".into(),
+        to: addr(&run("r1")),
+        message_type: "Placed".into(),
+    };
+    let m = send(&test, tell.clone()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
+    test.send(&Forger, ForgerMsg::Forward { message: tell }).await;
+    test.run_until_idle().await;
+    let refused = ("TellGone".to_owned(), FailureCause::Refused);
+    assert_eq!(failed(&test).await, [refused.clone(), refused]);
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
 }

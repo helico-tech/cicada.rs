@@ -12,7 +12,7 @@
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
 //! | [`PermitsActor`] | `cicada.permits` | Lets at most its capacity of requests hold a permit, queues the rest in FIFO order, fences each grant |
 //! | [`JobGraphActor`] | `cicada.job-graph` | Runs a graph of jobs given as data: starts each once its needs succeeded, up to a limit, takes a result per attempt, reports the end |
-//! | [`PlacementActor`] | `cicada.placement` | Keeps the places nodes offer, with their labels, grants work a place on a node with its needs, and marks a node silent, with one notice, when its offers stop |
+//! | [`PlacementActor`] | `cicada.placement` | Keeps the places nodes offer, with their labels, grants work a place on a node with its needs, marks a node silent, with one notice, when its offers stop, drains a node and tells the holders of a silent node declared gone |
 //! | [`HeartbeatWatchActor`] | `cicada.heartbeat-watch` | Sends a stored alarm once when no `Beat` came within the allowed silence |
 //! | [`NodeDownMonitorActor`] | `cicada.node-down` | Publishes one `NodeDown` to a topic for each node row it sees silent for two minutes |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |

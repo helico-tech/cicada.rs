@@ -1,6 +1,7 @@
 //! The placement pool (ADR 0067): an actor to which nodes offer places, each with a set of labels, renewed at an
 //! interval; a node not heard from for the pool's silence time is marked silent, and its alert target is told once.
-//! Work asks it for a place with its needs and gets a node to pin a child to (ADR 0068).
+//! Work asks it for a place with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and
+//! declares a silent node gone, whose holders are told.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -52,8 +53,8 @@ impl ActorRef for Placement {
     type Message = PlacementMsg;
 }
 
-/// The messages of a [`Placement`] pool. `Check`, `Alert` and `Notify` are its own: one from anyone else is refused for
-/// good. A node id or instance id is 1 through 200 characters, not blank, without NUL; a holder id is 1 through 200
+/// The messages of a [`Placement`] pool. `Check`, `Alert`, `Notify` and `TellGone` are its own: one from anyone else is
+/// refused for good. A node id or instance id is 1 through 200 characters, not blank, without NUL; a holder id is 1 through 200
 /// characters without NUL; a message out of bounds is refused for good with the state unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
@@ -147,6 +148,45 @@ pub enum PlacementMsg {
         /// The holder.
         #[schemars(length(min = 1, max = 200))]
         holder: String,
+    },
+    /// Stops new places on `node`: it keeps its holders, renews its offers and can go silent and come back, and an
+    /// offer does not clear the drain. Draining a draining node changes nothing; an unknown node is refused for good.
+    Drain {
+        /// The node.
+        #[schemars(length(min = 1, max = 200))]
+        node: String,
+    },
+    /// Gives `node` new places again and grants the waiting asks that fit. Undraining a node that is not draining
+    /// changes nothing; an unknown node is refused for good.
+    Undrain {
+        /// The node.
+        #[schemars(length(min = 1, max = 200))]
+        node: String,
+    },
+    /// Declares a silent node gone: removes it, frees all its places and tells each of its holders with a `gone`
+    /// answer, each in a turn of its own. Refused for good for a live node (it is heard from) and an unknown one. A
+    /// later `Release` of those grants frees nothing; the node offering again is a new node.
+    Gone {
+        /// The node; its status is `silent`.
+        #[schemars(length(min = 1, max = 200))]
+        node: String,
+    },
+    /// Sends `holder` its `gone` answer for `grant` on `node`, to `to` as `messageType`: sent by the pool to itself for
+    /// each holder of a node declared gone, with a retry policy, so a failing target fails only its own answer.
+    TellGone {
+        /// The holder.
+        #[schemars(length(min = 1, max = 200))]
+        holder: String,
+        /// The grant number it held.
+        grant: u64,
+        /// The node that is gone.
+        #[schemars(length(min = 1, max = 200))]
+        node: String,
+        /// The target of its answers.
+        to: ActorAddress,
+        /// The message type of its answers; not empty, at most 200 characters, without NUL.
+        #[schemars(length(min = 1, max = 200))]
+        message_type: String,
     },
     /// A message of the pool itself ended `failed`: a `Notify` that failed for a holder never told of its grant frees
     /// that place, as the holder never learned it. A failure of a watched target's message changes nothing. Only a
@@ -242,6 +282,36 @@ impl PlacementMsg {
         check_holder(&holder)?;
         Ok(PlacementMsg::Cancel { holder })
     }
+
+    /// A `Drain` of `node`. Fails for a node id that is empty, blank, longer than 200 characters or holds a NUL.
+    ///
+    /// ```
+    /// use cicada_actors::PlacementMsg;
+    ///
+    /// let drain = PlacementMsg::drain("factory-mac-1")?;
+    /// assert_eq!(serde_json::to_value(&drain)?, serde_json::json!({"type": "Drain", "node": "factory-mac-1"}));
+    /// assert!(PlacementMsg::drain(" ").is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn drain(node: impl Into<String>) -> Result<Self, InvalidPlacement> {
+        let node = node.into();
+        check_id("a node", &node)?;
+        Ok(PlacementMsg::Drain { node })
+    }
+
+    /// An `Undrain` of `node`. Fails for a node id out of bounds, as [`PlacementMsg::drain`].
+    pub fn undrain(node: impl Into<String>) -> Result<Self, InvalidPlacement> {
+        let node = node.into();
+        check_id("a node", &node)?;
+        Ok(PlacementMsg::Undrain { node })
+    }
+
+    /// A `Gone` of `node`. Fails for a node id out of bounds, as [`PlacementMsg::drain`].
+    pub fn gone(node: impl Into<String>) -> Result<Self, InvalidPlacement> {
+        let node = node.into();
+        check_id("a node", &node)?;
+        Ok(PlacementMsg::Gone { node })
+    }
 }
 
 /// What an answer of a pool to an ask says.
@@ -254,6 +324,9 @@ pub enum PlacementAnswerKind {
     Queued,
     /// The ask was refused, with a reason: nothing was recorded.
     Refused,
+    /// The node of the holder's place was declared gone, with the grant number and the node: the place is no longer
+    /// counted, and what ran there may still run.
+    Gone,
 }
 
 /// Why a pool refused an ask.
@@ -272,7 +345,7 @@ pub enum PlacementRefusal {
 /// variant such as `Placed(PlacementAnswer)`.
 ///
 /// On the wire: `{"pool":"runners","holder":"run-17","kind":"granted","grant":4,"node":"factory-mac-1"}`; `grant` and
-/// `node` are written only for `granted`, `reason` only for `refused`.
+/// `node` are written only for `granted` and `gone`, `reason` only for `refused`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacementAnswer {
@@ -282,10 +355,10 @@ pub struct PlacementAnswer {
     pub holder: String,
     /// What it says.
     pub kind: PlacementAnswerKind,
-    /// The grant number, set for `granted`: name it in the `Release`.
+    /// The grant number, set for `granted` and `gone`: name it in the `Release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<u64>,
-    /// The node of the place, set for `granted`: pin the work's actors to it.
+    /// The node of the place, set for `granted` and `gone`: pin the work's actors to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
     /// Why, set for `refused`.
@@ -398,6 +471,9 @@ pub struct PlacementNode {
     pub heard_at: Timestamp,
     /// Whether it is heard from.
     pub status: PlacementNodeStatus,
+    /// Whether an operator drained it: it gets no new places until `Undrain`. Absent: false.
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// A state or a message of a pool out of its bounds; it prints why.
@@ -789,10 +865,19 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// not release before it stops. The watch also tells the pool of each failed message of a target, a turn that changes
 /// nothing. An ask whose target is the pool itself is refused, as the pool's own watch frees undelivered grants.
 ///
+/// An operator's `Drain` stops new places on a node, which keeps its holders and its offers: a draining node counts as
+/// no free places, while the refusal of an ask no node could ever meet still counts it, so such an ask waits. An offer
+/// keeps the drain; `Undrain` clears it and grants the waiting asks that fit. `Gone` of a silent node removes it and
+/// frees its places, and tells each of its holders with a `gone` [`PlacementAnswer`] in a `TellGone` that the pool sends
+/// itself, one per holder, so a target that is gone fails only its own answer. Waiting asks stay in the line. A holder
+/// granted from the line can hear `gone` before its `granted` answer, whose `Notify` then finds no place and sends
+/// nothing.
+///
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
 /// all go quiet. Bad input is refused for good with the state unchanged: a message out of bounds, a new node past
-/// `maxNodes`, a `Check`, `Alert` or `Notify` from another sender, and a notice or answer the send refuses; a read of
+/// `maxNodes`, a `Drain`, `Undrain` or `Gone` of an unknown node, a `Gone` of a live node, a `Check`, `Alert`, `Notify`
+/// or `TellGone` from another sender, and a notice or answer the send refuses; a read of
 /// the store that fails is tried again.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlacementActor;
@@ -850,8 +935,26 @@ impl Actor for PlacementActor {
                 refuse_foreign(turn, "Notify")?;
                 notify(turn, &holder).await?;
             }
+            PlacementMsg::Drain { node } => drain(turn, &node, true)?,
+            PlacementMsg::Undrain { node } => drain(turn, &node, false)?,
+            PlacementMsg::Gone { node } => {
+                check_id("a node", &node).map_err(HandlerError::permanent)?;
+                declare_gone(turn, &node)?;
+            }
+            PlacementMsg::TellGone { holder, grant, node, to, message_type } => {
+                check_holder(&holder).map_err(HandlerError::permanent)?;
+                check_id("a node", &node).map_err(HandlerError::permanent)?;
+                check_message_type(&message_type).map_err(HandlerError::permanent)?;
+                refuse_foreign(turn, "TellGone")?;
+                let answer = PlacementAnswer {
+                    grant: Some(grant),
+                    node: Some(node),
+                    ..answer(turn, &holder, PlacementAnswerKind::Gone)
+                };
+                tell(turn, &to, &message_type, answer).await?;
+            }
             PlacementMsg::Failed(failed) if turn.message().notification => undelivered(turn, &failed),
-            PlacementMsg::Stopped(stopped) if turn.message().notification => gone(turn, &stopped.actor),
+            PlacementMsg::Stopped(stopped) if turn.message().notification => went_away(turn, &stopped.actor),
             PlacementMsg::Failed(_) | PlacementMsg::Stopped(_) => {}
         }
         grant_waiting(turn)?;
@@ -884,7 +987,7 @@ fn follow(turn: &mut Turn<PlacementActor>, before: HashSet<ActorAddress>) -> Han
 
 /// Frees every place held for `actor`, which went away, and takes its waiting asks out of the line; nothing for the
 /// pool itself.
-fn gone(turn: &mut Turn<PlacementActor>, actor: &ActorAddress) {
+fn went_away(turn: &mut Turn<PlacementActor>, actor: &ActorAddress) {
     if actor == turn.self_address() {
         return;
     }
@@ -893,12 +996,46 @@ fn gone(turn: &mut Turn<PlacementActor>, actor: &ActorAddress) {
     state.waiting.retain(|w| &w.to != actor);
 }
 
-/// The free places of each live node: its offered places minus its holders.
+/// Sets or clears the drain of a known `node`; an unknown one is refused for good.
+fn drain(turn: &mut Turn<PlacementActor>, node: &str, draining: bool) -> HandlerResult {
+    check_id("a node", node).map_err(HandlerError::permanent)?;
+    let Some(entry) = turn.state().nodes.get(node) else {
+        return Err(HandlerError::permanent(format!("the pool does not know the node '{node}'")));
+    };
+    if entry.draining != draining {
+        turn.state_mut().nodes.get_mut(node).expect("known").draining = draining;
+    }
+    Ok(())
+}
+
+/// Removes a silent `node` with its holders and sends the pool a `TellGone` for each, with the shared retry policy;
+/// refused for good for a live or unknown node.
+fn declare_gone(turn: &mut Turn<PlacementActor>, node: &str) -> HandlerResult {
+    match turn.state().nodes.get(node).map(|n| n.status) {
+        None => return Err(HandlerError::permanent(format!("the pool does not know the node '{node}'"))),
+        Some(PlacementNodeStatus::Live) => {
+            return Err(HandlerError::permanent(format!("the node '{node}' is live: it is heard from, so not gone")));
+        }
+        Some(PlacementNodeStatus::Silent) => {}
+    }
+    let state = turn.state_mut();
+    state.nodes.remove(node);
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.holders).into_iter().partition(|h| h.node == node);
+    state.holders = kept;
+    for PlacementHolder { holder, to, message_type, grant, node, .. } in gone {
+        let mut options = SendOptions::new().retry(retry_policy());
+        options.correlation_id = turn.message().correlation_id.clone();
+        turn.send_self_with(PlacementMsg::TellGone { holder, grant, node, to, message_type }, options)?;
+    }
+    Ok(())
+}
+
+/// The free places of each live node that is not draining: its offered places minus its holders.
 fn free_places(state: &PlacementState) -> BTreeMap<&str, u32> {
     let mut free: BTreeMap<&str, u32> = state
         .nodes
         .iter()
-        .filter(|(_, n)| n.status == PlacementNodeStatus::Live)
+        .filter(|(_, n)| n.status == PlacementNodeStatus::Live && !n.draining)
         .map(|(id, n)| (id.as_str(), n.places))
         .collect();
     for holder in &state.holders {
@@ -914,7 +1051,7 @@ fn has_needs(labels: &[String], needs: &[String]) -> bool {
     needs.iter().all(|need| labels.binary_search(need).is_ok())
 }
 
-/// The node for `needs` now: of the live nodes with every need and a free place, the one with the most free places,
+/// The node for `needs` now: of the live nodes, not draining, with every need and a free place, the one with the most free places,
 /// ties to the smaller node id.
 fn place<'a>(state: &PlacementState, free: &BTreeMap<&'a str, u32>, needs: &[String]) -> Option<&'a str> {
     let mut best: Option<(&str, u32)> = None;
@@ -1100,6 +1237,7 @@ fn offer(
     let state = turn.state();
     let due = state.deadline(now).map_err(HandlerError::permanent)?;
     let previous = state.nodes.get(&node).map(|n| n.status);
+    let draining = state.nodes.get(&node).is_some_and(|n| n.draining);
     if previous.is_none() && state.nodes.len() >= state.max_nodes as usize {
         return Err(HandlerError::permanent(format!(
             "the pool knows maxNodes ({}) nodes: '{node}' is refused",
@@ -1112,7 +1250,8 @@ fn offer(
     if turn.state().armed.is_none() {
         arm(turn, due)?;
     }
-    let entry = PlacementNode { instance, labels, places, heard_at: now, status: PlacementNodeStatus::Live };
+    let status = PlacementNodeStatus::Live;
+    let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining };
     turn.state_mut().nodes.insert(node, entry);
     Ok(())
 }
