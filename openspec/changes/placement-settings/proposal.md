@@ -19,4 +19,6 @@ After `tray-worker-control`, before `placement-full-notice`.
 
 ## Impact
 
+Crates: cicada-actors.
+
 `crates/cicada-actors` (pool messages, state checks, contract). Additive.
