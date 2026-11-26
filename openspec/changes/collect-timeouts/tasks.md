@@ -9,7 +9,7 @@ and `specs/container-runtime/spec.md`. Run the crate's tests with every feature:
   counted over the content bytes of regular files, kept and skipped, in the shared collector of `copy.rs`, so Docker
   and the fake stop at the same point with one skipped entry for the rest (decision 2). Verify: collector and fake
   tests; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **Giving up after three failures.** In the collecting phase, a step message with `failures >= 3` records the
+- [x] 2. **Giving up after three failures.** In the collecting phase, a step message with `failures >= 3` records the
   pending end without a copy, log read or progress read, with `outputs.error` naming the failures and the last error
   (decision 1); the rustdoc of `MAX_TURN` updated. Verify: a test runtime whose `copy_out` sleeps past `MAX_TURN`;
   after three timed-out tries the end is sent and no fourth copy is made.

@@ -671,11 +671,12 @@ async fn with_a_store_the_last_progress_is_read_when_the_collection_finishes() {
     assert_eq!(paths, ["/work/out", "/tmp/cicada-progress"], "the outputs, then the progress, once");
 }
 
-/// The fake, whose `copy_out` of one container waits for a gate.
+/// The fake, whose `copy_out` of one container waits for a gate; counts the copies of that container begun.
 struct Gated {
     fake: FakeRuntime,
     slow: &'static str,
     gate: Arc<Notify>,
+    begun: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -705,6 +706,7 @@ impl ContainerRuntime for Gated {
     }
     async fn copy_out(&self, name: &str, path: &str, limits: CopyLimits) -> Result<CopyOut, ContainerError> {
         if name == self.slow {
+            self.begun.fetch_add(1, Ordering::SeqCst);
             self.gate.notified().await;
         }
         self.fake.copy_out(name, path, limits).await
@@ -734,7 +736,7 @@ impl ContainerRuntime for Gated {
 async fn a_slow_copy_holds_up_only_its_own_container() {
     let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
     let gate = Arc::new(Notify::new());
-    let runtime = Gated { fake: fake.clone(), slow: "app-slow", gate: gate.clone() };
+    let runtime = Gated { fake: fake.clone(), slow: "app-slow", gate: gate.clone(), begun: Arc::default() };
     let test = harness_on(Arc::new(runtime), Some(Arc::new(store.clone())), settings(), Job::out()).await;
     let slow = started(&test, "slow").await;
     let fast = started(&test, "fast").await;
@@ -763,6 +765,61 @@ async fn a_slow_copy_holds_up_only_its_own_container() {
     test.run_until_idle().await;
     assert_eq!(test.state::<_, Got>(&Watcher).await.order, ["end fast", "end slow"]);
     assert_eq!(stored_files(&store, "app-slow").await, ["/work/out/a"]);
+}
+
+/// The test job with a `MAX_TURN` of 60 s and outputs at `/work/out`.
+struct Limited;
+
+impl ContainerJob for Limited {
+    const TYPE: &'static str = "test.limited";
+    const MAX_TURN: Option<Duration> = Some(Duration::from_secs(60));
+    type Request = Run;
+
+    fn spec(&self, name: &str, run: &Run) -> Result<ContainerSpec, String> {
+        Ok(ContainerSpec::new(name, run.image.clone()))
+    }
+
+    fn outputs(&self, _: &Run) -> Option<Outputs> {
+        Some(Outputs::new("/work/out"))
+    }
+}
+
+/// Scenario: A copy longer than the turn limit. Each collecting try times out in the copy; after three, the next
+/// sends the end with the error and what the store holds, and makes no fourth copy.
+#[tokio::test(start_paused = true)]
+async fn a_copy_that_always_times_out_ends_after_three_tries() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    // A gate never opened: every copy of `app-j1` waits past the turn limit.
+    let begun = Arc::new(AtomicUsize::new(0));
+    let runtime =
+        Arc::new(Gated { fake: fake.clone(), slow: NAME, gate: Arc::new(Notify::new()), begun: begun.clone() });
+    let output_store: Arc<dyn OutputStore> = Arc::new(store.clone());
+    let test = TestActors::builder()
+        .with(move |node| {
+            node.host(ContainerActor::new(Limited, runtime, settings()).with_store(output_store)).host(WatcherActor)
+        })
+        .build()
+        .await
+        .unwrap();
+    test.create(&Watcher, &Got::default()).await;
+    let job = Container::<Limited>::named("j1");
+    test.create(&job, &ContainerState::new(Run { image: "alpine:3".into() })).await;
+    test.send(&job, ContainerMsg::start(&Watcher, "Ended").unwrap()).await;
+    test.run_until_idle().await;
+    // A file an earlier try stored before its turn was cut off.
+    store.put_file(NAME, &CopyFile::new("/work/out/a", "abc")).await.unwrap();
+    exit(&test, &fake).await;
+    test.advance_time_by(10 * 60 * SECOND).await;
+
+    let (ended, outputs) = the_end(&test).await;
+    assert_eq!(ended.end.outcome, Outcome::Exited, "the end keeps its outcome");
+    let error = outputs.error.clone().unwrap();
+    assert!(error.starts_with("(no outputs: the collection failed 3 times; last: "), "{error}");
+    assert!(error.contains("timeout"), "{error}");
+    assert_eq!((outputs.stored, outputs.bytes, outputs.skipped), (1, 3, 0), "what the store holds");
+    assert_eq!(begun.load(Ordering::SeqCst), 3, "no fourth copy");
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.pending, state.errors), (Phase::Ended, None, 0));
 }
 
 /// An output store whose `remove` fails with the given kinds first, in order, and counts its calls.

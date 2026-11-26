@@ -46,6 +46,9 @@ const LOG_PAGES_PER_TURN: usize = 20;
 /// The lines of each log page a collecting turn reads: 20 pages of 500, so at most 10 000 lines per turn.
 const LOG_PAGE_LINES: u32 = 500;
 
+/// The failed tries of one collecting step, timeouts included, after which the next try sends the end without a copy.
+const COLLECT_TRIES: u32 = 3;
+
 /// The skipped entries an [`OutputsReport`] lists.
 const FIRST_SKIPPED: usize = 10;
 
@@ -106,7 +109,10 @@ pub trait ContainerJob: Send + Sync + 'static {
     /// A turn past the limit ends `failed` (`timeout`) without counting as a runtime error: the poll's own retry
     /// policy runs the step again (7 attempts, waiting 1 to 32 s; every step is safe to repeat, and a container the
     /// cut-off step made is found, not made again). After the last attempt the container waits for the next `Check`,
-    /// `Start`, `Stop` or `Remove`. The limit is not part of the contract.
+    /// `Start`, `Stop` or `Remove`. A collecting step is the exception: after it failed 3 times, timeouts included,
+    /// its next try makes no copy and no log read, and sends the end with the failures and the last error in
+    /// [`outputs`](crate::OutputsReport::error) and the counts of what the store holds, so a copy that always takes
+    /// too long still ends. The limit is not part of the contract.
     ///
     /// ```
     /// # use cicada::prelude::*;
@@ -1074,6 +1080,9 @@ impl<J: ContainerJob> ContainerActor<J> {
             // Saved by an actor with a store, now read by one without: the end goes out with nothing collected.
             return self.finish(turn, name, OutputsReport::failed("the actor has no output store")).await;
         };
+        if turn.message().failures >= COLLECT_TRIES {
+            return self.give_up(turn, &*store, name).await;
+        }
         let collected = match self.drain(&*store, name).await {
             Ok(true) => self.copy(turn, &*store, name).await,
             Ok(false) => {
@@ -1157,6 +1166,24 @@ impl<J: ContainerJob> ContainerActor<J> {
                 .collect(),
             error: None,
         })
+    }
+
+    /// Records the pending end of a collecting step that failed [`COLLECT_TRIES`] times, timeouts included, and sends
+    /// it: no copy, log read or progress read, which may be what failed; the report names the last error and counts
+    /// the files the store holds, none when it cannot list them.
+    async fn give_up(&self, turn: &mut ContainerTurn<J>, store: &dyn OutputStore, name: &str) -> HandlerResult {
+        let message = turn.message();
+        let last = message.last_error.as_deref().unwrap_or("unknown");
+        let mut report =
+            OutputsReport::failed(&format!("the collection failed {} times; last: {last}", message.failures));
+        match store.files(name).await {
+            Ok(files) => {
+                report.stored = u32::try_from(files.len()).unwrap_or(u32::MAX);
+                report.bytes = files.iter().fold(0u64, |sum, file| sum.saturating_add(file.size));
+            }
+            Err(e) => tracing::warn!(container = name, error = %e, "the stored outputs could not be counted"),
+        }
+        self.record_pending(turn, report).await
     }
 
     /// Reads the last progress, then records the pending end with `outputs` and sends it.
