@@ -439,13 +439,20 @@ async fn copy_out_keeps_within_its_limits() {
         && echo 1 > /two/1 && echo 2 > /two/2";
     let spec = spec("copy-limits", script);
     let name = ran(&spec).await;
-    let out = runtime().copy_out(name, "/sizes", CopyLimits::new(10, 100)).await.unwrap();
+    // A read limit above every file, so only the byte limit decides: the big file is skipped, the small ones kept.
+    let out = runtime().copy_out(name, "/sizes", CopyLimits::new(10, 100).with_max_read(10_000)).await.unwrap();
     let mut sizes: Vec<usize> = out.files.iter().map(|f| f.contents.len()).collect();
     sizes.sort();
     assert_eq!(sizes, [10, 20], "the small ones, whole");
     assert_eq!(out.skipped.len(), 1, "{out:?}");
     assert_eq!(out.skipped[0].path, "/sizes/b");
     assert!(out.skipped[0].reason.starts_with("5000 bytes, more than the "), "{out:?}");
+    // The default read limit (4 × 100 bytes) stops the copy at the big file, with one entry for the rest.
+    let out = runtime().copy_out(name, "/sizes", CopyLimits::new(10, 100)).await.unwrap();
+    assert!(
+        out.skipped.iter().any(|s| s.path == "/sizes" && s.reason.contains("over the read limit of 400 bytes")),
+        "{out:?}"
+    );
 
     let out = runtime().copy_out(name, "/five", CopyLimits::new(2, 100)).await.unwrap();
     assert_eq!(out.files.len(), 2, "{out:?}");
