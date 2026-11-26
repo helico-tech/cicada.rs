@@ -23,9 +23,9 @@ stays current while it is open.
 
 ### Requirement: Quit waits for the worker
 
-Quitting SHALL disconnect the worker and end the app only once the tray is `Offline`, without blocking the main thread,
-whether it comes from the Quit item, Ctrl-C or a system terminate; on macOS before 14.0 `run` SHALL refuse with an
-error.
+Quitting SHALL disconnect the worker and end the app only once the tray holds no connection (`Offline` or `Failed`),
+without blocking the main thread, whether it comes from the Quit item, Ctrl-C or a system terminate. On macOS before
+14.0 `run` SHALL refuse with an error; before 14.4 the running turns SHALL show their details in the title.
 
 #### Scenario: Quit while a turn runs
 
@@ -36,3 +36,13 @@ error.
 
 - **WHEN** the system asks the app to terminate while the worker is online
 - **THEN** the app answers that it terminates later, and confirms once the tray is `Offline`
+
+#### Scenario: A stop that fails
+
+- **WHEN** the user quits and the worker's stop ends with an error, so the tray is `Failed`
+- **THEN** the app ends as for `Offline`
+
+#### Scenario: An old macOS
+
+- **WHEN** `run` starts on macOS 13
+- **THEN** it returns exit code 1 with an error that the menu needs macOS 14
