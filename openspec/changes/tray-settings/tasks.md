@@ -1,8 +1,8 @@
 # Tasks
 
 Normal lane, version 0.26.0 (unreleased). Builds after `worker-stop-now` (same crates; rebase onto it when it landed
-first). Follow `design.md` (eight decisions, five design review rounds in `.reviews/tray-settings.design.*`); the spec is
-`specs/menu-bar-tray/spec.md`. No ADR.
+first). Follow `design.md` (eight decisions, five design review rounds in `.reviews/tray-settings.design.*`); the spec
+is `specs/menu-bar-tray/spec.md`. No ADR.
 
 - [ ] 1. **`ContextFile` in `cicada-app`.** The accessors, `set_context` and `set_server_and_token`, `use_context`,
   `save`, and `update` with the lock on the resolved target; sanitized parse errors in the shared loader; `Debug`
