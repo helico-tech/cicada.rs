@@ -4,7 +4,7 @@ Normal lane: opens the 0.25.0 batch (a new `## 0.25.0 — unreleased` section; a
 field on `NodeConfig`; builder.md, Version). Follow `design.md` and ADR 0071
 (`docs/adr/0071-a-duplicate-node-reported-by-its-member.md`); the spec is `specs/placement-pool/spec.md`.
 
-- [ ] 1. **The node's host name.** `NodeConfig::hostname: Option<String>` (`None`: the machine's own, as today, through
+- [x] 1. **The node's host name.** `NodeConfig::hostname: Option<String>` (`None`: the machine's own, as today, through
   the private `usable_hostname`), written to the node row; `ActorSystem::hostname()` returns the value written
   (decision 5). Verify: a test that the row and the getter hold an override; `cargo test -p cicada`.
 - [ ] 2. **The identity lock.** `load_or_create` locks `dir/placement-identity.lock` (`File::try_lock`) before it reads

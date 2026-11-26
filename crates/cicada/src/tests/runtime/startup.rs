@@ -458,6 +458,20 @@ async fn a_blank_a_nul_or_a_too_long_label_fails_start() {
     }
 }
 
+/// A host name set in the configuration is checked like a label.
+#[tokio::test]
+async fn a_blank_a_nul_or_a_too_long_hostname_fails_start() {
+    for (hostname, problem) in [
+        (" ".to_owned(), "hostname must not be blank"),
+        ("a\0b".to_owned(), "hostname must not contain NUL"),
+        ("é".repeat(201), "hostname must be at most 200 characters long"),
+    ] {
+        let config = NodeConfig { hostname: Some(hostname.clone()), ..NodeConfig::default() };
+        let system = ActorSystem::builder(store()).config(config).build();
+        assert_eq!(single(&system.initialize().await.unwrap_err()), problem, "{hostname:?}");
+    }
+}
+
 /// Scenario: Valid Unicode and absence.
 #[tokio::test]
 async fn no_label_or_one_of_200_characters_with_outer_spaces_is_valid() {

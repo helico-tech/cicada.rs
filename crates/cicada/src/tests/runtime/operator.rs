@@ -117,6 +117,23 @@ async fn a_started_node_reports_its_version_and_label_and_an_initialized_one_has
     assert!(system.nodes().await.unwrap().is_empty(), "stop removes the row");
 }
 
+/// Scenario: A container with a stable name. The row and `ActorSystem::hostname` hold the configured host name.
+#[tokio::test(start_paused = true)]
+async fn a_configured_hostname_is_written_to_the_row_and_returned_by_the_node() {
+    let memory = virtual_store();
+    let config = NodeConfig { hostname: Some("runner-1".into()), ..node_config("named") };
+    let system = ActorSystem::builder(memory.clone()).config(config).build();
+    assert_eq!(system.hostname(), Some("runner-1"), "known before the start");
+    system.start().await.unwrap();
+    settle().await;
+    let row = system.nodes().await.unwrap().remove(0);
+    assert_eq!(row.hostname.as_deref(), Some("runner-1"));
+    system.stop().await;
+
+    let own = ActorSystem::builder(memory).config(node_config("own")).build();
+    assert!(own.hostname().is_none_or(|h| !h.trim().is_empty() && !h.contains('\0')), "the machine's own, or none");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_send_only_node_without_a_label_has_its_version_and_no_label() {
     let memory = virtual_store();

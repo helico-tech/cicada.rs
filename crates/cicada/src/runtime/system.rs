@@ -65,11 +65,18 @@ fn usable_hostname<E>(lookup: Result<String, E>) -> Result<String, &'static str>
     }
 }
 
-/// The details of this node's row: the OS host name, looked up once, the core crate's version and `label`.
-fn node_details(label: Option<String>) -> NodeDetails {
-    let hostname = usable_hostname(whoami::hostname())
+/// The host name this node writes to its row: `configured` when set, else the OS host name, looked up once.
+fn node_hostname(configured: Option<&str>) -> Option<String> {
+    if let Some(name) = configured {
+        return Some(name.to_owned());
+    }
+    usable_hostname(whoami::hostname())
         .inspect_err(|why| tracing::debug!("The node table gets no host name: {why}"))
-        .ok();
+        .ok()
+}
+
+/// The details of this node's row: `hostname`, the core crate's version and `label`.
+fn node_details(hostname: Option<String>, label: Option<String>) -> NodeDetails {
     NodeDetails { hostname, cicada_version: Some(env!("CARGO_PKG_VERSION").to_owned()), label }
 }
 
@@ -260,6 +267,11 @@ pub struct NodeConfig {
     /// only, not an identity. When present it is not blank, has no NUL and at most
     /// [`MAX_ID_LENGTH`](super::limits::MAX_ID_LENGTH) characters, and is kept as given. Default `None`.
     pub label: Option<String>,
+    /// The host name this node writes to its row in the node table, such as a container's stable name; `None` for the
+    /// machine's own, looked up once when the node is built. When present it is not blank, has no NUL and at most
+    /// [`MAX_ID_LENGTH`](super::limits::MAX_ID_LENGTH) characters. [`ActorSystem::hostname`] returns the value written.
+    /// Default `None`.
+    pub hostname: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -276,6 +288,7 @@ impl Default for NodeConfig {
             sweep_interval: Duration::from_secs(3600),
             max_lost_claims: Some(5),
             label: None,
+            hostname: None,
         }
     }
 }
@@ -318,13 +331,14 @@ impl NodeConfig {
         if self.max_lost_claims == Some(0) {
             problems.push("max_lost_claims must be at least 1, or None for no limit".to_owned());
         }
-        if let Some(label) = &self.label {
-            if label.trim().is_empty() {
-                problems.push("label must not be blank".to_owned());
-            } else if label.contains('\0') {
-                problems.push("label must not contain NUL".to_owned());
-            } else if label.chars().count() > limits::MAX_ID_LENGTH {
-                problems.push(format!("label must be at most {} characters long", limits::MAX_ID_LENGTH));
+        for (name, value) in [("label", &self.label), ("hostname", &self.hostname)] {
+            let Some(value) = value else { continue };
+            if value.trim().is_empty() {
+                problems.push(format!("{name} must not be blank"));
+            } else if value.contains('\0') {
+                problems.push(format!("{name} must not contain NUL"));
+            } else if value.chars().count() > limits::MAX_ID_LENGTH {
+                problems.push(format!("{name} must be at most {} characters long", limits::MAX_ID_LENGTH));
             }
         }
         problems
@@ -363,10 +377,12 @@ impl ActorSystemBuilder {
     /// Builds the node. It does nothing until [`ActorSystem::start`] (or [`ActorSystem::initialize`]).
     pub fn build(self) -> ActorSystem {
         let resolver = Arc::new(TypeResolver::new(Registry::Store(self.store.clone())));
+        let hostname = node_hostname(self.config.hostname.as_deref());
         ActorSystem {
             inner: Arc::new(Inner {
                 store: self.store,
                 config: self.config,
+                hostname,
                 hosted: self.hosted,
                 observers: self.observers,
                 resolver,
@@ -400,6 +416,8 @@ struct Lifecycle {
 struct Inner {
     store: Store,
     config: NodeConfig,
+    /// The host name this node writes to its row.
+    hostname: Option<String>,
     hosted: Vec<Arc<dyn HostedActor>>,
     observers: Observers,
     resolver: Arc<TypeResolver>,
@@ -469,6 +487,13 @@ impl ActorSystem {
     /// The node's configuration.
     pub fn config(&self) -> &NodeConfig {
         &self.inner.config
+    }
+
+    /// The host name this node writes to its row in the node table: [`NodeConfig::hostname`], or else the machine's
+    /// own as looked up once when the node was built; `None` when that lookup gave no usable name. A machine renamed
+    /// while the node runs keeps writing the old name.
+    pub fn hostname(&self) -> Option<&str> {
+        self.inner.hostname.as_deref()
     }
 
     /// Current life-cycle state.
@@ -566,7 +591,7 @@ impl ActorSystem {
             });
         }
         let init = self.initialized().await?.clone();
-        let details = node_details(self.inner.config.label.clone());
+        let details = node_details(self.inner.hostname.clone(), self.inner.config.label.clone());
         self.inner.stopping.store(false, Ordering::SeqCst);
         if !init.types.is_empty() {
             if let Some(warning) = pool_warning(self.inner.store.pool_size(), self.inner.config.concurrency) {
@@ -1956,10 +1981,11 @@ mod tests {
 
     #[test]
     fn the_details_carry_the_core_version_and_the_label() {
-        let details = node_details(Some(" app 1.2 ".into()));
+        let details = node_details(node_hostname(None), Some(" app 1.2 ".into()));
         assert_eq!(details.cicada_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(details.label.as_deref(), Some(" app 1.2 "));
         assert!(details.hostname.as_ref().is_none_or(|h| usable_hostname::<()>(Ok(h.clone())).is_ok()));
+        assert_eq!(node_hostname(Some(" runner-1 ")).as_deref(), Some(" runner-1 "), "an override, kept as given");
     }
 
     #[test]
