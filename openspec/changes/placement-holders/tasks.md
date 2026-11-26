@@ -17,6 +17,6 @@ builder.md, Version). Builds on `placement-asks` (holders and the line; lands fi
   handoff
   carries the design's Docs section and the turn a holder's `Failed` costs. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-actors`, `cargo test -p cicada-examples --test docs`.
-- [ ] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate placement-holders --strict`, commit, then `python3 scripts/gate.py run`
   (in the background with a 2-hour timeout).
