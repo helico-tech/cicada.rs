@@ -34,5 +34,7 @@ After `change-loop-two-builders`, before `placement-settings`.
 
 ## Impact
 
+Crates: cicada-tray, cicada-app.
+
 New crate `crates/cicada-tray`; `crates/cicada-app` (`type_names`); a new ADR and its row; the workspace manifest.
 Tests on virtual time against an in-process server. Docs handoff: a short section in the app guide.

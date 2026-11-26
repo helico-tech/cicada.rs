@@ -78,6 +78,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0071](0071-a-duplicate-node-reported-by-its-member.md) | A placement member that sees its node row written by another host skips its offer and reports `Duplicate`; the pool marks the node (ADR 0069's mark with a host), alerts once and places nothing there while marked; `NodeConfig::hostname` sets the name a node writes; the identity folder is locked; extends ADR 0069. |
 | [0072](0072-one-live-holder-per-resource.md) | An offer may name a resource key (Docker's daemon id from `RuntimeInfo::id`); one live node holds a key, a second live node offering it is ignored, its contest kept in a pool-level list and alerted once; extends ADRs 0069 and 0071. |
 | [0073](0073-two-builders-in-the-change-loop.md) | Two builders at once when their changes share no crate (a `Crates:` line), the second on Codex; every change reviewed by the other model; one gate run and one landing at a time; supersedes ADR 0055's one-builder rule. |
+| [0074](0074-a-tray-crate-next-to-the-app.md) | A new crate `cicada-tray` on `cicada-app`: a portable model that runs a worker over HTTP in its process from a host's `App` function, with its state and running turns; the macOS menu comes later; `App::type_names()`. |
 
 ## Design questions
 
