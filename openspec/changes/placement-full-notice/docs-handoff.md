@@ -89,5 +89,6 @@ None. The guide's doctest of the pool matches no notice kind exhaustively, so `#
 
 ## Status
 
-Ran `cargo test -p cicada-examples --test docs` and `--doc`, and the finishing checks (see the change's report). All
+Ran `cargo test -p cicada-examples --test docs` (11 passed) and `--doc` (51 passed), and the finishing checks: fmt,
+clippy, `cargo test --workspace` (3,735 passed, 0 failed) and the gate (full pass of f16bf210). All
 the text above is proposed; no protected prose is written yet.
