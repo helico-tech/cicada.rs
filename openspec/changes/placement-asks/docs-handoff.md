@@ -79,12 +79,22 @@ is told in a `Notify` turn of its own and freed when never received.
 
 **Where.** `skills/cicada/SKILL.md`, the `Ready-made actors` route.
 **Text.** The owner asked the change loop to add `docs/guide/actors.md#placement-pool` and
-`docs/reference/contracts/cicada.placement.json` to the route once the heading is on `main`; see Status for whether
-this branch has it.
+`docs/reference/contracts/cicada.placement.json` to the route once the heading is on `main`. It is not on `main` at
+this head (only on the docs branch, `da95a4c8`), so the route is not changed here.
 
 ## Blocking
 
-None.
+None on this head: its `main` (`b94bae4f`) has no `Placement pool` section yet. **It will block once the docs branch's
+`da95a4c8` (Document the placement pool) is on `main`:** this change makes `PlacementState::new` take four arguments,
+so after a rebase onto it, `cargo test -p cicada-examples --doc` fails in `ActorsGuideDoctests`.
+
+- **File and block.** `docs/guide/actors.md`, `Placement pool`, the Rust block after "This example hosts a pool and an
+  operator actor on virtual time", line
+  `test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000)?).await;`.
+  **Replacement.** `test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000, 100, 1000)?).await;`
+- **Same section, step 1 (prose, not a check).** `PlacementState::new(silence, max_nodes)` becomes
+  `PlacementState::new(silence, max_nodes, max_waiting, max_holders)`, adding "the line 0 through 1,000 waiting asks,
+  1 through 1,000 holders" (section 1 above).
 
 ## Status
 
