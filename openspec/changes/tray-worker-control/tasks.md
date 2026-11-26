@@ -7,7 +7,7 @@ Version). Follow `design.md` and ADR 0074 (`docs/adr/0074-a-tray-crate-next-to-t
 - [x] 1. **cicada-app.** `App::type_names()` (decision 5) and `App::on_worker_ready(f)` with `WorkerReady {
   grace_period,
   cancel_timeout }`, called once a worker over HTTP has started (decision 3). Verify: tests in `cicada-app`.
-- [ ] 2. **The crate and the state.** `crates/cicada-tray` in the workspace (portable), `Tray::new(factory)`,
+- [x] 2. **The crate and the state.** `crates/cicada-tray` in the workspace (portable), `Tray::new(factory)`,
   `Tray::with_env`, `connect`, `disconnect`, the `TrayState` watch with the transitions of decision 3. Verify: tests on
   virtual time against an in-process server.
 - [ ] 3. **Turns.** The tray's `TurnObserver`: running turns, a ring of the last 50 finished ones, `abandoned` through

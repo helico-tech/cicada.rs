@@ -1,0 +1,25 @@
+[package]
+name = "cicada-tray"
+description = "In-process control and turn history for a Cicada worker over HTTP."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cicada.workspace = true
+cicada-app.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+cicada-axum.workspace = true
+cicada-test.workspace = true
+schemars.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
