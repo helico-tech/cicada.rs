@@ -9,7 +9,7 @@ Normal lane, version 0.26.0 (unreleased; it already breaks `WorkerReady`). Build
 - [x] 2. **`StopNow` in `WorkerReady`.** The handle (a `CancellationToken`), `WorkerReady` without `PartialEq`/`Eq`,
   the worker over HTTP applying it once its stop has set `Stopping`, the `node.rs` test comparing fields (decision 2).
   Verify: the app tests of the design; `cargo test -p cicada-app`.
-- [ ] 3. **`Tray::stop_now()` and the menu row.** `until` only moves earlier and `stop_now` never calls
+- [x] 3. **`Tray::stop_now()` and the menu row.** `until` only moves earlier and `stop_now` never calls
   `Connection::stopping`; the menu model's Stop Now row while stopping a ready worker; the AppKit view renders it and
   calls `stop_now` (decisions 3 and 4). Verify: the tray and menu tests of the design; `cargo test -p cicada-tray`;
   `cargo clippy -p cicada-tray --all-targets`.

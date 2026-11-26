@@ -12,6 +12,8 @@ pub(crate) struct MenuInput<'a> {
     pub turns: &'a TurnSnapshot,
     pub registered_types: &'a [&'static str],
     pub worker_types: &'a [&'static str],
+    /// Whether the connection's worker was ready.
+    pub ready: bool,
     pub contexts: &'a [String],
     pub current: Option<&'a str>,
     pub now: Timestamp,
@@ -22,6 +24,8 @@ pub(crate) struct MenuInput<'a> {
 #[derive(PartialEq, Eq)]
 pub(crate) struct MenuModel {
     pub header: Header,
+    /// Offer Stop Now: while stopping a worker that was ready.
+    pub stop_now: bool,
     pub dimmed: bool,
     pub running: Vec<RunningRow>,
     pub contexts: Vec<Choice<String>>,
@@ -127,6 +131,7 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
 
     MenuModel {
         header: Header { title: input.title.to_owned(), subtitle, error, on, enabled: enabled && !input.quitting },
+        stop_now: input.ready && matches!(input.state, TrayState::Stopping { .. }),
         dimmed: input.state.connection().is_none(),
         running: input
             .turns
@@ -272,12 +277,23 @@ mod tests {
     use super::*;
 
     fn model(state: &TrayState, now: Instant, turns: &TurnSnapshot, current: Option<&str>) -> MenuModel {
+        model_of(state, true, now, turns, current)
+    }
+
+    fn model_of(
+        state: &TrayState,
+        ready: bool,
+        now: Instant,
+        turns: &TurnSnapshot,
+        current: Option<&str>,
+    ) -> MenuModel {
         menu(&MenuInput {
             title: "Test Worker",
             state,
             turns,
             registered_types: &["one", "two", "three"],
             worker_types: &["one", "three"],
+            ready,
             contexts: &["prod".into(), "test".into()],
             current,
             now: from_micros(4_000_000),
@@ -316,6 +332,19 @@ mod tests {
             assert_eq!(menu.header.subtitle, subtitle);
             assert_eq!((menu.header.on, menu.header.enabled, menu.dimmed), (on, enabled, dimmed));
         }
+    }
+
+    #[test]
+    fn stop_now_is_offered_only_while_stopping_a_ready_worker() {
+        let now = Instant::now();
+        let turns = TurnSnapshot::default();
+        let connecting = TrayState::Connecting { context: "prod".into() };
+        for state in [TrayState::Offline, connecting, online(), failed()] {
+            assert!(!model(&state, now, &turns, Some("prod")).stop_now, "{state:?}");
+        }
+        let state = stopping(now + Duration::from_secs(3));
+        assert!(model(&state, now, &turns, Some("prod")).stop_now);
+        assert!(!model_of(&state, false, now, &turns, Some("prod")).stop_now, "never ready");
     }
 
     #[test]

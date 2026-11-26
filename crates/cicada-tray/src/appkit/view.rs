@@ -19,6 +19,7 @@ pub(super) struct MenuView {
     pub root: Retained<NSMenu>,
     button: Retained<NSStatusBarButton>,
     header: HeaderView,
+    stop_now: Retained<NSMenuItem>,
     running_section: Retained<NSMenuItem>,
     context_section: Retained<NSMenuItem>,
     registered: Retained<NSMenu>,
@@ -59,6 +60,8 @@ impl MenuView {
 
         let root = native_menu(mtm, &title);
         let header = HeaderView::new(mtm);
+        let stop_now = item(mtm, ns_string!("Stop Now"), Some(sel!(trayStopNow:)), ns_string!(""));
+        stop_now.setHidden(true);
         let running_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Running"), mtm);
         let context_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Context"), mtm);
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
@@ -68,6 +71,7 @@ impl MenuView {
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
         for row in [
             &header.item,
+            &stop_now,
             &NSMenuItem::separatorItem(mtm),
             &running_section,
             &NSMenuItem::separatorItem(mtm),
@@ -86,6 +90,7 @@ impl MenuView {
             root,
             button,
             header,
+            stop_now,
             running_section,
             context_section,
             registered,
@@ -107,11 +112,12 @@ impl MenuView {
 
     pub fn bind(&self, target: &Target) {
         self.root.setDelegate(Some(ProtocolObject::from_ref(target)));
-        // SAFETY: The target outlives menu tracking and implements both selectors with the sender type wired here.
+        // SAFETY: The target outlives menu tracking and implements each selector with the sender type wired here.
         unsafe {
             self.header.switch.setTarget(Some(target));
             self.header.switch.setAction(Some(sel!(trayToggle:)));
             self.header.item.setTarget(Some(target));
+            self.stop_now.setTarget(Some(target));
             self.quit.setTarget(Some(target));
         }
     }
@@ -119,6 +125,9 @@ impl MenuView {
     pub fn render(&self, target: &Target, model: MenuModel) {
         let mtm = target.mtm();
         self.header.update(model.header);
+        if self.stop_now.isHidden() == model.stop_now {
+            self.stop_now.setHidden(!model.stop_now);
+        }
         if self.button.appearsDisabled() != model.dimmed {
             self.button.setAppearsDisabled(model.dimmed);
         }

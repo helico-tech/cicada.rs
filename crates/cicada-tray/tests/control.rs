@@ -80,6 +80,8 @@ impl Config {
 struct Server {
     actors: TestActors,
     config: Config,
+    /// Whether `POST /leases/release` is answered; while false it waits.
+    releases: watch::Sender<bool>,
     serving: JoinHandle<()>,
     _hold_clock: std::sync::mpsc::Sender<()>,
 }
@@ -93,11 +95,23 @@ impl Server {
             let _ = release.recv_timeout(TEST_TIMEOUT);
         });
         let actors = TestActors::builder().with(|node| node.host(actor)).build().await.unwrap();
-        let routes: Router = actor_api(actors.system().clone());
+        let releases = watch::channel(true).0;
+        let open = releases.clone();
+        let routes: Router = actor_api(actors.system().clone()).layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let mut open = open.subscribe();
+                async move {
+                    if request.uri().path() == "/leases/release" {
+                        let _ = open.wait_for(|open| *open).await;
+                    }
+                    next.run(request).await
+                }
+            },
+        ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = Config::new(listener.local_addr().unwrap());
         let serving = tokio::spawn(async move { axum::serve(listener, routes).await.unwrap() });
-        Self { actors, config, serving, _hold_clock: hold }
+        Self { actors, config, releases, serving, _hold_clock: hold }
     }
 }
 
@@ -431,4 +445,111 @@ async fn an_unreachable_server_stays_connecting_during_retries() {
     let error = failed(&mut state, "prod", Duration::from_secs(65)).await;
     assert!(start.elapsed() >= Duration::from_secs(60));
     assert!(error.contains("the server is not ready"), "{error}");
+}
+
+/// The cancel timeout of [`online_in_a_long_turn`].
+const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A tray online whose worker, with a grace period of 30 s and a cancel timeout of 3 s, runs the turn `Wait` until
+/// the actor's `finish` opens; the message's id.
+async fn online_in_a_long_turn() -> (Server, Tray, watch::Receiver<TrayState>, WorkActor, cicada::store::MessageId) {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    let work = Work { id: "gated".into() };
+    server.actors.create(&work, &NoState {}).await;
+    let message = server.actors.send(&work, WorkMsg::Wait).await;
+    let host = cicada::runtime::NodeConfig {
+        shutdown_grace_period: Duration::from_secs(30),
+        shutdown_cancel_timeout: CANCEL_TIMEOUT,
+        ..Default::default()
+    };
+    let host_actor = actor.clone();
+    let tray =
+        Tray::new(move || App::new().host(host_actor.clone()).node_config(host.clone())).with_env(server.config.env());
+    let mut state = tray.state();
+    tray.connect("prod");
+    wait_for(&mut state, online()).await;
+    timeout(TEST_TIMEOUT, actor.began.notified()).await.unwrap();
+    (server, tray, state, actor, message.id)
+}
+
+fn stopping(until: Instant) -> TrayState {
+    TrayState::Stopping { context: "prod".into(), until }
+}
+
+/// The finished turns are one abandoned turn, and its message is pending again.
+async fn abandoned(server: &Server, tray: &Tray, id: &cicada::store::MessageId) {
+    let turns = tray.turns();
+    assert!(turns.running.is_empty());
+    assert_eq!(turns.finished.iter().map(|turn| turn.outcome.clone()).collect::<Vec<_>>(), [TurnResult::Abandoned]);
+    assert!(matches!(server.actors.system().status(id).await.unwrap(), Some(MessageStatus::Pending(_))));
+}
+
+/// Scenario: Stop Now during the grace period. `until` moves to now plus the cancel timeout, a second Stop Now keeps
+/// it, and the tray is offline within the cancel timeout, not the grace period.
+#[tokio::test(start_paused = true)]
+async fn stop_now_while_stopping_a_ready_worker_abandons_its_turn_within_the_cancel_timeout() {
+    let (server, tray, mut state, _actor, id) = online_in_a_long_turn().await;
+    let stopped = Instant::now();
+    tray.disconnect();
+    assert_eq!(*state.borrow(), stopping(stopped + Duration::from_secs(33)));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    // Held, the release keeps the worker stopping while time moves on.
+    server.releases.send_replace(false);
+    let asked = Instant::now();
+    tray.stop_now();
+    assert_eq!(*state.borrow(), stopping(asked + CANCEL_TIMEOUT));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tray.stop_now();
+    assert_eq!(*state.borrow(), stopping(asked + CANCEL_TIMEOUT), "a second Stop Now never moves it later");
+    server.releases.send_replace(true);
+    wait_for(&mut state, TrayState::Offline).await;
+    assert!(asked.elapsed() < CANCEL_TIMEOUT, "offline after {:?}", asked.elapsed());
+    abandoned(&server, &tray, &id).await;
+}
+
+/// Stop Now at once after the disconnect, before the worker itself is stopping, is kept.
+#[tokio::test(start_paused = true)]
+async fn stop_now_right_after_disconnect_still_ends_within_the_cancel_timeout() {
+    let (server, tray, mut state, _actor, id) = online_in_a_long_turn().await;
+    let asked = Instant::now();
+    tray.disconnect();
+    tray.stop_now();
+    assert_eq!(*state.borrow(), stopping(asked + CANCEL_TIMEOUT));
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    wait_for(&mut state, TrayState::Offline).await;
+    assert!(asked.elapsed() < CANCEL_TIMEOUT, "offline after {:?}", asked.elapsed());
+    abandoned(&server, &tray, &id).await;
+}
+
+/// Scenario: Stop Now while online. Also offline, failed, and while stopping a worker that was never ready.
+#[tokio::test(start_paused = true)]
+async fn stop_now_does_nothing_unless_stopping_a_ready_worker() {
+    let (server, tray, mut state, actor, _id) = online_in_a_long_turn().await;
+    tray.stop_now();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(*state.borrow(), online());
+    assert_eq!(tray.turns().running.len(), 1, "the turn runs on");
+    actor.finish.send_replace(true);
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
+    tray.stop_now();
+    assert_eq!(*state.borrow(), TrayState::Offline);
+
+    tray.connect("--help");
+    failed(&mut state, "--help", TEST_TIMEOUT).await;
+    let failed = state.borrow().clone();
+    tray.stop_now();
+    assert_eq!(*state.borrow(), failed);
+
+    let fresh = Tray::new(move || App::new().host(WorkActor::new())).with_env(server.config.env());
+    let mut state = fresh.state();
+    fresh.connect("prod");
+    let until = Instant::now();
+    fresh.disconnect();
+    fresh.stop_now();
+    assert_eq!(*state.borrow(), stopping(until), "never ready");
+    wait_for(&mut state, TrayState::Offline).await;
 }

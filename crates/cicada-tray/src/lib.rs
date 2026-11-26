@@ -37,8 +37,9 @@ pub enum TrayState {
     Stopping {
         /// Name of the selected app context.
         context: String,
-        /// Stop time plus the worker's grace period and cancel timeout, on Tokio's clock. When startup was
-        /// interrupted before the worker was ready, this is the stop time.
+        /// Stop time plus the worker's grace period and cancel timeout, on Tokio's clock; after
+        /// [`Tray::stop_now`], at most its time plus the cancel timeout. When startup was interrupted before the
+        /// worker was ready, this is the stop time.
         until: Instant,
     },
     /// The command failed or its task ended unexpectedly. A new connection can be started.
@@ -209,6 +210,20 @@ impl Tray {
         connection.stopping_at = Some(now);
         self.control.state.send_replace(connection.stopping(now));
         let _ = stop.send(());
+    }
+
+    /// Stop Now: while [`TrayState::Stopping`] a worker that was ready, ends its grace period, so its running turns are
+    /// cancelled at once and listed as abandoned, and moves `until` to now plus the cancel timeout when that is
+    /// earlier. The state stays `Stopping` until the command returns. In any other state, or while stopping a worker
+    /// that was never ready, it does nothing.
+    pub fn stop_now(&self) {
+        let connection = self.control.connection.lock().expect("tray connection");
+        let Some(connection) = connection.as_ref() else { return };
+        let (Some(_), Some(ready)) = (connection.stopping_at, connection.ready.as_ref()) else { return };
+        let TrayState::Stopping { context, until } = self.control.state.borrow().clone() else { return };
+        ready.stop_now.now();
+        let until = Instant::now().checked_add(ready.cancel_timeout).map_or(until, |cut| until.min(cut));
+        self.control.state.send_replace(TrayState::Stopping { context, until });
     }
 }
 

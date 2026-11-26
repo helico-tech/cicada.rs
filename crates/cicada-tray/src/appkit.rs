@@ -253,6 +253,13 @@ define_class!(
             self.render();
         }
 
+        // SAFETY: Only the Stop Now NSMenuItem is wired to this action.
+        #[unsafe(method(trayStopNow:))]
+        fn stop_now(&self, _: &NSMenuItem) {
+            self.ivars().tray.stop_now();
+            self.render();
+        }
+
         // SAFETY: Only the Quit NSMenuItem is wired to this action.
         #[unsafe(method(trayQuit:))]
         fn quit(&self, _: &NSMenuItem) {
@@ -283,15 +290,12 @@ impl Target {
 
     fn render(&self) {
         let c = self.ivars();
-        let (state, worker_types) = {
+        let (state, worker_types, ready) = {
             let connection = c.tray.control.connection.lock().expect("tray connection");
             let state = c.state.borrow_mut().borrow_and_update().clone();
-            let worker_types = connection
-                .as_ref()
-                .and_then(|connection| connection.ready.as_ref())
-                .map(|ready| ready.types.clone())
-                .unwrap_or_default();
-            (state, worker_types)
+            let ready = connection.as_ref().and_then(|connection| connection.ready.as_ref());
+            let worker_types = ready.map(|ready| ready.types.clone()).unwrap_or_default();
+            (state, worker_types, ready.is_some())
         };
         c.turns.borrow_mut().borrow_and_update();
         let registered_types = c.tray.control.registered_types.lock().expect("tray registered types").clone();
@@ -303,6 +307,7 @@ impl Target {
             turns: &c.tray.turns(),
             registered_types: &registered_types,
             worker_types: &worker_types,
+            ready,
             contexts: contexts.names(),
             current: contexts.current(),
             now: SystemTime::now().into(),
