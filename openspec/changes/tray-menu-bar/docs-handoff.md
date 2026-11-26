@@ -50,3 +50,5 @@ The docs checks passed (11 link and guarantee tests and 51 doctests). The OpenAP
 The example started from a terminal and exited successfully on Ctrl-C. A temporary bundle with `LSUIElement`
 also started and shut down on SIGINT. The GUI automation session could not observe the status menu, so the
 remaining manual checks in task 3 are open.
+The final workspace test run with PostgreSQL passed 3,765 tests with zero failures. Formatting, workspace
+Clippy, advisory screening and strict OpenSpec validation passed.
