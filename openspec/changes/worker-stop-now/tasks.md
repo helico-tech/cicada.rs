@@ -3,7 +3,7 @@
 Normal lane, version 0.26.0 (unreleased; it already breaks `WorkerReady`). Builds on `tray-menu-bar` (landed). Follow
 `design.md`; the specs are `specs/remote-workers/spec.md` and `specs/menu-bar-tray/spec.md`. No ADR.
 
-- [ ] 1. **`Worker::end_grace()`.** A token set only while `Stopping`, under the lifecycle lock; `stop_with_grace`
+- [x] 1. **`Worker::end_grace()`.** A token set only while `Stopping`, under the lifecycle lock; `stop_with_grace`
   races the polling-loop wait and the grace wait against it; a plain call; rustdoc next to `stop_with_grace`
   (decision 1). Verify: the core tests of the design on virtual time; `cargo test -p cicada --lib`.
 - [ ] 2. **`StopNow` in `WorkerReady`.** The handle (a `CancellationToken`), `WorkerReady` without `PartialEq`/`Eq`,

@@ -214,6 +214,8 @@ struct Lifecycle {
     poll: Option<JoinHandle<()>>,
     /// The first error that stopped the worker by itself.
     error: Option<WorkerError>,
+    /// Ends the grace period of the stop in progress ([`Worker::end_grace`]); set only while `Stopping`.
+    end_grace: Option<CancellationToken>,
 }
 
 struct Inner {
@@ -441,6 +443,17 @@ impl Worker {
         Ok(())
     }
 
+    /// Ends the grace period of a stop that has begun, as if it had run out: the running turns are cancelled now and
+    /// the stop returns within the cancel timeout of this call (a wait for the polling loop ends too, and the loop is
+    /// aborted). Called during a stop, also before the stop reaches its wait, it takes effect; called before a stop
+    /// begins or after it ended, it does nothing and is not remembered, so it never shortens a later stop. A plain call:
+    /// it does not wait for the stop.
+    pub fn end_grace(&self) {
+        if let Some(end) = &self.lifecycle().end_grace {
+            end.cancel();
+        }
+    }
+
     /// Stops the worker with the configured grace period; see [`Self::stop_with_grace`].
     pub async fn stop(&self) {
         self.stop_with_grace(self.inner.config.shutdown_grace_period).await
@@ -452,14 +465,16 @@ impl Worker {
     /// timeout; one that ignores cancellation beyond it is left behind, no longer renewed: its lease is not released
     /// but expires. A turn whose handler ended still completes within its budget. Works in
     /// every state, also on a worker that was never started; the source is neither stopped nor closed. A second call
-    /// waits for the first.
+    /// waits for the first. [`Self::end_grace`] ends the grace period early.
     pub async fn stop_with_grace(&self, grace: Duration) {
+        let end = CancellationToken::new();
         let (stopping, poll) = {
             let mut lifecycle = self.lifecycle();
             match self.state() {
                 NodeState::Stopping | NodeState::Stopped => (true, None),
                 NodeState::New | NodeState::Started => {
                     self.set_state(NodeState::Stopping);
+                    lifecycle.end_grace = Some(end.clone());
                     (false, lifecycle.poll.take())
                 }
             }
@@ -473,15 +488,30 @@ impl Worker {
         let cancel_timeout = self.inner.config.shutdown_cancel_timeout;
         if let Some(poll) = poll {
             let abort = poll.abort_handle();
-            if timeout(cancel_timeout, poll).await.is_err() {
-                tracing::warn!("The polling loop did not stop within {cancel_timeout:?}; leaving it behind");
-                abort.abort();
+            tokio::select! {
+                biased;
+                stopped = timeout(cancel_timeout, poll) => if stopped.is_err() {
+                    tracing::warn!("The polling loop did not stop within {cancel_timeout:?}; leaving it behind");
+                    abort.abort();
+                },
+                _ = end.cancelled() => abort.abort(),
             }
         }
         let tracker = &self.inner.tracker;
         tracker.close();
-        if timeout(grace, tracker.wait()).await.is_err() {
-            tracing::info!("Cancelling {} turns after the grace period of {grace:?}", self.running_turns());
+        let drained = tokio::select! {
+            biased;
+            _ = tracker.wait() => true,
+            _ = end.cancelled() => {
+                tracing::info!("Cancelling {} turns: the grace period was ended early", self.running_turns());
+                false
+            }
+            _ = sleep(grace) => {
+                tracing::info!("Cancelling {} turns after the grace period of {grace:?}", self.running_turns());
+                false
+            }
+        };
+        if !drained {
             self.inner.cancel_turns.cancel();
             if timeout(cancel_timeout, tracker.wait()).await.is_err() {
                 tracing::warn!(
@@ -491,7 +521,11 @@ impl Worker {
                 );
             }
         }
-        self.set_state(NodeState::Stopped);
+        {
+            let mut lifecycle = self.lifecycle();
+            lifecycle.end_grace = None;
+            self.set_state(NodeState::Stopped);
+        }
         self.inner.stopped.send_replace(true);
         tracing::info!("Worker {} stopped", self.inner.config.worker_id);
     }
