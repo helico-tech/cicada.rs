@@ -21,6 +21,6 @@ check the `release:` line of `python3 scripts/status.py`, builder.md, Version). 
   (`CICADA_UPDATE_CONTRACTS=true`); the 0.24.0 section names asks under Added; the handoff carries the design's Docs
   section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-actors`,
   `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate placement-asks --strict`, commit, then `python3 scripts/gate.py run`
   (in the background with a 2-hour timeout).
