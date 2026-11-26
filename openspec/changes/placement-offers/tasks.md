@@ -21,5 +21,5 @@ once `placement-drain-and-gone` has landed (decision 6), so do not mark anything
   pool under Added. `docs-handoff.md` carries the design's Docs section; nothing blocks. No edit to `README.md`,
   `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-actors`, `cargo test -p cicada-examples --test
   docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate placement-offers --strict`, commit, then `python3 scripts/gate.py run`.
