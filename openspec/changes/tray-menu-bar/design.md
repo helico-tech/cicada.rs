@@ -59,20 +59,20 @@ fn main() -> std::process::ExitCode {
 7. **No Stop Now here.** Aborting the tray's task would not stop the turns: each turn and its lease renewal run in
    tasks of their own (design review). Cancelling them needs a core API, which the new change `worker-stop-now` adds;
    until then the menu shows the time left in the grace period and offers no Stop Now.
-8. **What the model needs from `cicada-app`.** `WorkerReady` (new in 0.25.0, so not breaking) gains `types`, the names
-   of the types the worker runs, for the checkmarks; it becomes `#[non_exhaustive]` and loses `Copy`. And
-   `cicada_app::Contexts::load(&Env) -> anyhow::Result<Contexts>` with `names()` and `current()` reads the context names
-   and the current context from the config file through the existing private config code (no tokens or servers
-   leave it). The tray re-reads it each time the menu opens. `tray-settings` widens this later.
-9. **Connect from the menu.** The tray starts `Offline`; the header switch connects to the current context (or, with
-   none, the switch is disabled and the subtitle says to run `cicada config`), and off disconnects. Picking another
-   context disconnects, waits until the tray holds no connection (`Offline` or `Failed`), and connects to it; the
-   pending pick is kept in the main thread's state, which the timer acts on, and a later pick replaces it; picking the
-   connected one does nothing. From `Failed` a pick connects at once. Not taken:
-   connecting at launch (a setting for later).
-10. **Dependencies.** `objc2`, `objc2-foundation` and `objc2-app-kit` (with only the features used), under
-   `[target.'cfg(target_os = "macos")'.dependencies]`; `cargo deny check advisories` passes. A worked example
-   `examples/menu-bar-worker.rs` (macOS only, `no_run` in the docs) shows `run`.
+8. **What the model needs from `cicada-app`.** `WorkerReady` gains `types`, the names of the types the worker runs, for
+the checkmarks; it becomes `#[non_exhaustive]` and loses `Copy`. 0.25.0 ships `WorkerReady` before this change lands, so
+this is **BREAKING** for code that builds, copies or matches it without `..`: the change goes into 0.26.0. And
+`cicada_app::Contexts::load(&Env) -> anyhow::Result<Contexts>` with `names()` and `current()` reads the context names
+and the current context from the config file through the existing private config code (no tokens or servers leave it).
+The tray re-reads it each time the menu opens. `tray-settings` widens this later. 9. **Connect from the menu.** The tray
+starts `Offline`; the header switch connects to the current context (or, with none, the switch is disabled and the
+subtitle says to run `cicada config`), and off disconnects. Picking another context disconnects, waits until the tray
+holds no connection (`Offline` or `Failed`), and connects to it; the pending pick is kept in the main thread's state,
+which the timer acts on, and a later pick replaces it; picking the connected one does nothing. From `Failed` a pick
+connects at once. Not taken: connecting at launch (a setting for later). 10. **Dependencies.** `objc2`,
+`objc2-foundation` and `objc2-app-kit` (with only the features used), under `[target.'cfg(target_os =
+"macos")'.dependencies]`; `cargo deny check advisories` passes. A worked example `examples/menu-bar-worker.rs` (macOS
+only, `no_run` in the docs) shows `run`.
 
 ## Tests
 
