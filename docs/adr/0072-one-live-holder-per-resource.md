@@ -14,10 +14,10 @@ places count twice. Node ids and instances differ, so ADR 0069 and ADR 0071 do n
 ## Decision
 
 - An offer may name a resource key (Docker's daemon id from `RuntimeInfo::id`). One live node holds a key: an offer
-  whose key a different live node holds changes nothing for the offering node, marks it in conflict with the
-  `resource`, and sends one `conflict` alert per mark.
-- When the holder is silent or gone, the next offer with the key takes it. A mark with `resource` ends one silence time
-  after the last conflicting offer.
+  whose key a different live node holds changes nothing for the offering node; the pool records the contest in a
+  pool-level list (key, node, time of the last such offer) and sends one `conflict` alert when it is recorded; the
+  contest ends one silence time after its last offer. The node entries and ADR 0069's mark do not change.
+- When the holder is silent or gone, the next offer with the key takes it.
 
 ## Consequences
 

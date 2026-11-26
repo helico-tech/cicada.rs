@@ -2,14 +2,21 @@
 
 ### Requirement: One live node holds a resource
 
-An offer MAY name a resource key; the pool SHALL ignore an offer whose key a different live node holds, mark the
-offering node in conflict with that resource, and send one `conflict` alert per mark, and SHALL let the next offer with
-the key take it once its holder is silent or gone.
+An offer MAY name a resource key. The pool SHALL ignore an offer whose key a different live node holds, record the
+contest of that key and node in a pool-level list with the time of the last such offer, send one `conflict` alert when
+the contest is recorded, and remove it one silence time after its last offer; the next offer with the key SHALL take it
+once its holder is silent or gone. A stored state with two live nodes holding one key SHALL be refused.
 
-#### Scenario: Two nodes offering one Docker daemon
+#### Scenario: A new node offering a held daemon
 
-- **WHEN** two nodes on one machine offer the same daemon id as their resource key
-- **THEN** the first keeps its places, the second's offers are ignored, and one `conflict` alert goes out
+- **WHEN** a node that the pool does not know offers a daemon id another live node holds, three times
+- **THEN** the node is not added and one `conflict` alert goes out
+
+#### Scenario: A known node offering a held daemon
+
+- **WHEN** a known node starts offering a daemon id another live node holds, goes silent, and offers it again within one
+  silence time
+- **THEN** its offers change nothing and only one `conflict` alert goes out
 
 #### Scenario: The holder stops
 
