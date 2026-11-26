@@ -652,6 +652,19 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
             json!({"type": "Ask", "holder": "run-17", "needs": ["arm64", "docker"], "to": "pager/ops",
                 "messageType": "Placed"}),
         ),
+        (
+            PlacementMsg::Configure {
+                silence: Some(std::time::Duration::from_secs(120)),
+                max_nodes: None,
+                max_waiting: None,
+                max_holders: Some(8),
+            },
+            json!({"type": "Configure", "silence": "PT2M", "maxHolders": 8}),
+        ),
+        (
+            PlacementMsg::Configure { silence: None, max_nodes: Some(5), max_waiting: Some(0), max_holders: None },
+            json!({"type": "Configure", "maxNodes": 5, "maxWaiting": 0}),
+        ),
         (PlacementMsg::release("run-17", 4).unwrap(), json!({"type": "Release", "holder": "run-17", "grant": 4})),
         (PlacementMsg::cancel("run-17").unwrap(), json!({"type": "Cancel", "holder": "run-17"})),
         (PlacementMsg::Notify { holder: "run-17".into() }, json!({"type": "Notify", "holder": "run-17"})),
@@ -677,6 +690,10 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
     for message in [PlacementMsg::Failed(failed()), PlacementMsg::Stopped(stopped())] {
         assert_message_sample::<PlacementMsg>(&json_of(message));
     }
+    let empty = cicada::message::decode::<PlacementMsg>("Configure", &json!({"maxHolder": 8})).unwrap();
+    let none = PlacementMsg::Configure { silence: None, max_nodes: None, max_waiting: None, max_holders: None };
+    assert_eq!(empty, none, "an unknown field reads as absent; the pool refuses a Configure without a setting");
+    assert_message_sample::<PlacementMsg>(&json!({"type": "Configure", "silence": null, "maxHolders": null}));
     for (message_type, invalid) in [
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": []})),
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "places": 1})),
@@ -692,6 +709,10 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         ("Ask", json!({"holder": "run-17", "needs": [], "to": "pager/ops"})),
         ("Ask", json!({"holder": "run-17", "to": "pager/ops", "messageType": "Placed"})),
         ("Ask", json!({"needs": [], "to": "pager/ops", "messageType": "Placed"})),
+        ("Configure", json!({"silence": 60})),
+        ("Configure", json!({"silence": "a minute"})),
+        ("Configure", json!({"maxHolders": -1})),
+        ("Configure", json!({"maxNodes": "5"})),
         ("Release", json!({"holder": "run-17"})),
         ("Release", json!({"holder": "run-17", "grant": -1})),
         ("Cancel", json!({})),
@@ -807,6 +828,14 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     reported["conflict"] = json!({"instance": "3f9c", "at": "2026-01-01T00:00:10Z", "host": "mac-b"});
     let reported = with(json!({"nodes": {"mac-1": reported}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&reported);
+    let lowered = json!({"silence": "PT1M", "maxNodes": 1, "maxWaiting": 0, "maxHolders": 1,
+        "nodes": {"mac-1": node("silent"), "mac-2": node("silent")}, "nextGrant": 6,
+        "holders": [holder("r1", 3, true), holder("r2", 5, true)], "waiting": [waiter("r3")]});
+    assert_state_sample::<PlacementState>(&lowered);
+    assert_eq!(
+        json_of(serde_json::from_value::<PlacementState>(lowered.clone()).unwrap())["holders"],
+        lowered["holders"]
+    );
     let read = json_of(serde_json::from_value::<PlacementState>(reported.clone()).unwrap());
     assert_eq!(read["nodes"], reported["nodes"]);
     let mut silent_marked = node("silent");
@@ -846,9 +875,6 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         with(json!({"nodes": {"mac-1": node("silent")}, "nextGrant": 6, "holders": [holder("r1", 3, true)],
             "waiting": [waiter("r1")]})),
         with(json!({"waiting": [{"holder": "r3", "needs": ["gpu"], "to": "pager/ops"}]})),
-        json!({"silence": "PT1M", "maxNodes": 1, "maxWaiting": 1, "maxHolders": 1,
-            "nodes": {"a": node("silent"), "b": node("silent")}}),
-        json!({"silence": "PT1M", "maxNodes": 1, "maxWaiting": 0, "maxHolders": 1, "waiting": [waiter("r3")]}),
         json!({"silence": "PT1M", "maxNodes": 1, "maxHolders": 1}),
         json!({"silence": "PT1M", "maxNodes": 1, "maxWaiting": 1}),
         json!({"silence": "PT1M"}),

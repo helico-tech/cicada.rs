@@ -14,6 +14,9 @@
 //! listed in `contested` with one alert, the contest ends one silence time after its last offer, the next node takes
 //! the key once the holder is silent, offers without a key are not checked, and the list's limit.
 //! And the operator's `cicada send` recipes for `Drain`, `Undrain`, `Gone` and `Release`, over the HTTP send route.
+//! And `Configure`: each setting alone or together, refusals that change nothing, lower limits that keep what the pool
+//! has and serve only under them, a higher holder limit that grants at once, a new silence that re-arms the check, and
+//! its `cicada send` recipe.
 
 mod common;
 
@@ -1667,4 +1670,215 @@ async fn a_contest_past_max_nodes_is_refused() {
     let renewed = [("daemon-1".into(), "mac-2".into(), 0), ("daemon-1".into(), "mac-3".into(), 5)];
     assert_eq!(contests(&test, start).await, renewed);
     assert_eq!(failed(&test).await, [("Offer".to_owned(), FailureCause::Refused)]);
+}
+
+/// A `Configure` that sets the given fields.
+fn configure(
+    silence: Option<u64>,
+    max_nodes: Option<u32>,
+    max_waiting: Option<u32>,
+    max_holders: Option<u32>,
+) -> PlacementMsg {
+    PlacementMsg::Configure { silence: silence.map(secs), max_nodes, max_waiting, max_holders }
+}
+
+/// The settings of the pool: silence, node limit, line limit and holder limit.
+async fn settings(test: &TestActors) -> (Duration, u32, u32, u32) {
+    let state = held(test).await;
+    (state.silence, state.max_nodes, state.max_waiting, state.max_holders)
+}
+
+/// Each field alone replaces its value and keeps the others; together they replace all four.
+#[tokio::test(start_paused = true)]
+async fn a_configure_replaces_the_settings_it_names_and_keeps_the_others() {
+    let test = node_limits(60, 10, 10, 10).await;
+    for (message, after) in [
+        (configure(Some(120), None, None, None), (secs(120), 10, 10, 10)),
+        (configure(None, Some(5), None, None), (secs(120), 5, 10, 10)),
+        (configure(None, None, Some(0), None), (secs(120), 5, 0, 10)),
+        (configure(None, None, None, Some(1000)), (secs(120), 5, 0, 1000)),
+        (configure(Some(1), Some(1000), Some(1000), Some(1)), (secs(1), 1000, 1000, 1)),
+    ] {
+        let m = send(&test, message.clone()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "{message:?}");
+        assert_eq!(settings(&test).await, after, "{message:?}");
+    }
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    send(&test, configure(Some(1), None, None, Some(1))).await;
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "equal values write nothing");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A message without a setting. An empty `Configure` and each value out of bounds are refused for good and
+/// change nothing.
+#[tokio::test(start_paused = true)]
+async fn a_configure_without_a_setting_or_out_of_bounds_is_refused_and_changes_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    let (before, version, pending) = (held(&test).await, test.version(&pool()).await, test.pending(&pool()).await);
+    let invalid = [
+        configure(None, None, None, None),
+        configure(Some(0), None, None, None),
+        PlacementMsg::Configure {
+            silence: Some(Duration::from_millis(999)),
+            max_nodes: None,
+            max_waiting: None,
+            max_holders: None,
+        },
+        configure(Some(24 * 3600 + 1), None, None, None),
+        configure(None, Some(0), None, None),
+        configure(None, Some(1001), None, None),
+        configure(None, None, Some(1001), None),
+        configure(None, None, None, Some(0)),
+        configure(None, None, None, Some(1001)),
+        configure(Some(30), None, None, Some(0)),
+    ];
+    let count = invalid.len();
+    for message in invalid {
+        let m = send(&test, message.clone()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{message:?}");
+    }
+    assert_eq!(failed(&test).await, vec![("Configure".to_owned(), FailureCause::Refused); count]);
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "nothing recorded");
+    assert_eq!(test.pending(&pool()).await, pending, "no check armed or cancelled");
+}
+
+/// Scenario: A lower holder limit. Three holders stay under a limit of 2; an ask a node has room for is queued and
+/// granted only once two holders released.
+#[tokio::test(start_paused = true)]
+async fn a_lower_holder_limit_keeps_the_holders_and_queues_new_asks_until_under_it() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 10).await;
+    for holder in ["r1", "r2", "r3"] {
+        ask(&test, holder, &["arm64"]).await;
+    }
+    send(&test, configure(None, None, None, Some(2))).await;
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1"), holder("r3", 3, "mac-1")]);
+    ask(&test, "r4", &["arm64"]).await;
+    assert_eq!((answers(&test, "r4").await, line(&test).await), (vec![QUEUED], vec!["r4".to_owned()]));
+    release(&test, "r1", 1).await;
+    assert_eq!(line(&test).await, ["r4"], "two hold, the limit is 2");
+    release(&test, "r2", 2).await;
+    assert_eq!(answers(&test, "r4").await, [QUEUED, granted(4, "mac-1")], "one holds: room under the limit");
+    assert_eq!(holders(&test).await, [holder("r3", 3, "mac-1"), holder("r4", 4, "mac-1")]);
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A higher holder limit. The waiting ask is granted in the turn of the `Configure`.
+#[tokio::test(start_paused = true)]
+async fn a_higher_holder_limit_grants_the_waiting_asks_in_the_same_turn() {
+    let test = node_limits(60, 10, 10, 1).await;
+    offer(&test, "mac-1", &["arm64"], 3).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    assert_eq!(line(&test).await, ["r2"]);
+    test.send(&pool(), configure(None, None, None, Some(2))).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1")], "in the Configure's commit");
+    assert!(line(&test).await.is_empty());
+    test.run_until_idle().await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")]);
+}
+
+/// A lower node limit keeps the known nodes, which renew, and refuses a new one until a higher limit admits it at its
+/// next offer; a lower line limit keeps the waiting asks and refuses new ones that must wait.
+#[tokio::test(start_paused = true)]
+async fn a_lower_node_or_line_limit_keeps_what_is_there_and_refuses_new_ones() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    for holder in ["r1", "r2", "r3", "r4"] {
+        ask(&test, holder, &["arm64"]).await;
+    }
+    send(&test, configure(None, Some(1), Some(1), None)).await;
+    let state = held(&test).await;
+    assert_eq!(state.nodes.keys().collect::<Vec<_>>(), ["mac-1", "mac-2"]);
+    assert_eq!(line(&test).await, ["r3", "r4"]);
+    let m = offer(&test, "mac-2", &["arm64"], 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "a known node renews");
+    let m = offer(&test, "mac-3", &["arm64"], 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "two known, the limit is 1");
+    ask(&test, "r5", &["arm64"]).await;
+    assert_eq!(reasons(&test, "r5").await, [PlacementRefusal::LineFull], "two wait, the limit is 1");
+    send(&test, configure(None, Some(3), None, None)).await;
+    let m = offer(&test, "mac-3", &["arm64"], 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "admitted at its next offer");
+    assert_eq!(answers(&test, "r3").await, [QUEUED, granted(3, "mac-3")]);
+    assert_eq!(failed(&test).await, [("Offer".to_owned(), FailureCause::Refused)]);
+}
+
+/// Scenario: A shorter silence. A node last heard 50 seconds ago under a silence of 60 is marked silent in the turn
+/// after a silence of 30, with a `silent` alert; a node heard 10 seconds ago gets a check at its new end.
+#[tokio::test(start_paused = true)]
+async fn a_shorter_silence_marks_a_quiet_node_silent_in_the_next_turn() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    test.advance_time_by(secs(40)).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(10)).await;
+    let before = armed_check(&test).await;
+    test.send(&pool(), configure(Some(30), None, None, None)).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-1"), PlacementNodeStatus::Live, "marked in the next turn, not in this one");
+    assert_eq!(state.armed, time::add(start, secs(30)).ok(), "the new earliest end, passed");
+    assert_eq!(status(&test, &before).await, Some(OutcomeStatus::Cancelled));
+    test.run_until_idle().await;
+    let state = held(&test).await;
+    assert_eq!(
+        (status_of(&state, "mac-1"), status_of(&state, "mac-2")),
+        (PlacementNodeStatus::Silent, PlacementNodeStatus::Live)
+    );
+    assert_eq!(notices(&test).await, [("mac-1".to_owned(), PlacementNoticeKind::Silent)]);
+    assert_eq!(checks(&test, start).await, [secs(70)], "mac-2's end under the new silence");
+    test.advance_time_by(secs(20)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-2"), PlacementNodeStatus::Silent);
+}
+
+/// A longer silence moves the armed check later; an equal one, or one without a check armed, arms nothing.
+#[tokio::test(start_paused = true)]
+async fn a_longer_silence_moves_the_armed_check_later_and_an_equal_one_arms_nothing() {
+    let test = node().await;
+    let start = test.now();
+    send(&test, configure(Some(30), None, None, None)).await;
+    assert!(checks(&test, start).await.is_empty() && held(&test).await.armed.is_none(), "no node: nothing armed");
+    send(&test, configure(Some(60), None, None, None)).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    test.advance_time_by(secs(10)).await;
+    let first = armed_check(&test).await;
+    send(&test, configure(Some(60), None, None, Some(5))).await;
+    assert_eq!(armed_check(&test).await.id, first.id, "an equal silence re-arms nothing");
+    send(&test, configure(Some(120), None, None, None)).await;
+    assert_eq!(status(&test, &first).await, Some(OutcomeStatus::Cancelled));
+    assert_eq!(checks(&test, start).await, [secs(120)]);
+    assert_eq!(held(&test).await.armed, time::add(start, secs(120)).ok());
+    test.advance_time_by(secs(100)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Live, "heard 110 s ago");
+    test.advance_time_by(secs(10)).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent);
+    assert_eq!(notices(&test).await, [("mac-1".to_owned(), PlacementNoticeKind::Silent)]);
+}
+
+/// The documented `cicada send` recipe of `Configure`, posted to the send route the command uses; a misspelled field
+/// next to a valid one is ignored, and one alone is refused.
+#[tokio::test(start_paused = true)]
+async fn the_documented_cicada_send_payload_configures_the_pool() {
+    let test = node().await;
+    let api = cicada_axum::actor_api(test.system().clone());
+    assert_eq!(send_over_http(&test, &api, "Configure", json!({"maxHolders": 8, "silence": "PT2M"})).await, 202);
+    let state = state_over_http(&api).await;
+    assert_eq!((state["maxHolders"].clone(), state["silence"].clone()), (json!(8), json!("PT2M")));
+    assert_eq!((state["maxNodes"].clone(), state["maxWaiting"].clone()), (json!(10), json!(10)));
+    assert_eq!(send_over_http(&test, &api, "Configure", json!({"maxHolders": 4, "maxWaitng": 0})).await, 202);
+    let state = state_over_http(&api).await;
+    assert_eq!(
+        (state["maxHolders"].clone(), state["maxWaiting"].clone()),
+        (json!(4), json!(10)),
+        "the typo is ignored"
+    );
+    assert!(failed(&test).await.is_empty());
+    send_over_http(&test, &api, "Configure", json!({"maxWaitng": 0})).await;
+    assert_eq!(failed(&test).await, [("Configure".to_owned(), FailureCause::Refused)]);
+    assert_eq!(state_over_http(&api).await, state);
 }
