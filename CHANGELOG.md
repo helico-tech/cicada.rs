@@ -7,14 +7,15 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.24.0 — unreleased
+## 0.24.0 — 2026-11-26
 
-The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
-offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
-to; a holder that is deleted frees its place; an operator drains a node and declares a silent node gone, whose holders
-are told; a second machine under a live node's id is ignored and reported once (ADR 0069); a member offers a node's
-places while its runtime answers, under an identity kept across restarts. Additive: a new ready-made actor with its own
-contract; the contracts of the other actors, the store schema, the HTTP API and the guarantees are those of 0.23.1.
+A placement pool (ADR 0067, ADR 0068), a new ready-made actor: nodes offer places with labels to a pool, a node that
+stops offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its
+actors to; a holder that is deleted frees its place; an operator drains a node and declares a silent node gone, whose
+holders are told; a second machine under a live node's id is ignored and reported once (ADR 0069); a member offers a
+node's places while its runtime answers, under an identity kept across restarts; operators drive it with `cicada send`.
+Additive: a new ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP
+API and the guarantees are those of 0.23.1.
 
 ### Added
 
