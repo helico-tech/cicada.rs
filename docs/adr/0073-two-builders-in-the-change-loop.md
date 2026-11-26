@@ -17,10 +17,12 @@ builder's.
 ## Decision
 
 - Two builders may run at once when their changes' `Crates:` lines share no crate; shared workspace files are merged at
-  landing. The first runs as a Claude subagent, the second on Codex (`gpt-6.2-sol`, effort `high`) in its own worktree.
+  landing, and changes may land in any order (`status.py` resolves an `Order` through archived changes). The first runs
+  as a Claude subagent, the second on Codex (`gpt-6.2-sol`, effort `high`) in its own worktree.
 - A change is reviewed by the other model; `scripts/review.py` records the builder and refuses a same-family reviewer.
 - The gate keeps one run at a time. One session describes, lands and releases, one change at a time.
-- When Codex is unavailable, the second change is built by Claude and its review waits for GPT.
+- When Codex is unavailable, the second change is built by Claude, and a review that cannot go to GPT is taken by a
+  fresh Claude reviewer and recorded as a same-family review.
 
 ## Consequences
 

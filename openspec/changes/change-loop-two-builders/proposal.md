@@ -22,11 +22,10 @@ than its builder's (2026-11-26).
 - `scripts/status.py` names up to two changes on its `build:` line, and flags two builds that share a crate.
 - `.claude/skills/change-loop/SKILL.md` and `builder.md` follow the new rules.
 
-## To decide
+## Decided
 
-- How the loop tells that two changes share no crate: from each `tasks.md`, or a line in the proposal.
-- Whether two gate runs may run at once on one machine, or the second waits for the first.
-- What the loop does when the other provider is not available: wait, or build with its own model.
+With the owner (2026-11-26): a `Crates:` line in each proposal; one gate run at a time; Claude builds when Codex is
+down; the second builder on `gpt-6.2-sol` at effort `high`. See `design.md`.
 
 ## Out of scope
 
@@ -41,6 +40,9 @@ changes how the loop builds the rest.
 
 ## Impact
 
-A new ADR and its row; ADR 0055's status line; `.claude/skills/change-loop/`; `scripts/status.py`,
+Crates: none.
+
+A new ADR and its row; ADR 0055's status line; `openspec/config.yaml`; a `Crates:` line in every open proposal;
+`.claude/skills/change-loop/`; `scripts/status.py`,
 `scripts/review.py` and their tests. No crate and no release. Docs handoff: the change-loop section of
 `docs/how-to/releasing.md` and `AGENTS.md`'s "Specs and changes" text, for the docs session.
