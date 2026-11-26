@@ -3,7 +3,8 @@
 //! and `Rearm`, a `Check` or `Alert` from another sender, a failing alert target, a pool without a target, and the
 //! bounds of an offer and of the pool. And asks (ADR 0068): placement by needs and free places, refusals, the line that
 //! skips asks it cannot place, the holder limit, releases and cancels, repeated asks, grants from the line and the
-//! grant nobody received.
+//! grant nobody received. And holders that go away: the pool watches each target with `watch_existing` while it
+//! holds or waits, and a deleted target frees its places and leaves the line.
 
 mod common;
 
@@ -13,7 +14,7 @@ use cicada::prelude::*;
 use cicada::runtime::RetryResult;
 use cicada::store::{Message, OutcomeStatus};
 use cicada::time::{self, Timestamp};
-use cicada::{Failed, FailureCause};
+use cicada::{Failed, FailureCause, StopCause, Stopped};
 use cicada_actors::{
     Placement, PlacementActor, PlacementAnswer, PlacementAnswerKind, PlacementMsg, PlacementNodeStatus,
     PlacementNotice, PlacementNoticeKind, PlacementRefusal, PlacementState,
@@ -118,6 +119,8 @@ fn run(id: &str) -> Run {
 enum RunMsg {
     /// An answer of a placement pool.
     Placed(PlacementAnswer),
+    /// Fails for good.
+    Fail,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -132,8 +135,10 @@ impl Actor for RunActor {
     type State = Answers;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: RunMsg) -> HandlerResult {
-        let RunMsg::Placed(answer) = message;
-        turn.state_mut().answers.push(answer);
+        match message {
+            RunMsg::Placed(answer) => turn.state_mut().answers.push(answer),
+            RunMsg::Fail => return Err(HandlerError::permanent("asked to fail")),
+        }
         Ok(())
     }
 }
@@ -625,7 +630,7 @@ async fn an_ask_to_a_gone_target_fails_and_records_nothing() {
     release(&test, "r1", 1).await;
     let watches = test.system().watches(Some(&addr(&pool())), None, None, 10).await.unwrap().items;
     let targets: Vec<String> = watches.iter().map(|w| w.target.to_string()).collect();
-    assert_eq!(targets, ["cicada.placement/runners"], "the pool watches itself once it sent a Notify");
+    assert_eq!(targets, ["cicada.placement/runners", "run/r2"], "itself once it sent a Notify, and its holder");
     for (ghost, needs) in [("ghost-1", vec!["arm64"]), ("ghost-2", vec!["arm64"]), ("ghost-3", vec!["gpu"])] {
         let (before, version) = (held(&test).await, test.version(&pool()).await);
         let m = send(&test, PlacementMsg::ask(ghost, needs, &run(ghost), "Placed").unwrap()).await;
@@ -780,7 +785,8 @@ async fn failed_notifies(test: &TestActors) -> Vec<Failed> {
     told(test).await.into_iter().filter(|f| f.actor == addr(&pool()) && f.message_type == "Notify").collect()
 }
 
-/// Scenario: A grant nobody received. The place goes to the next ask that fits.
+/// Scenario: A grant nobody received. Its target is deleted after the grant's commit and before its `Notify`: the
+/// place is freed once, by the `Stopped` or the failed `Notify`, and goes to the next ask that fits.
 #[tokio::test(start_paused = true)]
 async fn a_grant_from_the_line_to_a_gone_target_is_freed() {
     let test = node().await;
@@ -788,9 +794,12 @@ async fn a_grant_from_the_line_to_a_gone_target_is_freed() {
     for id in ["r1", "r2", "r3"] {
         ask(&test, id, &["arm64"]).await;
     }
-    test.system().delete_actor(&addr(&run("r2"))).await.unwrap();
-    let m = release(&test, "r1", 1).await;
+    let m = test.send(&pool(), PlacementMsg::release("r1", 1).unwrap()).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "the release commits");
+    assert_eq!(holders(&test).await, [holder("r2", 2, "mac-1")], "granted, not yet told");
+    test.system().delete_actor(&addr(&run("r2"))).await.unwrap();
+    test.run_until_idle().await;
     let failed = failed_notifies(&test).await;
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!((failed[0].cause, &failed[0].payload["holder"]), (FailureCause::Commit, &serde_json::json!("r2")));
@@ -831,4 +840,178 @@ async fn a_cancel_withdraws_a_waiting_ask_and_keeps_a_holder() {
     release(&test, "r1", 1).await;
     assert!(holders(&test).await.is_empty());
     assert_eq!(answers(&test, "r2").await, [QUEUED]);
+}
+
+/// Asks the pool a place for `holder` with `needs`, its answers going to `run/{target}`, created when it does not exist.
+async fn ask_for(test: &TestActors, holder: &str, needs: &[&str], target: &str) -> Message {
+    if test.state_json(&run(target)).await.is_none() {
+        test.create(&run(target), &Answers::default()).await;
+    }
+    send(test, PlacementMsg::ask(holder, needs.iter().copied(), &run(target), "Placed").unwrap()).await
+}
+
+/// The targets the pool watches, itself included.
+async fn watched(test: &TestActors) -> Vec<String> {
+    let watches = test.system().watches(Some(&addr(&pool())), None, None, 100).await.unwrap().items;
+    let mut targets: Vec<String> = watches.iter().map(|w| w.target.to_string()).collect();
+    targets.sort();
+    targets
+}
+
+async fn delete(test: &TestActors, target: &str) {
+    test.system().delete_actor(&addr(&run(target))).await.unwrap();
+    test.run_until_idle().await;
+}
+
+/// The messages of `message_type` that the pool finished `done`.
+async fn done(test: &TestActors, message_type: &str) -> usize {
+    let page = test.system().outcomes(Some(OutcomeStatus::Done), "cicada.placement/", None, None, 500).await.unwrap();
+    page.items.iter().filter(|o| o.envelope.message_type == message_type).count()
+}
+
+/// The pool watches a target from the commit that records its ask, granted or queued, and unwatches it after the last
+/// release; a waiting ask turned holder keeps the watch.
+#[tokio::test(start_paused = true)]
+async fn the_pool_watches_the_targets_that_hold_or_wait_and_unwatches_after_the_last_release() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(watched(&test).await, ["run/r1"], "granted at once");
+    ask(&test, "r2", &["arm64"]).await;
+    assert_eq!(watched(&test).await, ["run/r1", "run/r2"], "queued");
+    release(&test, "r1", 1).await;
+    assert_eq!(watched(&test).await, ["cicada.placement/runners", "run/r2"], "a waiting ask granted from the line");
+    release(&test, "r2", 2).await;
+    assert_eq!(watched(&test).await, ["cicada.placement/runners"], "the last release unwatches");
+    let m = send(&test, PlacementMsg::cancel("r9").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    ask(&test, "r3", &["gpu"]).await;
+    assert_eq!(watched(&test).await, ["cicada.placement/runners"], "a refused ask records no watch");
+}
+
+/// A release and a grant from the line to one target in one turn leave it watched; a cancel of its waiting ask, while
+/// it still holds, too.
+#[tokio::test(start_paused = true)]
+async fn a_release_and_a_line_grant_to_one_target_leave_it_watched() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask_for(&test, "a1", &["arm64"], "a").await;
+    ask_for(&test, "a2", &["arm64"], "a").await;
+    ask_for(&test, "a3", &["arm64"], "a").await;
+    assert_eq!(
+        (holders(&test).await, line(&test).await),
+        (vec![holder("a1", 1, "mac-1")], vec!["a2".into(), "a3".into()])
+    );
+    release(&test, "a1", 1).await;
+    assert_eq!(holders(&test).await, [holder("a2", 2, "mac-1")]);
+    assert_eq!(watched(&test).await, ["cicada.placement/runners", "run/a"]);
+    send(&test, PlacementMsg::cancel("a3").unwrap()).await;
+    assert_eq!(watched(&test).await, ["cicada.placement/runners", "run/a"], "it still holds");
+    release(&test, "a2", 2).await;
+    assert_eq!(watched(&test).await, ["cicada.placement/runners"]);
+}
+
+/// Scenario: A run deleted after its grant. The place goes to the waiting ask.
+#[tokio::test(start_paused = true)]
+async fn a_holder_deleted_after_its_grant_frees_the_place_for_the_line() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    delete(&test, "r1").await;
+    assert_eq!(holders(&test).await, [holder("r2", 2, "mac-1")]);
+    assert!(line(&test).await.is_empty());
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")]);
+    assert_eq!(watched(&test).await, ["cicada.placement/runners", "run/r2"], "the gone target is unwatched");
+    assert_eq!(done(&test, "Stopped").await, 1);
+}
+
+/// Scenario: A run deleted before its grant. Deleted while it waits, or after the release that would grant it and
+/// before that turn: it gets no place, and the place stays free.
+#[tokio::test(start_paused = true)]
+async fn a_target_deleted_before_its_grant_gets_no_place() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    ask(&test, "r3", &["arm64"]).await;
+    delete(&test, "r2").await;
+    assert_eq!((holders(&test).await, line(&test).await), (vec![holder("r1", 1, "mac-1")], vec!["r3".into()]));
+    test.send(&pool(), PlacementMsg::release("r1", 1).unwrap()).await;
+    test.system().delete_actor(&addr(&run("r3"))).await.unwrap();
+    test.run_until_idle().await;
+    let state = held(&test).await;
+    assert!(state.holders.is_empty() && state.waiting.is_empty(), "{state:?}");
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
+    assert_eq!(watched(&test).await, ["cicada.placement/runners"]);
+    ask(&test, "r4", &["arm64"]).await;
+    assert_eq!(answers(&test, "r4").await, [granted(3, "mac-1")], "the place stayed free");
+}
+
+/// Scenario: Two holders of one target. Both places are freed, once each, and go to the line.
+#[tokio::test(start_paused = true)]
+async fn a_deleted_target_with_two_holders_frees_both_places() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    ask_for(&test, "a1", &["arm64"], "a").await;
+    ask_for(&test, "a2", &["arm64"], "a").await;
+    ask_for(&test, "a3", &["arm64"], "a").await;
+    for id in ["b1", "b2", "b3"] {
+        ask(&test, id, &["arm64"]).await;
+    }
+    delete(&test, "a").await;
+    assert_eq!(holders(&test).await, [holder("b1", 3, "mac-1"), holder("b2", 4, "mac-1")]);
+    assert_eq!(line(&test).await, ["b3"], "two places freed, not more");
+    assert_eq!(watched(&test).await, ["cicada.placement/runners", "run/b1", "run/b2", "run/b3"]);
+}
+
+/// Scenario: A failed message of a holder. The pool is told of it and nothing changes.
+#[tokio::test(start_paused = true)]
+async fn a_failed_message_of_a_holder_changes_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    let before = held(&test).await;
+    let m = test.send(&run("r1"), RunMsg::Fail).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
+    assert_eq!(done(&test, "Failed").await, 1, "the pool was told");
+    assert_eq!(held(&test).await, before);
+    assert_eq!(watched(&test).await, ["run/r1", "run/r2"]);
+}
+
+/// A `Stopped` from a client, about a holder or the pool itself, and a real one for a target that holds nothing any
+/// more change nothing.
+#[tokio::test(start_paused = true)]
+async fn a_stopped_for_the_pool_a_client_or_a_target_that_holds_nothing_changes_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    let before = held(&test).await;
+    for actor in [addr(&run("r1")), addr(&pool())] {
+        let stopped = Stopped { actor, cause: StopCause::Deleted, by: None };
+        let m = send(&test, PlacementMsg::Stopped(stopped)).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!(held(&test).await, before, "only a notification counts");
+    test.send(&pool(), PlacementMsg::release("r1", 1).unwrap()).await;
+    test.system().delete_actor(&addr(&run("r1"))).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(holders(&test).await, [holder("r2", 2, "mac-1")]);
+    assert_eq!(watched(&test).await, ["run/r2"]);
+}
+
+/// An ask whose target is the pool itself is refused for good and records nothing.
+#[tokio::test(start_paused = true)]
+async fn an_ask_to_the_pool_itself_is_refused() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let m = send(&test, PlacementMsg::ask("p1", ["arm64"], &pool(), "Placed").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
+    assert_eq!(failed(&test).await.last(), Some(&("Ask".to_owned(), FailureCause::Refused)));
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
+    assert!(watched(&test).await.is_empty());
 }

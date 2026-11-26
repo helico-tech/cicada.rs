@@ -110,7 +110,8 @@ pub enum PlacementMsg {
     /// [`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and nothing is
     /// recorded. A repeated `Ask` of a holder answers `granted` with the same grant and node, one of a waiting ask
     /// `queued`; both keep the first ask's needs and target. A holder id is forgotten at its release: use a fresh one
-    /// per attempt.
+    /// per attempt. The pool watches the target from the commit that records the ask, and when it is deleted frees its
+    /// places and takes its waiting asks out of the line; an ask whose target is the pool itself is refused for good.
     Ask {
         /// The holder: names this attempt, unique among the holders and waiting asks of the pool.
         #[schemars(length(min = 1, max = 200))]
@@ -148,9 +149,12 @@ pub enum PlacementMsg {
         holder: String,
     },
     /// A message of the pool itself ended `failed`: a `Notify` that failed for a holder never told of its grant frees
-    /// that place, as the holder never learned it. Only a notification that the store wrote counts.
+    /// that place, as the holder never learned it. A failure of a watched target's message changes nothing. Only a
+    /// notification that the store wrote counts.
     Failed(Failed),
-    /// Ignored.
+    /// A watched target went away: every place held for it is freed and its waiting asks leave the line, once. One for
+    /// the pool itself or for a target that holds and waits for nothing changes nothing. Only a notification that the
+    /// store wrote counts.
     Stopped(Stopped),
 }
 
@@ -773,10 +777,17 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// silent node, keeps every holder and gets no new ones. After every message the pool grants waiting asks in line
 /// order while it holds fewer than `maxHolders`, skipping each ask no live node has a free place for now (ADR 0068), in
 /// the commit that made room; each `granted` answer follows in a `Notify` that the pool sends itself, which reads the
-/// state when it runs. A place comes back only by a `Release` that names its grant number. A holder whose target is
-/// gone before its `granted` answer ever committed costs nothing: the pool watches itself, and the `Failed` of its own
-/// `Notify` frees that place and grants the next ask that fits. A waiting ask stays until it is granted or cancelled,
-/// also when no node has its needs any more.
+/// state when it runs. A place comes back by a `Release` that names its grant number, or when its holder's target is
+/// deleted. A holder whose target is gone before its `granted` answer ever committed costs nothing: the pool watches
+/// itself, and the `Failed` of its own `Notify` frees that place and grants the next ask that fits. A waiting ask stays
+/// until it is granted or cancelled, also when no node has its needs any more, or until its target is deleted.
+///
+/// The pool watches the target of each holder and waiting ask with
+/// [`Turn::watch_existing`](cicada::Turn::watch_existing), from the commit that first records it, and unwatches it at
+/// the end of the turn after which it holds and waits for nothing. So a target deleted before or after that commit
+/// sends one `Stopped`, which frees every place held for it and takes its waiting asks out of the line: a holder need
+/// not release before it stops. The watch also tells the pool of each failed message of a target, a turn that changes
+/// nothing. An ask whose target is the pool itself is refused, as the pool's own watch frees undelivered grants.
 ///
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
@@ -791,6 +802,7 @@ impl Actor for PlacementActor {
     type State = PlacementState;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PlacementMsg) -> HandlerResult {
+        let before = targets(turn.state());
         match message {
             PlacementMsg::Offer { node, instance, labels, places } => {
                 let labels = check_offer(&node, &instance, labels, places).map_err(HandlerError::permanent)?;
@@ -816,6 +828,9 @@ impl Actor for PlacementActor {
             }
             PlacementMsg::Ask { holder, needs, to, message_type } => {
                 let needs = check_ask(&holder, needs, &message_type).map_err(HandlerError::permanent)?;
+                if &to == turn.self_address() {
+                    return Err(HandlerError::permanent("an ask's target cannot be the pool itself"));
+                }
                 ask(turn, PlacementAsk { holder, needs, to, message_type }).await?;
             }
             PlacementMsg::Release { holder, grant } => {
@@ -836,10 +851,46 @@ impl Actor for PlacementActor {
                 notify(turn, &holder).await?;
             }
             PlacementMsg::Failed(failed) if turn.message().notification => undelivered(turn, &failed),
+            PlacementMsg::Stopped(stopped) if turn.message().notification => gone(turn, &stopped.actor),
             PlacementMsg::Failed(_) | PlacementMsg::Stopped(_) => {}
         }
-        grant_waiting(turn)
+        grant_waiting(turn)?;
+        follow(turn, before)
     }
+}
+
+/// The targets of the holders and the waiting asks.
+fn targets(state: &PlacementState) -> HashSet<ActorAddress> {
+    let held = state.holders.iter().map(|h| &h.to);
+    held.chain(state.waiting.iter().map(|w| &w.to)).cloned().collect()
+}
+
+/// Watches the targets new since `before` with `watch_existing`, so one deleted before this commit is told of too, and
+/// unwatches those that hold and wait for nothing now.
+fn follow(turn: &mut Turn<PlacementActor>, before: HashSet<ActorAddress>) -> HandlerResult {
+    let after = targets(turn.state());
+    let mut new: Vec<&ActorAddress> = after.difference(&before).collect();
+    let mut left: Vec<&ActorAddress> = before.difference(&after).collect();
+    new.sort();
+    left.sort();
+    for target in new {
+        turn.watch_existing(target)?;
+    }
+    for target in left {
+        turn.unwatch(target)?;
+    }
+    Ok(())
+}
+
+/// Frees every place held for `actor`, which went away, and takes its waiting asks out of the line; nothing for the
+/// pool itself.
+fn gone(turn: &mut Turn<PlacementActor>, actor: &ActorAddress) {
+    if actor == turn.self_address() {
+        return;
+    }
+    let state = turn.state_mut();
+    state.holders.retain(|h| &h.to != actor);
+    state.waiting.retain(|w| &w.to != actor);
 }
 
 /// The free places of each live node: its offered places minus its holders.
