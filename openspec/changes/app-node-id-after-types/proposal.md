@@ -19,4 +19,6 @@ After `placement-full-notice`, before `tray-menu-bar`.
 
 ## Impact
 
+Crates: cicada-app.
+
 `crates/cicada-app` (`App`, settings). Additive.
