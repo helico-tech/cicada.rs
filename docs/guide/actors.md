@@ -573,7 +573,22 @@ assert_eq!((seen[0].node.as_str(), seen[0].kind), ("factory-mac-1", PlacementNot
 process start, so two processes offering under one node id can be told apart; each is 1 through 200 characters, not
 blank, without NUL. Up to 32 labels of 1 through 100 characters are kept sorted and once; 0 through 1,000 places, where
 0 keeps the node known but full. Each offer replaces the node's entry and records the store time of its turn as
-`heardAt`.
+`heardAt`, except an offer of another instance while the node is live.
+
+**Two machines under one id.** When a second machine offers under the id of a live node with another `instance`, the
+pool keeps the first machine's entry (labels, places, `heardAt`) and ignores the offer ([ADR 0069](../adr/0069-a-second-machine-under-one-node-id.md)).
+It marks the node `conflict: {instance, at}`, with the other instance and the store time of its last offer, and tells
+the alert target once with the kind `conflict`; further offers of other instances only update the mark. The mark ends
+when the node goes silent, as the first machine stopped (the next offer, of any instance, then takes over the entry, as
+for a replaced machine), or when the first machine offers one silence time after the last conflicting offer, as the
+second stopped. A new conflict after that is told again. Fix it by giving each machine its own node id.
+
+- The pool only reports. Two machines under one node id also share that node's leases and its node row in the store:
+  fix the hosts.
+- A cloned disk with the member's identity copied looks like one machine; the pool cannot tell.
+- While the instance is drawn at each process start, a restart within the silence time counts as a conflict: the
+  restarted node's offers are ignored until its old entry goes silent (alerts `conflict`, `silent`, then `back`).
+- The notice does not name the other instance; read the node's `conflict` in the pool's state.
 
 **Silence.** The pool arms one `Check` to itself at the earliest end of a live node's silence (`heardAt` plus the
 silence), keeping its time in `armed` and its id in `armedId`. At the check each node past it becomes `silent`. Only
@@ -582,7 +597,8 @@ silent node's next offer makes it `live` again. Silence counts from the store ti
 slow pool marks a node late, never early.
 
 **Alerts.** The target's family takes a variant such as `Placement(PlacementNotice)`, with the kind `silent` once per
-silence and `back` when a silent node offers again. Each notice goes out in a turn of the pool's own (`Alert`), so a
+silence, `back` when a silent node offers again and `conflict` once while a node's conflict mark lasts; match all three
+if you match the kinds exhaustively. Each notice goes out in a turn of the pool's own (`Alert`), so a
 target that is gone or does not take the message fails only that alert; the node stays silent.
 
 **Asks.** `holder` names this attempt (1 through 200 characters, no NUL) and is unique among the pool's holders and
