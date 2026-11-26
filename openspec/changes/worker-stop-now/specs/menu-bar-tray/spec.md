@@ -3,8 +3,8 @@
 ### Requirement: Stop Now in the menu
 
 While the tray stops a worker that was ready, the menu SHALL offer Stop Now, and `Tray::stop_now` SHALL end the
-worker's grace period: its running turns SHALL be cancelled and listed as abandoned, and the state SHALL become `Offline`
-once the worker returns. In any other state `stop_now` SHALL do nothing and the menu SHALL not offer it.
+worker's grace period: its running turns SHALL be cancelled and listed as abandoned, and the state SHALL become
+`Offline` once the worker returns. In any other state `stop_now` SHALL do nothing and the menu SHALL not offer it.
 
 #### Scenario: Stop Now during the grace period
 
