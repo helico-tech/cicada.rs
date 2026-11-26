@@ -498,8 +498,9 @@ actors to; it releases the place with its grant number when done.
    at the create; creating a pool that exists changes nothing.
 2. Send `PlacementMsg::alerts(&target, message_type)` to say where notices go; the last one stands, and without one no
    notices are sent.
-3. From each member, send `PlacementMsg::offer(node, instance, labels, places)` at an interval well below the silence,
-   such as every 15 s for a silence of 60 s, while its runtime answers.
+3. On each member node, run a `PlacementMember` (see **The member** below) as an app task. It sends
+   `PlacementMsg::offer(node, instance, labels, places)` every 15 s while its probe answers; keep the interval well
+   below the silence.
 4. From the work, send `PlacementMsg::ask(holder, needs, &target, message_type)`, and when it is done
    `PlacementMsg::release(holder, grant)`.
 
@@ -554,7 +555,7 @@ let pool = Placement::named("runners"); // cicada.placement/runners
 test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000, 100, 1000)?).await;
 test.send(&pool, PlacementMsg::alerts(&Ops, "Placement")?).await;
 
-// A member offers; `instance` is drawn at each process start.
+// A member offers; `instance` is its NodeIdentity's, kept across restarts.
 test.send(&pool, PlacementMsg::offer("factory-mac-1", "3f9c", ["arm64", "docker"], 4)?).await;
 // Work asks for a node with both labels; the answer goes to the target as `Placed`.
 test.send(&pool, PlacementMsg::ask("run-17", ["arm64", "docker"], &Ops, "Placed")?).await;
@@ -569,8 +570,8 @@ let seen = test.state::<_, Notices>(&Ops).await.seen;
 assert_eq!((seen[0].node.as_str(), seen[0].kind), ("factory-mac-1", PlacementNoticeKind::Silent));
 ```
 
-**Offers.** `node` is the id the member's node pins its actors under, and `instance` an id the member draws at each
-process start, so two processes offering under one node id can be told apart; each is 1 through 200 characters, not
+**Offers.** `node` is the id the member's node pins its actors under, and `instance` an id kept across restarts
+(`NodeIdentity::instance`), so two machines offering under one node id can be told apart; each is 1 through 200 characters, not
 blank, without NUL. Up to 32 labels of 1 through 100 characters are kept sorted and once; 0 through 1,000 places, where
 0 keeps the node known but full. Each offer replaces the node's entry and records the store time of its turn as
 `heardAt`, except an offer of another instance while the node is live.
@@ -586,9 +587,59 @@ second stopped. A new conflict after that is told again. Fix it by giving each m
 - The pool only reports. Two machines under one node id also share that node's leases and its node row in the store:
   fix the hosts.
 - A cloned disk with the member's identity copied looks like one machine; the pool cannot tell.
-- While the instance is drawn at each process start, a restart within the silence time counts as a conflict: the
-  restarted node's offers are ignored until its old entry goes silent (alerts `conflict`, `silent`, then `back`).
+- A member that draws a new instance at each start, rather than using `NodeIdentity`, makes a restart within the
+  silence time a conflict: its offers are ignored until its old entry goes silent (alerts `conflict`, `silent`, then
+  `back`).
 - The notice does not name the other instance; read the node's `conflict` in the pool's state.
+
+**The member.** Each node keeps its identity in a folder of its own with `NodeIdentity::load_or_create(dir)`: the first
+start writes `placement-identity.json` with a node id (`node-` and 16 hex digits) and an instance, and later starts
+read the same, so a restart is the same machine to the pool. Use `node_id()` as `NodeConfig::node_id`; a `--node-id`
+flag or `CICADA_NODE_ID` still wins, and the member always offers the node's own id, the one its claims and pins use.
+The probe says what the node can take now: `Some(Capacity::new(labels, places))` while the runtime answers, `None`
+when it does not, and the node then goes silent at the pool by itself. Here Docker's
+[`info()`](containers.md#the-runtimes-machine) is the probe:
+
+<!-- doctest
+@@23
+-->
+```rust,no_run
+use std::sync::Arc;
+
+use cicada::runtime::NodeConfig;
+use cicada_actors::{Capacity, MemberSettings, NodeIdentity, Placement, PlacementMember};
+use cicada_app::App;
+use cicada_containers::{ContainerRuntime, DockerRuntime};
+
+fn app() -> Result<App, Box<dyn std::error::Error>> {
+    let id = NodeIdentity::load_or_create("/var/lib/factory/placement")?;
+    let config = NodeConfig { node_id: id.node_id(), ..NodeConfig::default() };
+    let runtime = Arc::new(DockerRuntime::connect()?);
+    let member = PlacementMember::new(Placement::named("runners"), id, MemberSettings::new(), move || {
+        let runtime = runtime.clone();
+        async move {
+            let info = runtime.info().await.ok()?; // no answer: no offer this round
+            Some(Capacity::new([info.arch.as_str(), "docker"], 4))
+        }
+    });
+    Ok(App::new().node_config(config).task("placement", move |system, stopping| async move {
+        member.run(system, stopping.wait()).await;
+        Ok(())
+    }))
+}
+```
+
+A round runs at the start of `run` and then every interval (`MemberSettings::with_interval` changes the 15 s; zero is
+refused), and a slow round delays the next. An offer out of bounds and a send that fails, such as to a pool not created
+yet, are logged and tried at the next round; only `stop` ends `run`, also while a probe or send hangs.
+
+- Keep the identity folder per machine. A copied file, or a cloned disk that holds it, makes two machines one to the
+  pool, which then cannot report the conflict.
+- A corrupt or unreadable identity file stops the start with `InvalidIdentity`, which names the path; delete the file
+  to take a new identity on purpose (a conflict until the old entry goes silent). Start one process at a time on a
+  missing file.
+- The member cannot read the pool's silence: keep the interval below it. Bound a probe that may hang with a timeout of
+  your own, as it holds back the rounds.
 
 **Silence.** The pool arms one `Check` to itself at the earliest end of a live node's silence (`heardAt` plus the
 silence), keeping its time in `armed` and its id in `armedId`. At the check each node past it becomes `silent`. Only
