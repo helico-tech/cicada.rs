@@ -7,8 +7,8 @@ alert (request from the Factory session, 2026-11-26, its epic 0008).
 
 ## What Changes
 
-- The pool accepts such an offer's turn, ignores it, and sends one notice of a new kind `full` per new node (as the
-  conflict alert of ADR 0069), so there is an alert and no stream of dead letters.
+- The pool accepts such an offer's turn, ignores it, and sends one notice of a new kind `full` (as the conflict alert
+  of ADR 0069); the design picks one per full period of the pool, not one per node, so there is an alert and no stream of dead letters.
 
 To decide in the design: once per node or per pool, when the mark ends.
 
