@@ -79,6 +79,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0072](0072-one-live-holder-per-resource.md) | An offer may name a resource key (Docker's daemon id from `RuntimeInfo::id`); one live node holds a key, a second live node offering it is ignored, its contest kept in a pool-level list and alerted once; extends ADRs 0069 and 0071. |
 | [0073](0073-two-builders-in-the-change-loop.md) | Two builders at once when their changes share no crate (a `Crates:` line), the second on Codex; every change reviewed by the other model; one gate run and one landing at a time; supersedes ADR 0055's one-builder rule. |
 | [0074](0074-a-tray-crate-next-to-the-app.md) | A portable `cicada-tray` model starts an in-process HTTP worker from a host's `App` factory and tracks its state and turns. The macOS menu comes later. `App::type_names()` lists hosted types and `App::on_worker_ready` reports when the worker starts. |
+| [0075](0075-a-full-pool-says-so-once.md) | A full placement pool accepts and ignores a new node's offer instead of refusing it, keeps one pool-level `full` mark and sends one `full` notice per full period; the mark ends one silence time after the last ignored offer or when a node is added; extends ADR 0067. |
 
 ## Design questions
 
