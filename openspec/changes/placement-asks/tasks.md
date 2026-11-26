@@ -17,7 +17,7 @@ check the `release:` line of `python3 scripts/status.py`, builder.md, Version). 
 - [x] 3. **Grants from the line.** A self `Notify` in its own turn; an undelivered grant freed through the self-watch
   when `notified` is false; other `Failed` notifications change nothing (decision 4). Verify: the gone-target and
   undelivered-grant tests.
-- [ ] 4. **Contract, changelog and docs handoff.** Contract reference and samples updated
+- [x] 4. **Contract, changelog and docs handoff.** Contract reference and samples updated
   (`CICADA_UPDATE_CONTRACTS=true`); the 0.24.0 section names asks under Added; the handoff carries the design's Docs
   section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-actors`,
   `cargo test -p cicada-examples --test docs`.
