@@ -140,8 +140,9 @@ pub enum PlacementMsg {
     /// larger `maxHolders` grants waiting asks in this turn. A silence other than the current one, with a check armed,
     /// arms the check at the new earliest end of a live node's silence, of a contest or of the `full` mark, at once
     /// when that has passed, so a shorter one marks the quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
-    /// out of bounds, or a node's or contest's silence would end after the last representable instant. Unknown fields
-    /// are ignored, as in every message of the pool, so a misspelled field next to a valid one changes nothing.
+    /// out of bounds, or the silence of a node, a contest or the `full` mark would end after the last representable
+    /// instant. Unknown fields are ignored, as in every message of the pool, so a misspelled field next to a valid one
+    /// changes nothing.
     Configure {
         /// How long a node may go without an offer before it is silent, as an ISO-8601 duration; 1 second through 1
         /// day. Keep it above the members' offer interval. Absent: kept.

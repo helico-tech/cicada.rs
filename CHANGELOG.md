@@ -15,11 +15,13 @@ folder write one node row in turn, so a member that finds another host name ther
 host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` locks its folder, so one machine runs one
 process per identity. An offer can name a resource key, such as the Docker daemon's id that `RuntimeInfo::id` now
 reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. An operator changes
-a live pool's silence and limits with `Configure` instead of deleting the pool. **BREAKING** for placement pools: the
-contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node and the conflict mark,
-and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`, `PlacementConflict`,
-`PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The store schema, the HTTP
-API, the other actors' contracts and the guarantees are those of 0.24.0.
+a live pool's silence and limits with `Configure` instead of deleting the pool. A full pool ignores a new node's offer
+and sends one `full` notice per full period (ADR 0075) instead of refusing the offer for good. **BREAKING** for
+placement pools: the contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node
+and the conflict mark, the state's `contested` and `full`, and the notice kind `full`), so hosts of 0.24.0 pools follow
+Upgrading below; `NodeConfig`, `PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState`,
+`PlacementNoticeKind` and `Capacity` gain a field or a variant, and `PlacementNoticeKind` is `#[non_exhaustive]`. The
+store schema, the HTTP API, the other actors' contracts and the guarantees are those of 0.24.0.
 
 ### Added
 
@@ -96,6 +98,24 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
   by the `Configure` tests of `crates/cicada-actors/tests/placement.rs`, the unit test
   `configured_replaces_the_given_settings_within_the_bounds_of_the_create` and `tests/wire_formats.rs`.
 
+### Changed
+
+- `cicada-actors`: a placement pool that knows `maxNodes` nodes or more ignores an offer of a node it does not know
+  (ADR 0075) instead of refusing it for good, so a member past the limit no longer makes a dead letter at every
+  interval. The turn commits and changes no entry. The pool keeps one mark in the state's new optional `full`
+  (`PlacementFull { node, at }`: the node of the last ignored offer and its store time, written only while set) and
+  sends the alert target one notice of the new kind `full` (`PlacementNoticeKind::Full`) about the first ignored node
+  when the mark is set; later ignored offers, from any new node, only move it. The check removes the mark one silence
+  time after its `at`, and an offer that adds a node (after `Configure` raised `maxNodes` or a `Gone` freed a slot)
+  removes it at once, so a pool that fills up again alerts again. An ignored offer arms the check when none is armed;
+  `armed` is now set while a node is live, a contest is listed or the pool is marked full, and a decoded state with a
+  mark and no armed check is refused. The resource check of ADR 0072 comes first: a new node offering a held key is a
+  contest with its `conflict` alert. A known node offers as before. `PlacementNoticeKind` becomes `#[non_exhaustive]`,
+  so a later kind does not break hosts again; a host's `match` on it needs a wildcard arm once. During a rolling
+  upgrade an alert target on an older node does not know `full` and fails that alert for good, and nothing else.
+  Covered by the full-pool tests of `crates/cicada-actors/tests/placement.rs`, the unit test
+  `a_decoded_full_mark_is_checked_and_keeps_the_check_armed` and `tests/wire_formats.rs`.
+
 ### Changed (breaking)
 
 - The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
@@ -103,7 +123,9 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
   code that builds `PlacementConflict` gains `host: None`. `PlacementMsg` also gains `Configure`, which an exhaustive
   match gains too. The resource keys add the optional `resource` to `Offer` and to the node entry and the state field
   `contested`: code that builds or matches `PlacementMsg::Offer` without `..` or builds `PlacementNode` or
-  `PlacementState` gains them (`resource: None`, `contested: vec![]`).
+  `PlacementState` gains them (`resource: None`, `contested: vec![]`). The full mark adds the state field `full` (code
+  that builds `PlacementState` gains `full: None`) and the notice kind `full`: a `match` on `PlacementNoticeKind`
+  gains a wildcard arm, as the enum is now `#[non_exhaustive]`.
 - `Capacity` gains the public field `resource`: a struct literal or a pattern without `..` no longer compiles; use
   `Capacity::new` and `Capacity::resource`.
 - A state of a placement pool is now written with `contested` (`[]` when empty).
