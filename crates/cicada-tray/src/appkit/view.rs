@@ -13,7 +13,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
-use crate::menu::{Choice, Header, MenuModel, RecentRow, RunningRow};
+use crate::menu::{Choice, Header, MenuModel, RecentRow, RunningRow, running_row_text};
 
 pub(super) struct MenuView {
     pub root: Retained<NSMenu>,
@@ -35,7 +35,12 @@ pub(super) struct MenuView {
 }
 
 impl MenuView {
-    pub fn new(mtm: MainThreadMarker, bar: &NSStatusBar, title: &str) -> Option<(Retained<NSStatusItem>, Self)> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        bar: &NSStatusBar,
+        title: &str,
+        subtitles: bool,
+    ) -> Option<(Retained<NSStatusItem>, Self)> {
         let status = bar.statusItemWithLength(NSVariableStatusItemLength);
         let Some(button) = status.button(mtm) else {
             bar.removeStatusItem(&status);
@@ -89,7 +94,7 @@ impl MenuView {
             quit,
             // objc2 exposes these selectors without version attributes. The SDK declares section headers and badges
             // in 14.0, and subtitles in 14.4. The caller already checked for 14.0.
-            subtitles: super::at_least(4),
+            subtitles,
             running_rows: RefCell::default(),
             context_rows: RefCell::default(),
             registered_rows: RefCell::default(),
@@ -126,13 +131,10 @@ impl MenuView {
             |old, new| old.turn == new.turn,
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
             |item, row| {
-                let title = format!("{}     {}s", row.turn.actor, row.elapsed);
-                let details = format!("{} · Attempt {}", row.turn.message_type, row.turn.attempt);
-                if self.subtitles {
-                    item.setTitle(&NSString::from_str(&title));
-                    item.setSubtitle(Some(&NSString::from_str(&details)));
-                } else {
-                    item.setTitle(&NSString::from_str(&format!("{title} · {details}")));
+                let (title, subtitle) = running_row_text(row, self.subtitles);
+                item.setTitle(&NSString::from_str(&title));
+                if let Some(subtitle) = subtitle {
+                    item.setSubtitle(Some(&NSString::from_str(&subtitle)));
                 }
             },
         );

@@ -9,7 +9,8 @@ through the config file. `Contexts::load(&Env)` reads the configured names in al
 current selection. `App::on_worker_ready` supplies the selected `WorkerReady::types` in host registration order.
 `WorkerReady` is now non-exhaustive and no longer implements `Copy`. The app tests cover flag and environment type
 selection and context loading. The tray's `menu::tests` cover the header, elapsed time, recent turns, checkmarks,
-context switching and both quit paths. The worked example is `examples/menu-bar-worker.rs`.
+context switching, both quit paths, the minimum macOS version and the subtitle fallback. The control tests verify
+that the tray can reconnect after the app factory panics. The worked example is `examples/menu-bar-worker.rs`.
 
 ## 1. Menu bar app on macOS
 
@@ -29,7 +30,8 @@ For a distributed `.app`, build the binary with the intended `MACOSX_DEPLOYMENT_
 `Contents/MacOS`, put its executable and bundle metadata in `Contents/Info.plist`, and include `LSUIElement` set to
 true for a menu bar agent. The running app uses the accessory policy so it has no Dock icon. Signing and notarizing
 the bundle belong to the host's build. The app factory is called at launch to list registered types and for each
-accepted connection. The worker's grace period and cancel timeout can delay Quit and logout.
+accepted connection. The worker's grace period and cancel timeout can delay Quit and logout. A second Ctrl-C
+does not force-quit the app while the worker drains.
 
 ## 2. Reading the selected worker types
 
@@ -50,5 +52,6 @@ The docs checks passed (11 link and guarantee tests and 51 doctests). The OpenAP
 The example started from a terminal and exited successfully on Ctrl-C. A temporary bundle with `LSUIElement`
 also started and shut down on SIGINT. The GUI automation session could not observe the status menu, so the
 remaining manual checks in task 3 are open.
-The final workspace test run with PostgreSQL passed 3,765 tests with zero failures. Formatting, workspace
-Clippy, advisory screening and strict OpenSpec validation passed.
+After rebasing onto the 0.25.0 release, 26 tray tests, 179 app tests, 11 docs tests and 51 doctests passed.
+The workspace run with PostgreSQL passed 3,775 tests with zero failures. Formatting, workspace Clippy with
+warnings denied and strict OpenSpec validation passed.

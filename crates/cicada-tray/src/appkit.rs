@@ -19,18 +19,30 @@ use objc2_app_kit::{
     NSSwitch,
 };
 use objc2_foundation::{
-    NSBundle, NSObject, NSObjectProtocol, NSOperatingSystemVersion, NSPoint, NSProcessInfo, NSRunLoop,
-    NSRunLoopCommonModes, NSString, NSTimer, ns_string,
+    NSBundle, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
+    ns_string,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::menu::{Action, MenuControl, MenuInput, Terminate, menu};
+use crate::menu::{Action, MenuControl, MenuInput, Terminate, macos_subtitles, menu};
 use crate::{Tray, TrayState};
 use view::MenuView;
 
 pub(super) fn run(tray: Tray) -> ExitCode {
-    match start(tray) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("the Cicada menu bar app must run on the main thread");
+        return ExitCode::FAILURE;
+    };
+    let os = NSProcessInfo::processInfo().operatingSystemVersion();
+    let subtitles = match macos_subtitles((os.majorVersion, os.minorVersion, os.patchVersion)) {
+        Ok(subtitles) => subtitles,
+        Err((error, code)) => {
+            eprintln!("{error}");
+            return code;
+        }
+    };
+    match start(tray, mtm, subtitles) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -39,11 +51,7 @@ pub(super) fn run(tray: Tray) -> ExitCode {
     }
 }
 
-fn start(tray: Tray) -> Result<(), String> {
-    let mtm = MainThreadMarker::new().ok_or("the Cicada menu bar app must run on the main thread")?;
-    if !at_least(0) {
-        return Err("the Cicada menu bar app requires macOS 14 or later".into());
-    }
+fn start(tray: Tray, mtm: MainThreadMarker, subtitles: bool) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -65,7 +73,7 @@ fn start(tray: Tray) -> Result<(), String> {
                     }
                 }
             });
-            autoreleasepool(|_| run_app(mtm, tray, interrupted))
+            autoreleasepool(|_| run_app(mtm, tray, interrupted, subtitles))
         }
         Err(error) => {
             drop(tray);
@@ -75,14 +83,6 @@ fn start(tray: Tray) -> Result<(), String> {
     drop(handle);
     runtime.shutdown_timeout(Duration::from_secs(5));
     result
-}
-
-fn at_least(minor: isize) -> bool {
-    NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(NSOperatingSystemVersion {
-        majorVersion: 14,
-        minorVersion: minor,
-        patchVersion: 0,
-    })
 }
 
 fn app_name() -> String {
@@ -95,7 +95,7 @@ fn app_name() -> String {
     NSProcessInfo::processInfo().processName().to_string()
 }
 
-fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>) -> Result<(), String> {
+fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>, subtitles: bool) -> Result<(), String> {
     let app = NSApplication::sharedApplication(mtm);
     let accessory = NSApplicationActivationPolicy::Accessory;
     if app.activationPolicy() != accessory && !app.setActivationPolicy(accessory) {
@@ -104,7 +104,7 @@ fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>) -> R
 
     let title = app_name();
     let bar = NSStatusBar::systemStatusBar();
-    let (status, view) = MenuView::new(mtm, &bar, &title).ok_or("cannot create the Cicada status item")?;
+    let (status, view) = MenuView::new(mtm, &bar, &title, subtitles).ok_or("cannot create the Cicada status item")?;
     let state = tray.state();
     let turns = tray.turn_changes();
     let target = Target::new(

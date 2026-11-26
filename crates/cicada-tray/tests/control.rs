@@ -1,7 +1,7 @@
 //! The tray and its HTTP worker against the actor API on a loopback socket.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Router;
@@ -319,6 +319,26 @@ async fn shutting_down_the_worker_runtime_before_its_first_poll_allows_reconnect
             error: "the HTTP worker task was cancelled before it returned".into()
         }
     );
+
+    tray.connect("prod");
+    wait_for(&mut state, online()).await;
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panicking_app_factory_reports_failure_and_allows_reconnect() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    let first = AtomicBool::new(true);
+    let tray = Tray::new(move || {
+        assert!(!first.swap(false, Ordering::Relaxed), "cannot build the app");
+        App::new().host(actor.clone())
+    })
+    .with_env(server.config.env());
+    let mut state = tray.state();
+    tray.connect("prod");
+    assert_eq!(failed(&mut state, "prod", TEST_TIMEOUT).await, "the App factory panicked");
 
     tray.connect("prod");
     wait_for(&mut state, online()).await;

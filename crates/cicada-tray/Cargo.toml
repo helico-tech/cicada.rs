@@ -33,8 +33,8 @@ serde.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
+# Keep these in sync with [workspace.lints]. Only unsafe_code differs so the appkit module can allow AppKit calls.
 [lints.rust]
-# AppKit calls are confined to the appkit module.
 unsafe_code = "deny"
 missing_docs = "deny"
 

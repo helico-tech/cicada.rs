@@ -1,3 +1,5 @@
+use std::process::ExitCode;
+
 use cicada::store::TurnOutcome;
 use cicada::time::{Timestamp, between};
 use tokio::time::Instant;
@@ -48,6 +50,20 @@ pub(crate) struct Choice<T> {
 pub(crate) struct RunningRow {
     pub turn: RunningTurn,
     pub elapsed: u64,
+}
+
+pub(crate) fn running_row_text(row: &RunningRow, subtitles: bool) -> (String, Option<String>) {
+    let title = format!("{}     {}s", row.turn.actor, row.elapsed);
+    let details = format!("{} · Attempt {}", row.turn.message_type, row.turn.attempt);
+    if subtitles { (title, Some(details)) } else { (format!("{title} · {details}"), None) }
+}
+
+/// Checks the minimum macOS version and reports whether it supports menu item subtitles.
+pub(crate) fn macos_subtitles(version: (isize, isize, isize)) -> Result<bool, (&'static str, ExitCode)> {
+    if version < (14, 0, 0) {
+        return Err(("the Cicada menu bar app requires macOS 14 or later", ExitCode::FAILURE));
+    }
+    Ok(version >= (14, 4, 0))
 }
 
 #[derive(PartialEq, Eq)]
@@ -337,6 +353,38 @@ mod tests {
         assert_eq!(menu.running[0].turn, running);
         assert_eq!(menu.running[0].elapsed, 3);
         assert_eq!(menu.running[1].elapsed, 0);
+    }
+
+    #[test]
+    fn running_turn_text_puts_the_details_in_the_title_before_macos_14_4() {
+        let row = RunningRow {
+            turn: RunningTurn {
+                actor: "work/a".parse().unwrap(),
+                message_type: "Work".into(),
+                attempt: 2,
+                claimed_at: from_micros(0),
+            },
+            elapsed: 3,
+        };
+        assert_eq!(
+            running_row_text(&row, macos_subtitles((14, 2, 0)).unwrap()),
+            ("work/a     3s · Work · Attempt 2".into(), None)
+        );
+        assert_eq!(
+            running_row_text(&row, macos_subtitles((14, 4, 0)).unwrap()),
+            ("work/a     3s".into(), Some("Work · Attempt 2".into()))
+        );
+    }
+
+    #[test]
+    fn macos_before_14_is_refused_with_exit_code_1() {
+        assert_eq!(
+            macos_subtitles((13, 6, 0)),
+            Err(("the Cicada menu bar app requires macOS 14 or later", ExitCode::from(1)))
+        );
+        assert_eq!(macos_subtitles((14, 0, 0)), Ok(false));
+        assert_eq!(macos_subtitles((14, 3, 9)), Ok(false));
+        assert_eq!(macos_subtitles((15, 0, 0)), Ok(true));
     }
 
     #[test]
