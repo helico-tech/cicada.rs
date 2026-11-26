@@ -1,11 +1,13 @@
-//! Controls a Cicada worker over HTTP in the host process. The model can drive a menu bar or other UI.
+//! Controls a Cicada worker over HTTP in the host process, with a native menu bar app on macOS.
 
-#[allow(dead_code)] // AppKit uses the menu model in the next task.
+#[cfg(target_os = "macos")]
+mod appkit;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod menu;
 mod turns;
 
 use std::io;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use cicada_app::{App, AppError, Env, WorkerReady};
@@ -50,7 +52,7 @@ pub enum TrayState {
 
 /// Connects and disconnects an in-process worker made from a fresh [`App`] for each connection.
 pub struct Tray {
-    factory: Box<dyn Fn() -> App + Send + Sync>,
+    factory: Arc<dyn Fn() -> App + Send + Sync>,
     env: Option<Env>,
     control: Arc<Control>,
     turns: TurnHistory,
@@ -60,6 +62,8 @@ struct Control {
     // Serializes accepting a connect, publishing state and signalling a stop.
     connection: Mutex<Option<Connection>>,
     state: watch::Sender<TrayState>,
+    #[cfg(target_os = "macos")]
+    registered_types: Mutex<Vec<&'static str>>,
 }
 
 struct Connection {
@@ -78,9 +82,14 @@ impl Tray {
     /// Makes an offline tray. The factory is called for each accepted connection.
     pub fn new(factory: impl Fn() -> App + Send + Sync + 'static) -> Self {
         Self {
-            factory: Box::new(factory),
+            factory: Arc::new(factory),
             env: None,
-            control: Arc::new(Control { connection: Mutex::new(None), state: watch::channel(TrayState::Offline).0 }),
+            control: Arc::new(Control {
+                connection: Mutex::new(None),
+                state: watch::channel(TrayState::Offline).0,
+                #[cfg(target_os = "macos")]
+                registered_types: Mutex::default(),
+            }),
             turns: TurnHistory::default(),
         }
     }
@@ -89,6 +98,24 @@ impl Tray {
     pub fn with_env(mut self, env: Env) -> Self {
         self.env = Some(env);
         self
+    }
+
+    /// Runs the menu bar app, initially offline. Call this on the main thread on macOS 14 or later.
+    ///
+    /// The factory is also called at startup to list the registered types before the first connection.
+    /// Quit, Ctrl-C and system logout wait for the worker to stop, which can take its full grace period and
+    /// cancel timeout. A system termination ends the process through AppKit. On unsupported platforms or if
+    /// startup fails, prints an error and returns exit code 1.
+    pub fn run(self) -> ExitCode {
+        #[cfg(target_os = "macos")]
+        {
+            appkit::run(self)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            eprintln!("the Cicada menu bar app requires macOS 14 or later");
+            ExitCode::FAILURE
+        }
     }
 
     /// Watches the current connection state. Read the receiver's current value on subscription and release the
@@ -131,25 +158,31 @@ impl Tray {
             self.control.state.send_replace(TrayState::Connecting { context: context.clone() });
             (runtime, stopped)
         };
-        let Ok(app) = catch_unwind(AssertUnwindSafe(|| (self.factory)())) else {
-            self.control.finish(TrayState::Failed { context, error: "the App factory panicked".to_owned() });
-            return;
-        };
+        let factory = self.factory.clone();
         let ready = self.control.clone();
-        let app = app.observe(self.turns.clone()).on_worker_ready(move |settings| ready.worker_ready(settings));
+        let turns = self.turns.clone();
         let args = vec![
             std::env::args_os().next().unwrap_or_else(|| "cicada-tray".into()),
             "worker".into(),
             format!("--context={context}").into(),
         ];
-        let env = self.env.clone().unwrap_or_else(|| {
-            std::env::vars_os()
-                .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
-                .collect()
-        });
+        let env = self.environment();
         // Capture the guard before spawning so even a task dropped before its first poll clears the connection.
         let task = WorkerTaskGuard { control: self.control.clone(), context: Some(context) };
+        let app = runtime.spawn_blocking(move || factory());
         runtime.spawn(async move {
+            let app = match app.await {
+                Ok(app) => app,
+                Err(error) => {
+                    let message =
+                        if error.is_panic() { "the App factory panicked" } else { "the App factory was cancelled" };
+                    task.fail(message.to_owned());
+                    return;
+                }
+            };
+            #[cfg(target_os = "macos")]
+            ready.set_registered_types(&app);
+            let app = app.observe(turns).on_worker_ready(move |settings| ready.worker_ready(settings));
             let result = app
                 .run_with(args, env, io::sink(), async {
                     let _ = stopped.await;
@@ -157,6 +190,14 @@ impl Tray {
                 .await;
             task.complete(result);
         });
+    }
+
+    fn environment(&self) -> Env {
+        self.env.clone().unwrap_or_else(|| {
+            std::env::vars_os()
+                .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+                .collect()
+        })
     }
 
     /// Requests a graceful stop. The state stays [`TrayState::Stopping`] until the command returns.
@@ -178,6 +219,11 @@ impl Drop for Tray {
 }
 
 impl Control {
+    #[cfg(target_os = "macos")]
+    fn set_registered_types(&self, app: &App) {
+        *self.registered_types.lock().expect("tray registered types") = app.type_names();
+    }
+
     fn worker_ready(&self, ready: WorkerReady) {
         let mut connection = self.connection.lock().expect("tray connection");
         let connection = connection.as_mut().expect("the worker is still running");
@@ -196,6 +242,11 @@ impl Control {
 }
 
 impl WorkerTaskGuard {
+    fn fail(mut self, error: String) {
+        let context = self.context.take().expect("the worker task has a context");
+        self.control.finish(TrayState::Failed { context, error });
+    }
+
     fn complete(mut self, result: Result<(), AppError>) {
         let context = self.context.take().expect("the worker task has a context");
         self.control.finish(match result {

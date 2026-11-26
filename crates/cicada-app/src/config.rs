@@ -26,7 +26,10 @@ pub struct Contexts {
 impl Contexts {
     /// Loads the config file at the path resolved from `env`. A missing file has no contexts.
     pub fn load(env: &Env) -> anyhow::Result<Self> {
-        let Config { contexts, current_context } = Config::load(&path(env)?)?;
+        let Config { contexts, current_context } = Config::load(&path(env)?).map_err(|error| {
+            // A TOML parse diagnostic can quote a token or server from the file.
+            if error.is::<toml::de::Error>() { anyhow!("{error}") } else { error }
+        })?;
         Ok(Self { names: contexts.into_keys().collect(), current: current_context })
     }
 
@@ -407,6 +410,15 @@ mod tests {
         assert_eq!(contexts.current(), Some("a"));
     }
 
+    #[test]
+    fn a_contexts_parse_error_does_not_expose_its_file_contents() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "[contexts.a]\ntoken = invalid-secret").unwrap();
+        let env = env(&[("CICADA_CONFIG", file.path().to_str().unwrap())]);
+        let error = Contexts::load(&env).unwrap_err();
+        assert!(error.to_string().contains("cannot read"));
+        assert!(!format!("{error:?}").contains("invalid-secret"));
+    }
     #[cfg(unix)]
     #[test]
     fn the_file_is_readable_only_by_its_owner() {

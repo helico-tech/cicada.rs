@@ -1,6 +1,6 @@
 [package]
 name = "cicada-tray"
-description = "In-process control and turn history for a Cicada worker over HTTP."
+description = "A macOS menu bar app and portable controls for a Cicada worker over HTTP."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,18 @@ cicada.workspace = true
 cicada-app.workspace = true
 tokio.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "NSAccessibilityProtocols", "NSApplication", "NSButton", "NSCell", "NSColor", "NSControl", "NSEvent",
+    "NSFont", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSMenuItemBadge", "NSParagraphStyle",
+    "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSSwitch",
+    "NSTextField", "NSView", "objc2-core-foundation",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "NSBundle", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer",
+] }
+
 [dev-dependencies]
 axum.workspace = true
 cicada-axum.workspace = true
@@ -21,5 +33,10 @@ serde.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
-[lints]
-workspace = true
+[lints.rust]
+# AppKit calls are confined to the appkit module.
+unsafe_code = "deny"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
