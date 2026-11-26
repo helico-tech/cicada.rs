@@ -10,13 +10,14 @@ it when it landed first). Follow `design.md`; the spec is `specs/menu-bar-tray/s
 - [x] 2. **The menu model.** Module `menu`, every platform: `MenuInput`, `MenuModel` and `menu()`, with elapsed times
   clamped at zero and the badge; the quit and pending-pick state machine beside it (decisions 1, 3, 9). Verify: the
   unit tests of the design.
-- [ ] 3. **The AppKit view.** Module `appkit` (`cfg(target_os = "macos")`): `Tray::run`, the runtime and its shutdown
+- [x] 3. **The AppKit view.** Module `appkit` (`cfg(target_os = "macos")`): `Tray::run`, the runtime and its shutdown
   order, the macOS version check and subtitle fallback, the status item, the menu with the header view, the
   `define_class!` target with the 250 ms timer updating items in place, Quit, Ctrl-C and `applicationShouldTerminate:`;
   every `unsafe` with its reason; `objc2`, `objc2-foundation`, `objc2-app-kit` as macOS-only dependencies; elsewhere
   `run` returns an error (decisions 2–6, 10). Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray
   --all-targets`, `cargo deny check advisories`, and the manual check list below on this Mac, each item noted as done
-  or not done in the report.
+  or not done in the report. Built and reported: the start from a terminal and the exit on Ctrl-C were seen; the other
+  manual items were not, as automation cannot open the menu. The owner runs them before 0.26.0 is released.
 - [x] 4. **Example, changelog and docs handoff.** `examples/menu-bar-worker.rs` (macOS only); the changelog's
   unreleased section names `Tray::run`, `WorkerReady::types` and `Contexts`; `docs-handoff.md` carries the design's
   Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples
