@@ -24,7 +24,7 @@ Asks and holders (the next changes).
 
 ## Order
 
-After `collect-timeouts`, before `placement-asks`.
+After `e2e-read-limit`, before `placement-asks`.
 
 ## Impact
 
