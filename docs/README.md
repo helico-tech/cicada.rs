@@ -23,6 +23,7 @@ The guides assume you know Rust, serde and async functions.
 | Run actors without database credentials | [HTTP worker](guide/app.md#a-worker-over-http) |
 | Choose a scheduler, limiter, debouncer or batcher | [Ready-made actors](guide/actors.md) |
 | Cap how many jobs run at once | [Permit pool](guide/actors.md#permit-pool) |
+| Know which nodes offer room for work | [Placement pool](guide/actors.md#placement-pool) |
 | Run a graph of jobs given as data, with cancel and retry | [Job graph](guide/actors.md#job-graph) |
 | Write a durable multi-step job | [Flows](guide/actors.md#flows) |
 | Run containers from actors or host code | [Containers](guide/containers.md) |

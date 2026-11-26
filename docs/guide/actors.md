@@ -15,6 +15,7 @@ They use ordinary actor guarantees, watches and control effects from the [core](
 | Notice that something stopped happening | `HeartbeatWatchActor` / `cicada.heartbeat-watch` | [heartbeat](../../examples/src/heartbeat.rs) |
 | Tell people a node stopped heartbeating | `NodeDownMonitorActor` / `cicada.node-down` | [node_down](../../examples/src/node_down.rs) |
 | Cap how many jobs run at once | `PermitsActor` / `cicada.permits` | [permits tests](../../crates/cicada-actors/tests/permits.rs) |
+| Know which nodes offer room, and which went quiet | `PlacementActor` / `cicada.placement` | [placement tests](../../crates/cicada-actors/tests/placement.rs) |
 | Run a graph of jobs given as data | `JobGraphActor` / `cicada.job-graph` | [job graph tests](../../crates/cicada-actors/tests/job_graph.rs) |
 | Run a durable multi-step job | `FlowActor<F>` / host-chosen name | [flow_onboarding](../../examples/src/flow_onboarding.rs) |
 | Start flows from a publication | `EventActor` / `cicada.event` | [flow_events](../../examples/src/flow_events.rs) |
@@ -481,6 +482,105 @@ take the message type.
 One permit per `Acquire`; there are no priorities, weights or expiry. See the
 [wire contract](../reference/contracts/cicada.permits.json),
 [implementation](../../crates/cicada-actors/src/permits.rs) and [tests](../../crates/cicada-actors/tests/permits.rs).
+
+## Placement pool
+
+Work that must run on a particular kind of machine needs to know which nodes offer room. A placement pool,
+`cicada.placement/<pool>` (from 0.24.0, [ADR 0067](../adr/0067-a-placement-pool.md)), keeps what each node offers:
+its labels, such as the processor kind or `docker`, and its number of places, renewed at an interval. A node that stops
+offering is marked silent and gets no new places, and the pool's alert target hears of it once.
+
+1. Host `PlacementActor` (no settings) and create each pool with `PlacementState::new(silence, max_nodes)`: silence 1
+   second through 1 day, 1 through 1,000 nodes. The settings are fixed at the create; creating a pool that exists
+   changes nothing.
+2. Send `PlacementMsg::alerts(&target, message_type)` to say where notices go; the last one stands, and without one no
+   notices are sent.
+3. From each member, send `PlacementMsg::offer(node, instance, labels, places)` at an interval well below the silence,
+   such as every 15 s for a silence of 60 s, while its runtime answers.
+
+This example hosts a pool and an operator actor on virtual time; one offer, then silence:
+
+<!-- doctest
+# use std::time::Duration;
+# use cicada::prelude::*;
+# use cicada_test::TestActors;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Ops;
+# impl ActorRef for Ops { const TYPE: &'static str = "ops"; type Message = OpsMsg; }
+@@7
+# #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+# struct Notices { seen: Vec<PlacementNotice> }
+# struct OpsActor;
+# impl Actor for OpsActor {
+#     type Ref = Ops;
+#     type State = Notices;
+#     async fn handle(&self, turn: &mut Turn<Self>, message: OpsMsg) -> HandlerResult {
+#         let OpsMsg::Placement(notice) = message;
+#         turn.state_mut().seen.push(notice);
+#         Ok(())
+#     }
+# }
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@14
+# Ok(())
+# }
+-->
+```rust
+use cicada_actors::{Placement, PlacementActor, PlacementMsg, PlacementNotice, PlacementNoticeKind, PlacementState};
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum OpsMsg {
+    Placement(PlacementNotice),
+}
+
+let test = TestActors::builder().with(|node| node.host(PlacementActor).host(OpsActor)).build().await?;
+test.create(&Ops, &Notices::default()).await;
+let pool = Placement::named("runners"); // cicada.placement/runners
+test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000)?).await;
+test.send(&pool, PlacementMsg::alerts(&Ops, "Placement")?).await;
+
+// A member offers; `instance` is drawn at each process start.
+test.send(&pool, PlacementMsg::offer("factory-mac-1", "3f9c", ["arm64", "docker"], 4)?).await;
+test.run_until_idle().await;
+test.advance_time_by(Duration::from_secs(61)).await; // no offer within the silence
+
+let seen = test.state::<_, Notices>(&Ops).await.seen;
+assert_eq!((seen[0].node.as_str(), seen[0].kind), ("factory-mac-1", PlacementNoticeKind::Silent));
+```
+
+**Offers.** `node` is the id the member's node pins its actors under, and `instance` an id the member draws at each
+process start, so two processes offering under one node id can be told apart; each is 1 through 200 characters, not
+blank, without NUL. Up to 32 labels of 1 through 100 characters are kept sorted and once; 0 through 1,000 places, where
+0 keeps the node known but full. Each offer replaces the node's entry and records the store time of its turn as
+`heardAt`.
+
+**Silence.** The pool arms one `Check` to itself at the earliest end of a live node's silence (`heardAt` plus the
+silence), keeping its time in `armed` and its id in `armedId`. At the check each node past it becomes `silent`. Only
+the armed check counts: one made due early by an operator marks nothing and arms itself again at the same time. A
+silent node's next offer makes it `live` again. Silence counts from the store time an offer was handled, so a paused or
+slow pool marks a node late, never early.
+
+**Alerts.** The target's family takes a variant such as `Placement(PlacementNotice)`, with the kind `silent` once per
+silence and `back` when a silent node offers again. Each notice goes out in a turn of the pool's own (`Alert`), so a
+target that is gone or does not take the message fails only that alert; the node stays silent.
+
+**A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
+replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
+`Alert` from anyone but the pool is refused for good, an operator's retry or redrive of a `Check` included.
+
+The pool answers no query: read its state like any actor's, with `ActorSystem::get_actor`, the operator commands or
+the terminal UI. A message out of bounds, and an offer from a new node when the pool knows `maxNodes` nodes, is refused
+for good with the state unchanged; a known node can always renew. Mind these limits:
+
+- Do not host the pool only on its member nodes: when they all go quiet, nobody runs the check, so nobody is told.
+- Keep pools small and intervals gentle. At the bounds (1,000 nodes with 32 long labels each) the state is about
+  3 MB, rewritten at each offer, and 1,000 nodes every 15 s is about 67 turns a second on one actor.
+
+See the [wire contract](../reference/contracts/cicada.placement.json),
+[implementation](../../crates/cicada-actors/src/placement.rs) and [tests](../../crates/cicada-actors/tests/placement.rs).
 
 ## Job graph
 
