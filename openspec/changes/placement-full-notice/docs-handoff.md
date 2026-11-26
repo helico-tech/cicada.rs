@@ -51,8 +51,8 @@ good; nothing else fails.
 **Where.** `docs/guide/actors.md`, `Placement pool`, a new bold-titled paragraph such as `**A full pool.**`, near the
 settings paragraph (`**Changing the settings.**`, from placement-settings' handoff) or `**Fewer places.**`.
 **Text.** When the pool knows `maxNodes` nodes or more, an offer from a node it does not know is ignored (from 0.25.0,
-ADR 0075, linked as `../adr/0075-a-full-pool-says-so-once.md`): the turn succeeds, the node is not added and nothing else
-changes. The pool marks itself full in the state's `full` (`{node, at}`: the last ignored node and when) and tells the
+ADR 0075, linked as `../adr/0075-a-full-pool-says-so-once.md`): the turn succeeds and the node is not added; the offer
+changes no node entry (the turn still does the pool's usual work, such as ending a conflict mark whose time is up). The pool marks itself full in the state's `full` (`{node, at}`: the last ignored node and when) and tells the
 alert target once with the kind `full`, naming the first ignored node; further ignored offers, from any new node, only
 move the mark. The mark ends one silence time after the last ignored offer, or as soon as an offer adds a node, so a
 pool that fills up again is told again. To let the node in, raise `maxNodes` with `Configure`
@@ -70,8 +70,8 @@ in the state for the latest. The pool cannot say how many nodes were turned away
 and an offer from a new node when the pool knows `maxNodes` nodes, is refused for good with the state unchanged; a
 known node can always renew.").
 **Text.** Drop the new-node clause: "A message out of bounds is refused for good with the state unchanged; an offer
-from a new node to a full pool is ignored with one `full` notice (see **A full pool**), and a known node can always
-renew."
+from a new node to a full pool is ignored with one `full` notice (see **A full pool**); a known node's offer is
+handled as before (renewed, or ignored under an instance conflict or a resource contest)."
 **Caveats.** The placement-settings handoff may already have reworded this sentence for lower limits ("new ones are
 refused (a new node, ...)"): a new node is now ignored, not refused; a new contest and an ask that must wait in a full
 line are still refused.
