@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.25.0 — unreleased
+## 0.25.0 — 2026-11-27
 
 A placement member notices a second machine under its node id (ADR 0071): two machines started from a copied identity
 folder write one node row in turn, so a member that finds another host name there sends no offers and reports
@@ -16,7 +16,9 @@ host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` lock
 process per identity. An offer can name a resource key, such as the Docker daemon's id that `RuntimeInfo::id` now
 reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. An operator changes
 a live pool's silence and limits with `Configure` instead of deleting the pool. A full pool ignores a new node's offer
-and sends one `full` notice per full period (ADR 0075) instead of refusing the offer for good. **BREAKING** for
+and sends one `full` notice per full period (ADR 0075) instead of refusing the offer for good. A host chooses its node
+config once the run's types are known (`App::node_config_for`), and a new crate `cicada-tray` runs a worker over HTTP in
+the host's process with its state and turns (ADR 0074; `App::type_names`, `App::on_worker_ready`). **BREAKING** for
 placement pools: the contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node
 and the conflict mark, the state's `contested` and `full`, and the notice kind `full`), so hosts of 0.24.0 pools follow
 Upgrading below; `NodeConfig`, `PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState`,
