@@ -19,6 +19,6 @@ and `specs/container-runtime/spec.md`. Run the crate's tests with every feature:
   and
   the dropped small files after a huge one under Changed; the handoff carries the design's Docs section. No edit to
   `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate collect-timeouts --strict`, commit, then
   `python3 scripts/gate.py run`.
