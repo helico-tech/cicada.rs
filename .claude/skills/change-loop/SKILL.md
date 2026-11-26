@@ -102,7 +102,8 @@ owner says otherwise. Keep a note of who builds what: the review needs it.
 1. **Earlier work.** If `git worktree list` shows the branch `feat/<change>` and you hold no agent for it, it is left
    from another session. A clean tree: `git worktree remove <path>`; the branch stays and the new builder picks it up.
    A dirty tree: ask the owner whether to continue it or drop it. To continue it, start the builder without isolation
-   and add `Worktree: <path>` to its prompt.
+   and add `Worktree: <path>` to its prompt; a worktree that `delegate_task` made (under `~/.t3/worktrees/`) counts as
+   one of the builder's, for Claude and Codex alike.
 2. **Version.** The `release:` line of `python3 scripts/status.py` names an `unreleased` version: that is the version,
    as the batch collects under one version. With nothing unreleased, raise the patch number of `Cargo.toml`, or the
    minor number when the proposal marks something **BREAKING**. A **BREAKING** change while the unreleased version is
@@ -210,10 +211,10 @@ Only on the owner's yes. A no goes back to the builder, or to Describe. Landing 
 at a time, in whichever order the changes pass review; `status.py` resolves an `Order` that names an archived change
 through that change's own `Order`, so the open changes stay one line.
 
-1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict, `git rebase --abort`,
-   send the builder to rebase and resolve, and ask for one more review round. When the other change landed first,
-   check the ADR number of this change: if `main` took it meanwhile, the builder renumbers the ADR, its row and the
-   references to it, in the branch. A branch with owner fixes integrated is
+1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict,
+   `git -C <builder worktree> rebase --abort`, send the builder to rebase and resolve, and ask for one more review
+   round. When the other change landed first, check the ADR number of this change: if `main` took it meanwhile, the
+   builder renumbers the ADR, its row and the references to it, in the branch. A branch with owner fixes integrated is
    checked again after any rebase, also a clean one: you check the paths, and the builder runs the affected checks in
    its worktree on the rebased branch (Blocked on docs, step 3). Merge only when they pass.
 2. `git merge --ff-only feat/<change>` on `main`.

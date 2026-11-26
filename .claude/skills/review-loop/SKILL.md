@@ -20,7 +20,9 @@ that can read files and run a shell with `git` and `python3`. Work from the main
    ```
 
    The name starts with your model's family, `claude` or `gpt` (`codex` and `openai` count as `gpt`), for example
-   `gpt-6.2-sol in Codex`: a code review needs it, and is never taken by the family that built the change (ADR 0073).
+   `gpt-6.2-sol in Codex`: a code review needs it, and is taken by the other family than the one that built the change
+   (ADR 0073); only when that family is unavailable may the same family take it with `--same-family REASON`, which the
+   report records.
 
    It waits until a request is open, claims it so that no other reviewer takes it, and prints it. Without `--timeout`
    it waits as long as it takes. If your harness stops long shell commands, add `--timeout <seconds>` below that limit

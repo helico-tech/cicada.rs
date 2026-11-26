@@ -225,6 +225,8 @@ def order():
         if before is not None and before != later:
             problems.append(f"{earlier} says it comes before {before}, but {later} comes after it")
     building = in_build(changes, queue)
+    if len(building) > BUILDERS:
+        problems.append(f"{len(building)} changes hold a builder ({', '.join(building)}); at most {BUILDERS} do")
     for i, first in enumerate(building):
         for second in building[i + 1 :]:
             shared = (changes[first]["crates"] or set()) & (changes[second]["crates"] or set())
@@ -246,7 +248,7 @@ def in_build(changes, queue):
 def to_build(changes, queue):
     """The changes in build, then for each free slot the first ready change whose crates meet none of the others'; a
     change without a `Crates:` line goes only alone (ADR 0073)."""
-    chosen = in_build(changes, queue)
+    chosen = in_build(changes, queue)[:BUILDERS]
     for name in queue:
         if len(chosen) >= BUILDERS:
             break

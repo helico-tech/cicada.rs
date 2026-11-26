@@ -199,6 +199,15 @@ class BuildLineTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("  - placement and settings are both in build and share cicada-actors", result.stdout)
 
+    def test_three_changes_in_build_are_a_problem_and_the_line_names_two(self):
+        self.building("placement", None, "cicada-actors")
+        self.building("tray", "placement", "cicada-tray")
+        self.building("process", "tray", "none")
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("3 changes hold a builder (placement, tray, process); at most 2 do", result.stdout)
+        self.assertEqual(self.names(), ["placement", "tray"])
+
     def test_an_order_naming_an_archived_change_resolves_through_it(self):
         # first <- second <- third; second landed before first.
         self.building("first", "landed", "cicada-actors")

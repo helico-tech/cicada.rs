@@ -6,10 +6,10 @@ what it says. You do not change the design. Work fast: the owner wants short ite
 
 ## Start
 
-1. If the caller names a worktree, `cd` into it. `pwd` must be a folder under `.claude/worktrees/`. If it is not,
-   stop and report; do not work anywhere else. A builder started by another harness's tool (`delegate_task` in T3
-   Code) works in the worktree that tool made for it. Another builder may run next to you on another change
-   (ADR 0073): never touch its worktree or branch.
+1. If the caller names a worktree, `cd` into it. `pwd` must be a folder under `.claude/worktrees/`, or a worktree that
+   another harness's tool (`delegate_task` in T3 Code) made, such as one under `~/.t3/worktrees/`. If it is neither,
+   stop and report; do not work anywhere else. A builder started by such a tool works in the worktree it made. Another
+   builder may run next to you on another change (ADR 0073): never touch its worktree or branch.
 2. Get onto the right commits and branch. The ready change is committed on the local branch `main`, which your
    worktree may not start from:
 

@@ -55,7 +55,10 @@ DIR = ROOT / ".reviews"
 
 
 def family(name):
-    """The model family a name starts with, `claude` or `gpt`; None for a name without one."""
+    """The model family a name starts with, `claude` or `gpt`; None for a name without one, or one that is not a single
+    printable line (a name with a line break could add a field to the request or the claim)."""
+    if not (name or "").isprintable():
+        return None
     lowered = (name or "").lower()
     return next((fam for prefix, fam in FAMILIES.items() if lowered.startswith(prefix)), None)
 
@@ -136,6 +139,8 @@ def refusal(review, by, same_family):
     builder = request.get("built-by")
     if family(builder) != family(by):
         return None, False
+    if same_family is not None and not (same_family.strip() and same_family.isprintable()):
+        return "--same-family needs a reason on one line", False
     if same_family:
         return None, True
     return f"built by {builder}; a reviewer of another family takes it, or pass --same-family REASON", False
