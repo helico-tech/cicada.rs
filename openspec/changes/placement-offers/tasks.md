@@ -5,14 +5,14 @@ once `placement-drain-and-gone` has landed (decision 6), so do not mark anything
 `python3 scripts/status.py` for the version (builder.md, Version). Follow `design.md` and ADR 0067
 (`docs/adr/0067-a-placement-pool.md`); the spec is `specs/placement-pool/spec.md` (a new capability).
 
-- [ ] 1. **Types and state.** `crates/cicada-actors/src/placement.rs`: `Placement` (the ref, `cicada.placement/<pool>`),
+- [x] 1. **Types and state.** `crates/cicada-actors/src/placement.rs`: `Placement` (the ref, `cicada.placement/<pool>`),
   `PlacementMsg` (`Offer`, `Check`, `Rearm`, `Alert`, `Alerts`) with checked constructors (`offer(node, instance,
   labels, places)`), `PlacementState::new(silence, max_nodes)` with a checked decode (as `PermitsState`), the node
   entries (instance, labels sorted and deduplicated, places, heard at, live or silent), `PlacementNotice`. Export from
   `lib.rs`. Verify: unit tests of the bounds and the decode.
-- [ ] 2. **Offers.** An offer replaces the node's entry and records the turn's store time; a new node past `max_nodes`
+- [x] 2. **Offers.** An offer replaces the node's entry and records the turn's store time; a new node past `max_nodes`
   and out-of-bounds messages are refused for good (decision 3). Verify: actor tests on virtual time with `TestActors`.
-- [ ] 3. **Silence and alerts.** The self-only `Check` armed at the earliest `heardAt + silence` (kept in `armed`),
+- [x] 3. **Silence and alerts.** The self-only `Check` armed at the earliest `heardAt + silence` (kept in `armed`),
   `Rearm`, silent and live nodes, one `Alert` per changed node in its own turn sending `PlacementNotice` to the target
   set by `Alerts` (decision 4). Verify: the silence, return, lost check, foreign check and failing target tests.
 - [ ] 4. **Contract, changelog and docs handoff.** Add the pool to `the_twelve_contracts()` (and its name test) in
