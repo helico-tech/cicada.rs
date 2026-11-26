@@ -102,6 +102,6 @@ None.
 
 ## Status
 
-`cargo test -p cicada-actors` (pool, wire and unit tests) passes; `cargo test -p cicada-examples --test docs` and
-`--doc` pass with the guides unchanged. Items 1–5 are proposed text for the docs session; no protected file was edited.
+`cargo test --workspace` (with PostgreSQL) passes, as do `cargo test -p cicada-examples --test docs` and `--doc` with
+the guides unchanged. Items 1–5 are proposed text for the docs session; no protected file was edited.
 Item 6 is in this branch.
