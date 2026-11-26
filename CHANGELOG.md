@@ -10,12 +10,32 @@ moves: a correction is a new version.
 ## 0.26.0 — unreleased
 
 `Tray::run` opens a native menu bar app on macOS 14 or later. Use the switch or pick a configured context to
-connect, watch running and recent turns, and let the worker drain when you disconnect or quit.
+connect, watch running and recent turns, and let the worker drain when you disconnect or quit. While it drains, Stop
+Now cancels its running turns at once instead of waiting out the grace period.
 `cicada_app::Contexts` reads the configured names and current selection for the menu.
 
-**BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, loses `Copy`, and is
-now non-exhaustive. Read its fields directly or match with `..`. Use `clone()` when another owned value is needed.
-Only `App::on_worker_ready` supplies the value.
+**BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
+`Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
+fields instead of whole values. Use `clone()` when another owned value is needed. Only `App::on_worker_ready` supplies
+the value.
+
+### Added
+
+- `cicada`: `Worker::end_grace()` ends the grace period of a stop that has begun, as if it had run out: the running
+  turns are cancelled at once, those whose handler had not ended give their leases back, and the stop returns within
+  the cancel timeout (a wait for the polling loop ends too). Before a stop begins or after it ended it does nothing and
+  is not remembered, so it never shortens a later stop. Covered by
+  `end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout`,
+  `end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it` and
+  `end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period`.
+- `cicada-app`: `StopNow`, a cloneable handle in `WorkerReady::stop_now`. `StopNow::now()` ends the grace period of
+  the worker over HTTP's stop; a request before the stop begins is kept until it does, and one after the stop does
+  nothing. It does not stop the worker by itself. Covered by the `over_http_stop_now_…` tests in
+  `crates/cicada-app/src/node.rs`.
+- `cicada-tray`: `Tray::stop_now()`, and a Stop Now row in the menu while the tray stops a worker that was ready. It
+  ends the grace period, so the running turns are listed as abandoned, and moves the countdown's `until` to now plus
+  the cancel timeout when that is earlier. It does nothing in any other state. Covered by the `stop_now_…` tests in
+  `crates/cicada-tray/tests/control.rs`.
 
 ## 0.25.0 — 2026-11-27
 

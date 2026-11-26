@@ -13,7 +13,7 @@ Normal lane, version 0.26.0 (unreleased; it already breaks `WorkerReady`). Build
   `Connection::stopping`; the menu model's Stop Now row while stopping a ready worker; the AppKit view renders it and
   calls `stop_now` (decisions 3 and 4). Verify: the tray and menu tests of the design; `cargo test -p cicada-tray`;
   `cargo clippy -p cicada-tray --all-targets`.
-- [ ] 4. **Changelog and docs handoff.** The 0.26.0 section names `Worker::end_grace`, `StopNow` and `Tray::stop_now`
+- [x] 4. **Changelog and docs handoff.** The 0.26.0 section names `Worker::end_grace`, `StopNow` and `Tray::stop_now`
   under Added, and the `WorkerReady` changes under its BREAKING line; `docs-handoff.md` carries the design's Docs
   section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test
   docs` and `--doc`.
