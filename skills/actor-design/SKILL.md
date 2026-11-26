@@ -2,7 +2,7 @@
 name: actor-design
 description: Design a system with Cicada actors together with the user, one step at a time, before code is written, or review an existing actor design or implementation. Design: when the user wants to work out which actors exist, what each owns and decides, their keys and lifecycles, messages and replies, timeouts, failures and outside effects, or whether actors fit at all; it interviews the user through concrete stories, saves each confirmed step with Mermaid diagrams in docs/design/actors.md by default, and resumes from it. Review: when the user asks to review or critique an existing design or codebase; it reconstructs and draws the actors, messages and watches from evidence, checks them against the design guide and reports grounded findings with failure traces in docs/design/actors-review.md by default. It routes to the design guide of the Cicada source the project resolves. For writing, testing or running the code, use the cicada skill.
 metadata:
-  cicada-version: 0.24.0
+  cicada-version: 0.25.0
 ---
 
 # Actor design
