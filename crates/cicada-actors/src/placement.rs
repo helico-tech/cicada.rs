@@ -19,7 +19,7 @@ use crate::supervisor::retry_policy;
 
 mod member;
 
-pub use member::{Capacity, InvalidIdentity, MemberSettings, NodeIdentity, PlacementMember};
+pub use member::{Capacity, IdentityErrorKind, InvalidIdentity, MemberSettings, NodeIdentity, PlacementMember};
 
 /// The shortest silence time of a pool.
 const MIN_SILENCE: Duration = Duration::from_secs(1);

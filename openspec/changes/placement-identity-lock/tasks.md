@@ -7,7 +7,7 @@ field on `NodeConfig`; builder.md, Version). Follow `design.md` and ADR 0071
 - [x] 1. **The node's host name.** `NodeConfig::hostname: Option<String>` (`None`: the machine's own, as today, through
   the private `usable_hostname`), written to the node row; `ActorSystem::hostname()` returns the value written
   (decision 5). Verify: a test that the row and the getter hold an override; `cargo test -p cicada`.
-- [ ] 2. **The identity lock.** `load_or_create` locks `dir/placement-identity.lock` (`File::try_lock`) before it reads
+- [x] 2. **The identity lock.** `load_or_create` locks `dir/placement-identity.lock` (`File::try_lock`) before it reads
   or creates the file; the lock lives in an `Arc` inside `NodeIdentity` (still `Clone`; equality ignores it);
   `PlacementMember` keeps the whole identity; `InvalidIdentity::kind()` with `IdentityErrorKind::{Invalid, Locked}`; a
   file system without locks warns and goes on (decisions 3 and 4). Existing tests that load twice drop the first

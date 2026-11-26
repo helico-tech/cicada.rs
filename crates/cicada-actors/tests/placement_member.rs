@@ -12,8 +12,8 @@ use cicada::runtime::NodeConfig;
 use cicada::store::NodeId;
 use cicada::time;
 use cicada_actors::{
-    Capacity, MemberSettings, NodeIdentity, Placement, PlacementActor, PlacementMember, PlacementNodeStatus,
-    PlacementState,
+    Capacity, IdentityErrorKind, MemberSettings, NodeIdentity, Placement, PlacementActor, PlacementMember,
+    PlacementNodeStatus, PlacementState,
 };
 use cicada_test::TestActors;
 use tempfile::TempDir;
@@ -41,11 +41,45 @@ fn the_identity_is_made_once_and_read_the_same_after_a_restart() {
     let file: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.join("placement-identity.json")).unwrap()).unwrap();
     assert_eq!(file, serde_json::json!({"node": node.as_str(), "instance": first.instance()}));
-    assert_eq!(NodeIdentity::load_or_create(&dir).unwrap(), first, "the restart reads the same identity");
-    let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-    assert_eq!(names, ["placement-identity.json"], "no temporary file left");
+    let instance = first.instance().to_owned();
+    drop(first);
+    let restarted = NodeIdentity::load_or_create(&dir).unwrap();
+    assert_eq!((restarted.node_id(), restarted.instance()), (node.clone(), instance.as_str()), "the same identity");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["placement-identity.json", "placement-identity.lock"], "no temporary file left");
     let other = NodeIdentity::load_or_create(temp.path().join("other")).unwrap();
-    assert!(other.node_id() != node && other.instance() != first.instance(), "another folder, another identity");
+    assert!(other.node_id() != node && other.instance() != instance, "another folder, another identity");
+}
+
+/// Scenario: A second process. While the identity, a clone of it or a member that holds it lives, a second load of the
+/// folder fails with `Locked` and changes nothing; once they are all dropped the folder loads again.
+#[test]
+fn a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped() {
+    let temp = TempDir::new().unwrap();
+    let first = NodeIdentity::load_or_create(temp.path()).unwrap();
+    let file = fs::read(temp.path().join("placement-identity.json")).unwrap();
+    let locked = |why: &str| {
+        let e = NodeIdentity::load_or_create(temp.path()).unwrap_err();
+        assert_eq!(e.kind(), IdentityErrorKind::Locked, "{why}: {e}");
+        assert!(e.to_string().contains("placement-identity.lock"), "{e}");
+    };
+    locked("the identity lives");
+    let clone = first.clone();
+    assert_eq!(clone, first, "a clone is equal and shares the lock");
+    drop(first);
+    locked("a clone lives");
+    let member = PlacementMember::new(pool(), clone, MemberSettings::new(), || async { None });
+    locked("the member holds it");
+    drop(member);
+    let again = NodeIdentity::load_or_create(temp.path()).unwrap();
+    assert_eq!(fs::read(temp.path().join("placement-identity.json")).unwrap(), file, "the file is unchanged");
+    drop(again);
+    let e = {
+        fs::write(temp.path().join("placement-identity.json"), "not json").unwrap();
+        NodeIdentity::load_or_create(temp.path()).unwrap_err()
+    };
+    assert_eq!(e.kind(), IdentityErrorKind::Invalid, "{e}");
 }
 
 /// Scenario: A corrupt identity file. Text that is not the identity JSON, or ids out of bounds, are refused and the
@@ -64,6 +98,7 @@ fn an_invalid_identity_file_is_refused_and_left_as_it_is() {
         fs::write(&path, text).unwrap();
         let e = NodeIdentity::load_or_create(temp.path()).unwrap_err();
         assert!(e.to_string().contains("placement-identity.json"), "{text}: {e}");
+        assert_eq!(e.kind(), IdentityErrorKind::Invalid);
         assert_eq!(fs::read_to_string(&path).unwrap(), text, "left as it is");
     }
 }

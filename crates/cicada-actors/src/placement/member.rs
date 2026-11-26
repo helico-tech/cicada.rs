@@ -1,11 +1,12 @@
 //! The member of a placement pool: a node's stable identity in a file, and the loop that offers the node's places
 //! while the host's probe answers.
 
-use std::fs;
+use std::fs::{self, TryLockError};
 use std::future::Future;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cicada::prelude::*;
@@ -18,15 +19,45 @@ use super::{InvalidPlacement, Placement, PlacementMsg, check_id};
 
 /// The name of the identity file in the folder given to [`NodeIdentity::load_or_create`].
 const IDENTITY_FILE: &str = "placement-identity.json";
+/// The name of the file locked while an identity of the folder lives.
+const LOCK_FILE: &str = "placement-identity.lock";
 
 /// A node's identity in a placement pool, kept in `placement-identity.json`: the node id, the default for
 /// [`NodeConfig::node_id`](cicada::runtime::NodeConfig::node_id), and the instance, which goes into each offer and
 /// stays across restarts, so a restarted node is the same machine to the pool. A copy of the file on another machine
 /// makes it the same machine too: never copy it, or a disk that holds it, to another node.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **The lock.** While the identity or a clone of it lives, it holds an exclusive OS lock on
+/// `placement-identity.lock` in its folder, released when the last clone is dropped or the process ends, so a second
+/// process on the same folder fails to load it with [`IdentityErrorKind::Locked`]. Give the identity to the
+/// [`PlacementMember`], which keeps it while it runs. The lock covers one machine only: a copied folder on another
+/// machine is caught by the member's duplicate check, and only when the two machines' host names differ. On one host
+/// with a shared volume, a rolling deploy's new process fails with `Locked` until the old one stops. On a file system
+/// without locks it logs a warning and goes on without one. Equality compares the node id and the instance.
+#[derive(Clone)]
 pub struct NodeIdentity {
     node_id: NodeId,
     instance: String,
+    /// The locked file; none on a file system without locks.
+    lock: Option<Arc<fs::File>>,
+}
+
+impl PartialEq for NodeIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.node_id, &self.instance) == (&other.node_id, &other.instance)
+    }
+}
+
+impl Eq for NodeIdentity {}
+
+impl std::fmt::Debug for NodeIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeIdentity")
+            .field("node_id", &self.node_id)
+            .field("instance", &self.instance)
+            .field("locked", &self.lock.is_some())
+            .finish()
+    }
 }
 
 /// The identity file's JSON.
@@ -38,40 +69,51 @@ struct IdentityFile {
 }
 
 impl NodeIdentity {
-    /// Reads the identity from `dir/placement-identity.json`, or creates `dir` when missing and the file with the node
-    /// id `node-<16 hex digits>` and a random instance, written to a temporary file and renamed into place. A file that
-    /// cannot be read, or is not `{"node": …, "instance": …}` with two ids of 1 through 200 characters, not blank,
-    /// without NUL, is an [`InvalidIdentity`] and stays as it is: a node never takes a new identity by accident. One
-    /// process creates the file; two that start at once on a missing file may each write one.
+    /// Locks the folder `dir`, creating it when missing, then reads the identity from `dir/placement-identity.json`,
+    /// or creates the file with the node id `node-<16 hex digits>` and a random instance, written to a temporary file
+    /// and renamed into place. A folder locked by another live identity fails with [`IdentityErrorKind::Locked`]. A
+    /// file that cannot be read, or is not `{"node": …, "instance": …}` with two ids of 1 through 200 characters, not
+    /// blank, without NUL, is an [`InvalidIdentity`] of the kind [`IdentityErrorKind::Invalid`] and stays as it is: a
+    /// node never takes a new identity by accident.
     ///
     /// ```
-    /// use cicada_actors::NodeIdentity;
+    /// use cicada_actors::{IdentityErrorKind, NodeIdentity};
     ///
     /// let dir = tempfile::tempdir()?;
     /// let first = NodeIdentity::load_or_create(dir.path().join("placement"))?;
     /// assert!(first.node_id().as_str().starts_with("node-"));
-    /// assert_eq!(NodeIdentity::load_or_create(dir.path().join("placement"))?, first); // after a restart
+    /// let second = NodeIdentity::load_or_create(dir.path().join("placement")).unwrap_err();
+    /// assert_eq!(second.kind(), IdentityErrorKind::Locked); // a second process on the folder
+    /// let (node, instance) = (first.node_id(), first.instance().to_owned());
+    /// drop(first);
+    /// let restarted = NodeIdentity::load_or_create(dir.path().join("placement"))?; // after a restart
+    /// assert_eq!((restarted.node_id(), restarted.instance()), (node, instance.as_str()));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn load_or_create(dir: impl AsRef<Path>) -> Result<Self, InvalidIdentity> {
         let dir = dir.as_ref();
+        let lock = lock(dir)?;
         let path = dir.join(IDENTITY_FILE);
-        let fail = |what: &str, e: &dyn std::fmt::Display| InvalidIdentity(format!("{}: {what}: {e}", path.display()));
-        match fs::read(&path) {
+        let fail = |what: &str, e: &dyn std::fmt::Display| {
+            InvalidIdentity::invalid(format!("{}: {what}: {e}", path.display()))
+        };
+        let mut identity = match fs::read(&path) {
             Ok(bytes) => {
                 let file: IdentityFile =
                     serde_json::from_slice(&bytes).map_err(|e| fail("not the identity JSON", &e))?;
-                Self::checked(file.node, file.instance).map_err(|e| fail("invalid", &e))
+                Self::checked(file.node, file.instance).map_err(|e| fail("invalid", &e))?
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 let hex = uuid::Uuid::new_v4().simple().to_string();
                 let identity = Self::checked(format!("node-{}", &hex[..16]), uuid::Uuid::new_v4().simple().to_string())
                     .map_err(|e| fail("invalid", &e))?;
                 identity.write(dir).map_err(|e| fail("cannot be written", &e))?;
-                Ok(identity)
+                identity
             }
-            Err(e) => Err(fail("cannot be read", &e)),
-        }
+            Err(e) => return Err(fail("cannot be read", &e)),
+        };
+        identity.lock = lock;
+        Ok(identity)
     }
 
     /// The node id: the default for [`NodeConfig::node_id`](cicada::runtime::NodeConfig::node_id).
@@ -88,12 +130,11 @@ impl NodeIdentity {
         check_id("a node", &node)?;
         check_id("an instance", &instance)?;
         let node_id = NodeId::new(node).map_err(|e| InvalidPlacement(format!("a node id: {e}")))?;
-        Ok(Self { node_id, instance })
+        Ok(Self { node_id, instance, lock: None })
     }
 
     /// Writes the file atomically: a temporary file in `dir`, synced, then renamed into place.
     fn write(&self, dir: &Path) -> std::io::Result<()> {
-        fs::create_dir_all(dir)?;
         let file = IdentityFile { node: self.node_id.as_str().to_owned(), instance: self.instance.clone() };
         let temporary = dir.join(format!(".{IDENTITY_FILE}.{}", self.instance));
         let mut out = fs::File::create(&temporary)?;
@@ -106,10 +147,61 @@ impl NodeIdentity {
     }
 }
 
-/// An identity file that cannot be read, written or parsed; it prints the path and why.
+/// Creates `dir` when missing and takes the exclusive lock on its lock file: `Locked` when another holds it, none with
+/// a warning on a file system without locks.
+fn lock(dir: &Path) -> Result<Option<Arc<fs::File>>, InvalidIdentity> {
+    let path = dir.join(LOCK_FILE);
+    let fail =
+        |what: &str, e: &dyn std::fmt::Display| InvalidIdentity::invalid(format!("{}: {what}: {e}", path.display()));
+    fs::create_dir_all(dir).map_err(|e| fail("its folder cannot be created", &e))?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| fail("cannot be opened", &e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(Arc::new(file))),
+        Err(TryLockError::WouldBlock) => Err(InvalidIdentity {
+            kind: IdentityErrorKind::Locked,
+            message: format!("{}: locked by another process that runs this identity", path.display()),
+        }),
+        Err(TryLockError::Error(e)) => {
+            tracing::warn!("placement identity {}: no lock, as the file system gave: {e}", path.display());
+            Ok(None)
+        }
+    }
+}
+
+/// An identity that cannot be loaded: a file that cannot be read, written or parsed, or a folder that another process
+/// holds; it prints the path and why, and [`kind`](Self::kind) tells which.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("placement identity {0}")]
-pub struct InvalidIdentity(String);
+#[error("placement identity {message}")]
+pub struct InvalidIdentity {
+    kind: IdentityErrorKind,
+    message: String,
+}
+
+impl InvalidIdentity {
+    fn invalid(message: String) -> Self {
+        Self { kind: IdentityErrorKind::Invalid, message }
+    }
+
+    /// What went wrong.
+    pub fn kind(&self) -> IdentityErrorKind {
+        self.kind
+    }
+}
+
+/// What went wrong with an [`InvalidIdentity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IdentityErrorKind {
+    /// The folder or the file cannot be read, written or parsed, or holds ids out of bounds.
+    Invalid,
+    /// Another live identity, of this process or another on the machine, holds the folder's lock.
+    Locked,
+}
 
 /// The settings of a [`PlacementMember`].
 ///
@@ -212,7 +304,8 @@ impl Capacity {
 /// ```
 pub struct PlacementMember<P> {
     pool: Placement,
-    instance: String,
+    /// Kept whole, so its lock lives as long as the member.
+    identity: NodeIdentity,
     settings: MemberSettings,
     probe: P,
 }
@@ -221,7 +314,7 @@ impl<P> std::fmt::Debug for PlacementMember<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlacementMember")
             .field("pool", &self.pool.pool)
-            .field("instance", &self.instance)
+            .field("instance", &self.identity.instance)
             .field("settings", &self.settings)
             .finish()
     }
@@ -232,9 +325,10 @@ where
     P: FnMut() -> F,
     F: Future<Output = Option<Capacity>>,
 {
-    /// A member that offers to `pool` under `identity`'s instance what `probe` gives, each round.
+    /// A member that offers to `pool` under `identity`'s instance what `probe` gives, each round. It keeps `identity`,
+    /// and so the lock of its folder, until it is dropped.
     pub fn new(pool: Placement, identity: NodeIdentity, settings: MemberSettings, probe: P) -> Self {
-        Self { pool, instance: identity.instance, settings, probe }
+        Self { pool, identity, settings, probe }
     }
 
     /// Offers in rounds through `system` until `stop` completes, then returns. No error ends it.
@@ -261,7 +355,7 @@ where
             return;
         };
         let pool = self.pool.pool.as_str();
-        let offer = match PlacementMsg::offer(system.node_id().as_str(), &self.instance, labels, places) {
+        let offer = match PlacementMsg::offer(system.node_id().as_str(), &self.identity.instance, labels, places) {
             Ok(offer) => offer,
             Err(e) => {
                 tracing::warn!(pool, "placement member: no offer: {e}");
