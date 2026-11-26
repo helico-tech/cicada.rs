@@ -11,7 +11,7 @@ builder.md, Version). Builds on `placement-asks` and `placement-holders` (land f
 - [x] 2. **Gone.** `Gone` refused for good for a live or unknown node; for a `silent` node: removed, places freed, one
   self `TellGone { holder, grant, node, to, messageType }` per holder in its own turn sending a `gone` answer;
   `TellGone` from anyone else refused for good; the line scanned (decision 2). Verify: the gone tests of the design.
-- [ ] 3. **Contract, changelog and docs handoff.** The answer kind `gone`, the new messages and field in the contract
+- [x] 3. **Contract, changelog and docs handoff.** The answer kind `gone`, the new messages and field in the contract
   reference and samples (`CICADA_UPDATE_CONTRACTS=true`); the 0.24.0 section names drain and gone under Added; the
   handoff carries the design's Docs section and the warning about a `gone` for an unseen grant. No edit to
   `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-actors`,

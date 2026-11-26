@@ -640,6 +640,20 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         (PlacementMsg::release("run-17", 4).unwrap(), json!({"type": "Release", "holder": "run-17", "grant": 4})),
         (PlacementMsg::cancel("run-17").unwrap(), json!({"type": "Cancel", "holder": "run-17"})),
         (PlacementMsg::Notify { holder: "run-17".into() }, json!({"type": "Notify", "holder": "run-17"})),
+        (PlacementMsg::drain("mac-1").unwrap(), json!({"type": "Drain", "node": "mac-1"})),
+        (PlacementMsg::undrain("mac-1").unwrap(), json!({"type": "Undrain", "node": "mac-1"})),
+        (PlacementMsg::gone("mac-1").unwrap(), json!({"type": "Gone", "node": "mac-1"})),
+        (
+            PlacementMsg::TellGone {
+                holder: "run-17".into(),
+                grant: 4,
+                node: "mac-1".into(),
+                to: pager.address().unwrap(),
+                message_type: "Placed".into(),
+            },
+            json!({"type": "TellGone", "holder": "run-17", "grant": 4, "node": "mac-1", "to": "pager/ops",
+                "messageType": "Placed"}),
+        ),
     ];
     for (message, written) in placement {
         assert_eq!(json_of(&message), written);
@@ -664,6 +678,11 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         ("Release", json!({"holder": "run-17", "grant": -1})),
         ("Cancel", json!({})),
         ("Notify", json!({})),
+        ("Drain", json!({})),
+        ("Undrain", json!({})),
+        ("Gone", json!({})),
+        ("TellGone", json!({"holder": "run-17", "node": "mac-1", "to": "pager/ops", "messageType": "Placed"})),
+        ("TellGone", json!({"holder": "run-17", "grant": 4, "to": "pager/ops", "messageType": "Placed"})),
     ] {
         assert!(cicada::message::decode::<PlacementMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
     }
@@ -699,6 +718,10 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
             with(json!({"kind": "granted", "grant": 4, "node": "mac-1"})),
         ),
         (answer(PlacementAnswerKind::Queued, None, None, None), with(json!({"kind": "queued"}))),
+        (
+            answer(PlacementAnswerKind::Gone, Some(4), Some("mac-1"), None),
+            with(json!({"kind": "gone", "grant": 4, "node": "mac-1"})),
+        ),
         (
             answer(PlacementAnswerKind::Refused, None, None, Some(PlacementRefusal::NoNode)),
             with(json!({"kind": "refused", "reason": "noNode"})),
@@ -741,7 +764,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     assert_state_sample::<PlacementState>(&settings);
     let node = |status: &str| {
         json!({"instance": "3f9c", "labels": ["arm64", "docker"], "places": 4,
-        "heardAt": "2026-01-01T00:00:00Z", "status": status})
+        "heardAt": "2026-01-01T00:00:00Z", "status": status, "draining": status == "silent"})
     };
     let holder = |holder: &str, grant: u64, notified: bool| {
         json!({"holder": holder, "needs": ["arm64"], "to": "pager/ops", "messageType": "Placed", "grant": grant,
@@ -786,7 +809,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
 }
 
 /// The state a pool writes with a live node, a silent one, an alert target, holders, one told and one not yet, and a
-/// waiting ask.
+/// waiting ask; then a draining node.
 #[tokio::test(start_paused = true)]
 async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
@@ -823,6 +846,14 @@ async fn the_state_a_placement_pool_writes_passes_its_sample() {
     test.run_until_idle().await;
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["holders"][0]["notified"], true, "{written}");
+    assert_state_sample::<PlacementState>(&written);
+    test.send(&pool, PlacementMsg::drain("mac-2").unwrap()).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(
+        (&written["nodes"]["mac-2"]["draining"], &written["nodes"]["mac-1"]["draining"]),
+        (&json!(true), &json!(false))
+    );
     assert_state_sample::<PlacementState>(&written);
 }
 

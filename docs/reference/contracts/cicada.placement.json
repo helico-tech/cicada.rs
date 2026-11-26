@@ -127,6 +127,23 @@
       "title": "Check",
       "type": "object"
     },
+    "Drain": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Stops new places on `node`: it keeps its holders, renews its offers and can go silent and come back, and an\noffer does not clear the drain. Draining a draining node changes nothing; an unknown node is refused for good.",
+      "properties": {
+        "node": {
+          "description": "The node.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "title": "Drain",
+      "type": "object"
+    },
     "Failed": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
@@ -229,6 +246,23 @@
         "cause"
       ],
       "title": "Failed",
+      "type": "object"
+    },
+    "Gone": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Declares a silent node gone: removes it, frees all its places and tells each of its holders with a `gone`\nanswer, each in a turn of its own. Refused for good for a live node (it is heard from) and an unknown one. A\nlater `Release` of those grants frees nothing; the node offering again is a new node.",
+      "properties": {
+        "node": {
+          "description": "The node; its status is `silent`.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "title": "Gone",
       "type": "object"
     },
     "Notify": {
@@ -366,6 +400,67 @@
       ],
       "title": "Stopped",
       "type": "object"
+    },
+    "TellGone": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends `holder` its `gone` answer for `grant` on `node`, to `to` as `messageType`: sent by the pool to itself for\neach holder of a node declared gone, with a retry policy, so a failing target fails only its own answer.",
+      "properties": {
+        "grant": {
+          "description": "The grant number it held.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "holder": {
+          "description": "The holder.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The message type of its answers; not empty, at most 200 characters, without NUL.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "node": {
+          "description": "The node that is gone.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "The target of its answers.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "holder",
+        "grant",
+        "node",
+        "to",
+        "messageType"
+      ],
+      "title": "TellGone",
+      "type": "object"
+    },
+    "Undrain": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Gives `node` new places again and grants the waiting asks that fit. Undraining a node that is not draining\nchanges nothing; an unknown node is refused for good.",
+      "properties": {
+        "node": {
+          "description": "The node.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "title": "Undrain",
+      "type": "object"
     }
   },
   "state": {
@@ -493,6 +588,11 @@
       "PlacementNode": {
         "description": "What a pool knows of a node: its last offer and whether it is heard from.",
         "properties": {
+          "draining": {
+            "default": false,
+            "description": "Whether an operator drained it: it gets no new places until `Undrain`. Absent: false.",
+            "type": "boolean"
+          },
           "heardAt": {
             "description": "The store time of the turn of its last offer.",
             "format": "date-time",

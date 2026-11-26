@@ -11,7 +11,8 @@ moves: a correction is a new version.
 
 The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
 offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
-to; a holder that is deleted frees its place. Drain and the member follow in this version. Additive: a new
+to; a holder that is deleted frees its place; an operator drains a node and declares a silent node gone, whose holders
+are told. The member follows in this version. Additive: a new
 ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
 guarantees are those of 0.23.1.
 
@@ -52,6 +53,16 @@ guarantees are those of 0.23.1.
   itself or for a target that holds nothing changes nothing; a `Failed` of a watched target's message costs the pool a
   turn and changes nothing. An ask whose target is the pool itself is refused for good. No new message or state field.
   Covered by `crates/cicada-actors/tests/placement.rs`.
+- `cicada-actors`: drain and gone in the placement pool. `PlacementMsg::drain(node)` stops new places on a known node:
+  it keeps its holders, renews its offers and can go silent and come back, an offer keeps the drain (the node field
+  `draining`), and an ask only it could meet waits instead of being refused. `PlacementMsg::undrain(node)` clears it
+  and grants the waiting asks that fit. `PlacementMsg::gone(node)` of a node whose status is `silent` removes it, frees
+  its places and tells each of its holders a `PlacementAnswer` of the new kind `gone`, with its grant and node, in a
+  `TellGone` turn of its own, so a target that is gone fails only its answer; a later `Release` of those grants frees
+  nothing, waiting asks stay, and the node offering again is a new node. `Gone` of a live node, `Drain`, `Undrain` and
+  `Gone` of an unknown node, and a `TellGone` from another sender are refused for good. A `gone` answer means the place
+  is no longer counted; what ran there may still run. Covered by `crates/cicada-actors/tests/placement.rs` and
+  `tests/wire_formats.rs`.
 
 ## 0.23.1 — 2026-11-26
 
