@@ -37,3 +37,8 @@ as they are on disk.
 
 - **WHEN** the saved settings of `prod` name only types the binary no longer registers, and the tray connects to `prod`
 - **THEN** the tray is `Failed` with an error that tells the user to open Settings, and no worker starts
+
+#### Scenario: A type literally named all
+
+- **WHEN** the saved settings of `prod` pick only the registered type named `all`, and another type is registered
+- **THEN** the tray is `Failed` with an error that tells the user to open Settings, and no worker runs every type
