@@ -707,6 +707,28 @@ Drain, undrain or gone of an unknown node is refused for good.
 - A holder granted from the line but not yet told can hear `gone` for a grant it never saw, and its `granted` answer
   then never comes: handle a `gone` for an unknown grant.
 
+**From the command line.** An operator drains, undrains, declares gone and releases with the generic `cicada send`,
+which sends the same messages as the Rust constructors:
+
+```sh
+cicada send cicada.placement/runners --type Drain   --payload '{"node": "mac-1"}'
+cicada send cicada.placement/runners --type Undrain --payload '{"node": "mac-1"}'
+cicada send cicada.placement/runners --type Gone    --payload '{"node": "mac-1"}'   # only once the node is silent
+cicada send cicada.placement/runners --type Release --payload '{"holder": "r1", "grant": 1}'
+```
+
+Read the pool with `cicada describe actor cicada.placement/runners` (`-o json` for JSON), `cicada get actor` or the
+terminal UI. Its state shows `nodes` (per node id: `instance`, `status` `live` or `silent`, `draining`, `places`,
+`labels`, `heardAt` and `conflict`, whose `instance` you compare with the node's), `holders` (`holder`, `grant`,
+`node`) and `waiting`, the line in order; a `Release` takes its holder id and grant number from `holders`. There is no
+dedicated `cicada placement` command: the app layer does not depend on the ready-made actors, which are all operated
+this way.
+
+- `cicada send` answers once the message is accepted, not handled: a `Gone` of a live node or a `Drain` of an unknown
+  node is refused later, as a failed message of the pool (`cicada get outcomes --status failed`).
+- A payload that does not match the type's schema is refused at once with `422`.
+- An operator's `Release` frees a place the holder may still use: release only a grant whose work you know has ended.
+
 **Fewer places.** An offer with fewer places than holders keeps every holder, and new grants wait until holders
 release; a silent node keeps its holders too.
 
