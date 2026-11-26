@@ -75,8 +75,8 @@ pub enum PlacementMsg {
     /// node is live changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. An
     /// offer of a resource key that another live node holds changes nothing for the node: it is recorded in
     /// `contested`, and a new entry there is told `conflict` (ADR 0072). A node new to a pool that knows `maxNodes`
-    /// nodes is refused for good, as is a new contest in a pool that lists `maxNodes`. Send one at an interval shorter
-    /// than the silence time.
+    /// nodes or more is refused for good, as is a new contest in a pool that lists `maxNodes` or more. Send one at an
+    /// interval shorter than the silence time.
     Offer {
         /// The node id the member's node pins its actors under.
         #[schemars(length(min = 1, max = 200))]
@@ -131,6 +131,33 @@ pub enum PlacementMsg {
         /// What happened to it.
         kind: PlacementNoticeKind,
     },
+    /// Changes the pool's settings, from anyone: each field set replaces its value, each absent one keeps it, within
+    /// the bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders and
+    /// waiting asks stay, and new ones are refused or queued until the count is below it. A larger `maxHolders` grants
+    /// waiting asks in this turn. A silence other than the current one, with a check armed, arms the check at the new
+    /// earliest end of a live node's silence or of a contest, at once when that has passed, so a shorter one marks the
+    /// quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
+    /// out of bounds, or a node's or contest's silence would end after the last representable instant. Unknown fields
+    /// are ignored, as in every message of the pool, so a misspelled field next to a valid one changes nothing.
+    Configure {
+        /// How long a node may go without an offer before it is silent, as an ISO-8601 duration; 1 second through 1
+        /// day. Keep it above the members' offer interval. Absent: kept.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_duration::option")]
+        #[schemars(with = "Option<String>")]
+        silence: Option<Duration>,
+        /// The most nodes the pool knows, 1 through 1,000. Absent: kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 1000))]
+        max_nodes: Option<u32>,
+        /// The most asks that wait in the line, 0 through 1,000. Absent: kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(max = 1000))]
+        max_waiting: Option<u32>,
+        /// The most holders of the pool at once, 1 through 1,000. Absent: kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 1000))]
+        max_holders: Option<u32>,
+    },
     /// Sets where the pool's notices go, replacing the target before.
     Alerts {
         /// The target of the notices.
@@ -142,14 +169,15 @@ pub enum PlacementMsg {
     },
     /// Asks a place for `holder` on a node with every one of `needs` (sorted, each once), and names where its answer
     /// goes. It is granted on the live node with a free place and every need that has the most free places, ties to
-    /// the smaller node id; queued when only silent or full nodes have the needs, or the pool holds `maxHolders`;
-    /// refused with `noNode` when no node of the pool has them, `lineFull` when it must wait and the line holds
-    /// `maxWaiting` asks, and `poolFull` when a place fits but the pool holds `maxHolders` and the line is full. The
-    /// [`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and nothing is
-    /// recorded. A repeated `Ask` of a holder answers `granted` with the same grant and node, one of a waiting ask
-    /// `queued`; both keep the first ask's needs and target. A holder id is forgotten at its release: use a fresh one
-    /// per attempt. The pool watches the target from the commit that records the ask, and when it is deleted frees its
-    /// places and takes its waiting asks out of the line; an ask whose target is the pool itself is refused for good.
+    /// the smaller node id; queued when only silent or full nodes have the needs, or the pool holds `maxHolders` or
+    /// more; refused with `noNode` when no node of the pool has them, `lineFull` when it must wait and the line holds
+    /// `maxWaiting` asks or more, and `poolFull` when a place fits but the pool holds `maxHolders` and the line is
+    /// full. The [`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and
+    /// nothing is recorded. A repeated `Ask` of a holder answers `granted` with the same grant and node, one of a
+    /// waiting ask `queued`; both keep the first ask's needs and target. A holder id is forgotten at its release: use a
+    /// fresh one per attempt. The pool watches the target from the commit that records the ask, and when it is deleted
+    /// frees its places and takes its waiting asks out of the line; an ask whose target is the pool itself is refused
+    /// for good.
     Ask {
         /// The holder: names this attempt, unique among the holders and waiting asks of the pool.
         #[schemars(length(min = 1, max = 200))]
@@ -575,9 +603,10 @@ pub struct PlacementContest {
 #[error("{0}")]
 pub struct InvalidPlacement(String);
 
-/// The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, fixed at its create,
-/// where its notices go, the nodes it knows by node id, the next grant number, its holders in the order they were
-/// granted, its waiting asks in line order, the contests of resource keys, and the time and id of its armed check.
+/// The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, given at its create
+/// and changed by `Configure`, where its notices go, the nodes it knows by node id, the next grant number, its holders
+/// in the order they were granted, its waiting asks in line order, the contests of resource keys, and the time and id
+/// of its armed check.
 /// Build it with `PlacementState::new`; a decoded state is checked the same way.
 ///
 /// On the wire: `{"silence":"PT1M","maxNodes":1000,"maxWaiting":100,"maxHolders":1000,"alerts":null,"nodes":{},
@@ -634,24 +663,24 @@ struct RawState {
     /// Where its notices go; absent or null: no notices.
     #[serde(default)]
     alerts: Option<PlacementAlerts>,
-    /// The nodes it knows, by node id (1 through 200 characters, not blank, without NUL), at most `maxNodes`; absent:
-    /// none.
+    /// The nodes it knows, by node id (1 through 200 characters, not blank, without NUL), at most 1,000 (more than
+    /// `maxNodes` after a lower limit); absent: none.
     #[serde(default)]
     nodes: BTreeMap<String, PlacementNode>,
     /// The number of the next grant, at least 1; it only goes up. Absent: 1.
     #[serde(default = "first_grant")]
     #[schemars(range(min = 1))]
     next_grant: u64,
-    /// The holders, in the order they were granted, at most `maxHolders`, each on a known node, each holder id once
-    /// among the holders and waiting asks; absent: none.
+    /// The holders, in the order they were granted, at most 1,000 (more than `maxHolders` after a lower limit), each on
+    /// a known node, each holder id once among the holders and waiting asks; absent: none.
     #[serde(default)]
     holders: Vec<PlacementHolder>,
-    /// The waiting asks, in line order, at most `maxWaiting`, each holder id once among the holders and waiting asks;
-    /// absent: none.
+    /// The waiting asks, in line order, at most 1,000 (more than `maxWaiting` after a lower limit), each holder id once
+    /// among the holders and waiting asks; absent: none.
     #[serde(default)]
     waiting: Vec<PlacementAsk>,
-    /// The offers of resource keys that another live node held, at most `maxNodes`, each key and node once; absent:
-    /// none.
+    /// The offers of resource keys that another live node held, at most 1,000 (more than `maxNodes` after a lower
+    /// limit), each key and node once; absent: none.
     #[serde(default)]
     contested: Vec<PlacementContest>,
     /// The time of the armed `Check`: present exactly while a node is live or a contest is listed.
@@ -730,6 +759,31 @@ impl PlacementState {
         Ok(state)
     }
 
+    /// This state with the settings of a `Configure`: each one given replaces its value. Fails when none is given or
+    /// the result fails the check of a decoded state.
+    fn configured(
+        &self,
+        silence: Option<Duration>,
+        max_nodes: Option<u32>,
+        max_waiting: Option<u32>,
+        max_holders: Option<u32>,
+    ) -> Result<Self, InvalidPlacement> {
+        if silence.is_none() && max_nodes.is_none() && max_waiting.is_none() && max_holders.is_none() {
+            return Err(InvalidPlacement(
+                "a Configure sets at least one of silence, maxNodes, maxWaiting and maxHolders".to_owned(),
+            ));
+        }
+        let state = Self {
+            silence: silence.unwrap_or(self.silence),
+            max_nodes: max_nodes.unwrap_or(self.max_nodes),
+            max_waiting: max_waiting.unwrap_or(self.max_waiting),
+            max_holders: max_holders.unwrap_or(self.max_holders),
+            ..self.clone()
+        };
+        state.check()?;
+        Ok(state)
+    }
+
     fn check(&self) -> Result<(), InvalidPlacement> {
         if self.silence < MIN_SILENCE || self.silence > MAX_SILENCE {
             return Err(InvalidPlacement(format!(
@@ -757,12 +811,8 @@ impl PlacementState {
         if let Some(alerts) = &self.alerts {
             check_message_type(&alerts.message_type)?;
         }
-        if self.nodes.len() > self.max_nodes as usize {
-            return Err(InvalidPlacement(format!(
-                "at most maxNodes ({}) nodes are known, had {}",
-                self.max_nodes,
-                self.nodes.len()
-            )));
+        if self.nodes.len() > MAX_NODES as usize {
+            return Err(InvalidPlacement(format!("at most {MAX_NODES} nodes are known, had {}", self.nodes.len())));
         }
         for (node, entry) in &self.nodes {
             check_id("a node", node)?;
@@ -802,8 +852,8 @@ impl PlacementState {
         Ok(())
     }
 
-    /// Checks the resource keys: at most one live node holds each, and the contests are at most `maxNodes`, each key
-    /// and node once, in bounds.
+    /// Checks the resource keys: at most one live node holds each, and the contests are at most 1,000, each key and
+    /// node once, in bounds.
     fn check_resources(&self) -> Result<(), InvalidPlacement> {
         let mut held = HashSet::new();
         let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live);
@@ -812,10 +862,9 @@ impl PlacementState {
                 return Err(InvalidPlacement(format!("two live nodes hold the resource key '{resource}'")));
             }
         }
-        if self.contested.len() > self.max_nodes as usize {
+        if self.contested.len() > MAX_NODES as usize {
             return Err(InvalidPlacement(format!(
-                "at most maxNodes ({}) contests are listed, had {}",
-                self.max_nodes,
+                "at most {MAX_NODES} contests are listed, had {}",
                 self.contested.len()
             )));
         }
@@ -840,25 +889,17 @@ impl PlacementState {
         live.find(|(id, n)| id.as_str() != node && n.resource.as_deref() == Some(resource)).map(|(id, _)| id.as_str())
     }
 
-    /// Checks the holders and the line: their limits, each holder id once, needs and message types in bounds, each
-    /// holder on a known node with a grant below `nextGrant`.
+    /// Checks the holders and the line: at most 1,000 each, each holder id once, needs and message types in bounds,
+    /// each holder on a known node with a grant below `nextGrant`.
     fn check_books(&self) -> Result<(), InvalidPlacement> {
         if self.next_grant == 0 {
             return Err(InvalidPlacement("nextGrant must be at least 1".to_owned()));
         }
-        if self.holders.len() > self.max_holders as usize {
-            return Err(InvalidPlacement(format!(
-                "at most maxHolders ({}) hold a place, had {}",
-                self.max_holders,
-                self.holders.len()
-            )));
+        if self.holders.len() > MAX_BOOKS as usize {
+            return Err(InvalidPlacement(format!("at most {MAX_BOOKS} hold a place, had {}", self.holders.len())));
         }
-        if self.waiting.len() > self.max_waiting as usize {
-            return Err(InvalidPlacement(format!(
-                "at most maxWaiting ({}) asks wait, had {}",
-                self.max_waiting,
-                self.waiting.len()
-            )));
+        if self.waiting.len() > MAX_BOOKS as usize {
+            return Err(InvalidPlacement(format!("at most {MAX_BOOKS} asks wait, had {}", self.waiting.len())));
         }
         let mut seen = HashSet::new();
         let held = self.holders.iter().map(|h| (&h.holder, &h.needs, &h.message_type));
@@ -1008,8 +1049,17 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 }
 
 /// The placement pool type. It has no settings: the silence time and the limits are in the state of each pool, given
-/// at its create; a create of a pool that exists changes nothing. It never stops itself, and answers no query: read
-/// its state.
+/// at its create and changed by `Configure`; a create of a pool that exists changes nothing. It never stops itself,
+/// and answers no query: read its state.
+///
+/// A `Configure` replaces the settings it names, within the bounds of the create. A limit lowered below what the pool
+/// has removes nothing: the known nodes, the holders, the waiting asks and the contests stay, and new ones are refused
+/// or queued as at the limit until the count is below it; the pool only serves under its limits. A larger holder
+/// limit grants waiting asks in the same turn, and a larger node limit admits a new node at its next offer. A new
+/// silence, with a check armed, arms the check at the new earliest end of a live node's silence or of a contest, due
+/// at once when that has passed: a shorter silence marks the quiet nodes silent in the next turn, and conflict marks
+/// and contests end one new silence time after their last offer or report. A silence at or below the members' offer
+/// interval makes nodes flip between silent and back.
 ///
 /// Each `Offer` replaces the node's entry and records the store time of its turn as `heardAt`, except an offer of
 /// another instance than the recorded one while the node is live (ADR 0069): that turn changes no entry field, sets the
@@ -1076,9 +1126,9 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
 /// all go quiet. Bad input is refused for good with the state unchanged: a message out of bounds, a new node past
-/// `maxNodes`, a `Drain`, `Undrain` or `Gone` of an unknown node, a `Gone` of a live node, a `Check`, `Alert`, `Notify`
-/// or `TellGone` from another sender, and a notice or answer the send refuses; a read of the store that fails is tried
-/// again.
+/// `maxNodes`, a `Configure` without a setting, a `Drain`, `Undrain` or `Gone` of an unknown node, a `Gone` of a live
+/// node, a `Check`, `Alert`, `Notify` or `TellGone` from another sender, and a notice or answer the send refuses; a
+/// read of the store that fails is tried again.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlacementActor;
 
@@ -1117,6 +1167,13 @@ impl Actor for PlacementActor {
             PlacementMsg::Alerts { to, message_type } => {
                 check_message_type(&message_type).map_err(HandlerError::permanent)?;
                 turn.state_mut().alerts = Some(PlacementAlerts { to, message_type });
+            }
+            PlacementMsg::Configure { silence, max_nodes, max_waiting, max_holders } => {
+                let configured = turn
+                    .state()
+                    .configured(silence, max_nodes, max_waiting, max_holders)
+                    .map_err(HandlerError::permanent)?;
+                configure(turn, configured)?;
             }
             PlacementMsg::Ask { holder, needs, to, message_type } => {
                 let needs = check_ask(&holder, needs, &message_type).map_err(HandlerError::permanent)?;
@@ -1201,6 +1258,19 @@ fn went_away(turn: &mut Turn<PlacementActor>, actor: &ActorAddress) {
     let state = turn.state_mut();
     state.holders.retain(|h| &h.to != actor);
     state.waiting.retain(|w| &w.to != actor);
+}
+
+/// Takes the settings of `configured`, a checked copy of the state; with another silence and a check armed, arms the
+/// check at the new earliest end.
+fn configure(turn: &mut Turn<PlacementActor>, configured: PlacementState) -> HandlerResult {
+    let rearm = configured.silence != turn.state().silence && turn.state().armed.is_some();
+    if configured != *turn.state() {
+        *turn.state_mut() = configured;
+    }
+    if rearm && let Some(at) = turn.state().next_check() {
+        arm(turn, at)?;
+    }
+    Ok(())
 }
 
 /// Sets or clears the drain of a known `node`; an unknown one is refused for good.
@@ -1686,6 +1756,10 @@ mod tests {
             "nodes": {"a": node("live"), "b": node("silent")}, "armed": AT, "armedId": "c1"}));
         assert!(decode(full).is_ok());
         assert!(decode(state(serde_json::json!({"nodes": {"b": node("silent")}}))).is_ok(), "no live node, no armed");
+        let three = serde_json::json!({"nodes": {"a": node("silent"), "b": node("silent"), "c": node("silent")}});
+        assert!(decode(state(three)).is_ok(), "more nodes than maxNodes is a state after a lower limit");
+        let too_many: serde_json::Map<String, serde_json::Value> =
+            (0..=MAX_NODES).map(|n| (format!("n{n}"), node("silent"))).collect();
         let mut unsorted = node("live");
         unsorted["labels"] = serde_json::json!(["docker", "arm64"]);
         let mut twice = node("live");
@@ -1711,10 +1785,7 @@ mod tests {
             (serde_json::json!({"maxNodes": 0}), "maxNodes must be"),
             (serde_json::json!({"maxNodes": 1001}), "maxNodes must be"),
             (serde_json::json!({"alerts": {"to": "ops/_", "messageType": ""}}), "messageType must be"),
-            (
-                serde_json::json!({"nodes": {"a": node("silent"), "b": node("silent"), "c": node("silent")}}),
-                "at most maxNodes",
-            ),
+            (serde_json::json!({"nodes": too_many}), "at most 1000 nodes"),
             (serde_json::json!({"nodes": {"": node("silent")}}), "a node id must be"),
             (serde_json::json!({"nodes": {"  ": node("silent")}}), "a node id must be"),
             (serde_json::json!({"nodes": {long_node: node("silent")}}), "a node id must be"),
@@ -1812,6 +1883,8 @@ mod tests {
         let two_keys = with(serde_json::json!({"nodes": {"a": keyed("live", "d1"), "b": keyed("live", "d2")}}));
         assert!(decode(two_keys).is_ok());
         let three = [contest("d1", "a"), contest("d1", "b"), contest("d1", "c")];
+        assert!(decode(with(serde_json::json!({"contested": three}))).is_ok(), "more contests than maxNodes");
+        let too_many: Vec<serde_json::Value> = (0..=MAX_NODES).map(|n| contest("d1", &format!("n{n}"))).collect();
         let mut late = contest("d1", "c");
         late["at"] = serde_json::json!("9999-12-31T23:59:30Z");
         for (extra, why) in [
@@ -1819,7 +1892,7 @@ mod tests {
                 serde_json::json!({"nodes": {"a": keyed("live", "d1"), "b": keyed("live", "d1")}}),
                 "two live nodes hold the resource key 'd1'",
             ),
-            (serde_json::json!({"contested": three}), "at most maxNodes (2) contests"),
+            (serde_json::json!({"contested": too_many}), "at most 1000 contests"),
             (serde_json::json!({"contested": [contest("d1", "c"), contest("d1", "c")]}), "listed twice"),
             (serde_json::json!({"contested": [contest("", "c")]}), "a resource key must be"),
             (serde_json::json!({"contested": [contest("d1", " ")]}), "a contest's node id must be"),
@@ -1855,6 +1928,12 @@ mod tests {
         let full = books(serde_json::json!({"nextGrant": 5, "holders": [holder("h1", 3, "a"), holder("h2", 4, "a")],
             "waiting": [waiting("w1"), waiting("w2")]}));
         assert!(decode(full).is_ok(), "more holders than places is a state after a shrink");
+        let over = books(serde_json::json!({"nextGrant": 9, "holders": [holder("h1", 1, "a"), holder("h2", 2, "a"),
+            holder("h3", 3, "a")], "waiting": [waiting("w1"), waiting("w2"), waiting("w3")]}));
+        assert!(decode(over).is_ok(), "more holders and waiting asks than their limits is a state after lower limits");
+        let next_grant = u64::from(MAX_BOOKS) + 2;
+        let many_holders: Vec<_> = (1..=u64::from(MAX_BOOKS) + 1).map(|g| holder(&format!("h{g}"), g, "a")).collect();
+        let many_waiting: Vec<_> = (0..=MAX_BOOKS).map(|n| waiting(&format!("w{n}"))).collect();
         assert_eq!(decode(books(serde_json::json!({}))).unwrap().next_grant, 1, "nextGrant may be left out");
         let mut unsorted = waiting("w1");
         unsorted["needs"] = serde_json::json!(["gpu", "arm64"]);
@@ -1871,12 +1950,8 @@ mod tests {
             (serde_json::json!({"maxWaiting": 1001}), "maxWaiting must be"),
             (serde_json::json!({"maxHolders": 0}), "maxHolders must be"),
             (serde_json::json!({"maxHolders": 1001}), "maxHolders must be"),
-            (
-                serde_json::json!({"nextGrant": 9, "holders": [holder("h1", 1, "a"), holder("h2", 2, "a"),
-                    holder("h3", 3, "a")]}),
-                "at most maxHolders",
-            ),
-            (serde_json::json!({"waiting": [waiting("w1"), waiting("w2"), waiting("w3")]}), "at most maxWaiting"),
+            (serde_json::json!({"nextGrant": next_grant, "holders": many_holders}), "at most 1000 hold a place"),
+            (serde_json::json!({"waiting": many_waiting}), "at most 1000 asks wait"),
             (serde_json::json!({"nextGrant": 9, "holders": [holder("h", 1, "a"), holder("h", 2, "a")]}), "twice"),
             (serde_json::json!({"nextGrant": 9, "holders": [holder("h", 1, "a")], "waiting": [waiting("h")]}), "twice"),
             (serde_json::json!({"waiting": [waiting("w"), waiting("w")]}), "twice"),
@@ -1930,6 +2005,38 @@ mod tests {
         assert_eq!(PlacementMsg::release("h", 4).unwrap(), PlacementMsg::Release { holder: "h".into(), grant: 4 });
         assert_eq!(PlacementMsg::cancel("h").unwrap(), PlacementMsg::Cancel { holder: "h".into() });
         assert!(PlacementMsg::release("", 4).is_err() && PlacementMsg::cancel("h".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn configured_replaces_the_given_settings_within_the_bounds_of_the_create() {
+        let minute = Duration::from_secs(60);
+        let pool = PlacementState::new(minute, 2, 3, 4).unwrap();
+        let both = pool.configured(None, None, None, Some(8)).unwrap();
+        assert_eq!((both.silence, both.max_nodes, both.max_waiting, both.max_holders), (minute, 2, 3, 8));
+        let all = pool.configured(Some(MIN_SILENCE), Some(1), Some(0), Some(1)).unwrap();
+        assert_eq!((all.silence, all.max_nodes, all.max_waiting, all.max_holders), (MIN_SILENCE, 1, 0, 1));
+        let top = pool.configured(Some(MAX_SILENCE), Some(MAX_NODES), Some(MAX_BOOKS), Some(MAX_BOOKS)).unwrap();
+        assert_eq!((top.silence, top.max_nodes, top.max_waiting, top.max_holders), (MAX_SILENCE, 1000, 1000, 1000));
+        let short = MIN_SILENCE - Duration::from_nanos(1);
+        let long = MAX_SILENCE + Duration::from_nanos(1);
+        for (silence, max_nodes, max_waiting, max_holders, why) in [
+            (None, None, None, None, "sets at least one of"),
+            (Some(short), None, None, None, "silence must be"),
+            (Some(long), None, None, None, "silence must be"),
+            (None, Some(0), None, None, "maxNodes must be"),
+            (None, Some(1001), None, None, "maxNodes must be"),
+            (None, None, Some(1001), None, "maxWaiting must be"),
+            (None, None, None, Some(0), "maxHolders must be"),
+            (None, None, None, Some(1001), "maxHolders must be"),
+        ] {
+            let built = pool.configured(silence, max_nodes, max_waiting, max_holders);
+            assert!(built.as_ref().is_err_and(|e| e.to_string().contains(why)), "{built:?} for {why}");
+        }
+        let mut late = decode(state(serde_json::json!({"nodes": {"a": node("silent")}}))).unwrap();
+        late.nodes.get_mut("a").unwrap().heard_at = "9999-12-31T23:58:30Z".parse().unwrap();
+        assert!(late.configured(None, None, None, Some(1)).is_ok());
+        let longer = late.configured(Some(Duration::from_secs(120)), None, None, None);
+        assert!(longer.is_err_and(|e| e.to_string().contains("after 9999-12-31")), "a silence must stay representable");
     }
 
     #[test]
