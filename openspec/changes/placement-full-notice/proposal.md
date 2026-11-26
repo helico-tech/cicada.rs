@@ -18,4 +18,6 @@ After `placement-settings`, before `app-node-id-after-types`.
 
 ## Impact
 
+Crates: cicada-actors.
+
 `crates/cicada-actors` (pool, contract). Additive.
