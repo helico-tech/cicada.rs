@@ -1,6 +1,7 @@
 //! The placement pool (ADR 0067): an actor to which nodes offer places, each with a set of labels, renewed at an
 //! interval; a node not heard from for the pool's silence time is marked silent, and its alert target is told once. A
-//! second machine offering under a live node's id is ignored and reported once (ADR 0069). Work asks it for a place
+//! second machine offering under a live node's id is ignored and reported once (ADR 0069), as is a second machine its
+//! member reports under the node's id and instance (ADR 0071). Work asks it for a place
 //! with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
 //! gone, whose holders are told. A [`PlacementMember`] offers a node's places while the host's probe answers, under a
 //! [`NodeIdentity`] kept across restarts.
@@ -85,6 +86,20 @@ pub enum PlacementMsg {
         /// How many places the node offers, 0 through 1,000; 0 keeps the node known but full.
         #[schemars(range(max = 1000))]
         places: u32,
+    },
+    /// A report, from anyone, such as a [`PlacementMember`] that found another host name in its node's row: another
+    /// machine, `host`, runs under the id of `node` (ADR 0071). For a live node it marks the node in `conflict` with
+    /// `host`, the node's own instance unless another instance marked it already, and the store time; a new mark is told
+    /// `conflict`. The node gets no new places while the mark has a `host`, which ends one silence time after the last
+    /// report (a mark set by an offer too ends as an offer's would, so when both would). Nothing for a silent node, which
+    /// gets no new places anyway; refused for good for an unknown node.
+    Duplicate {
+        /// The node id the other machine runs under.
+        #[schemars(length(min = 1, max = 200))]
+        node: String,
+        /// The host name of the other machine, as the node table shows it.
+        #[schemars(length(min = 1, max = 200))]
+        host: String,
     },
     /// The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each
     /// live node not heard from for the silence time as silent, queues an `Alert` for each, and arms the next check at
@@ -425,8 +440,9 @@ pub enum PlacementNoticeKind {
     Silent,
     /// A silent node offered again and is live.
     Back,
-    /// Another instance offered under the live node's id: its offers are ignored. Sent once while the mark lasts; the
-    /// node's `conflict` names the instance.
+    /// Another instance offered under the live node's id, whose offers are ignored, or a member reported another
+    /// machine under it (`Duplicate`). Sent once while the mark lasts; the node's `conflict` names the instance and,
+    /// for a report, the host.
     Conflict,
 }
 
@@ -486,20 +502,28 @@ pub struct PlacementNode {
     /// Whether an operator drained it: it gets no new places until `Undrain`. Absent: false.
     #[serde(default)]
     pub draining: bool,
-    /// The last offer of another instance while it was live, ignored; set only while it is live. Absent: none.
+    /// The last offer of another instance, ignored, or the last report of another machine, while it was live; set only
+    /// while it is live. Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<PlacementConflict>,
 }
 
-/// An offer of another instance under a live node's id, which the pool ignored.
+/// An offer of another instance under a live node's id, which the pool ignored, or a report of another machine under
+/// it (`Duplicate`, ADR 0071).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacementConflict {
-    /// Its instance id: not the node's recorded one; 1 through 200 characters, not blank, without NUL.
+    /// The other instance id: not the node's recorded one, except for a mark set only by reports, which names the
+    /// node's own; 1 through 200 characters, not blank, without NUL.
     #[schemars(length(min = 1, max = 200))]
     pub instance: String,
-    /// The store time of its turn.
+    /// The store time of the last conflicting offer or report.
     pub at: Timestamp,
+    /// The host name of the other machine of the last report; set once a report marked the node, and the node gets no
+    /// new places while it is. 1 through 200 characters, not blank, without NUL. Absent: no report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 200))]
+    pub host: Option<String>,
 }
 
 /// A state or a message of a pool out of its bounds; it prints why.
@@ -701,8 +725,12 @@ impl PlacementState {
                     return Err(InvalidPlacement(format!("'{node}' is in conflict only while it is live")));
                 }
                 check_id("a conflict's instance", &conflict.instance)?;
-                if conflict.instance == entry.instance {
-                    return Err(InvalidPlacement(format!("the conflict of '{node}' names its recorded instance")));
+                if let Some(host) = &conflict.host {
+                    check_id("a conflict's host", host)?;
+                } else if conflict.instance == entry.instance {
+                    return Err(InvalidPlacement(format!(
+                        "the conflict of '{node}' names its recorded instance without a host"
+                    )));
                 }
                 self.deadline(conflict.at).map_err(InvalidPlacement)?;
             }
@@ -879,7 +907,14 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// goes silent, or when the recorded instance offers one silence time or more after the mark's time, as the other
 /// machine stopped; a later conflict is told again. A silent node's entry is taken over by the next offer, whatever its
 /// instance: a replaced machine. The pool only reports a conflict: two machines under one node id also share its leases
-/// and its node row in the store, and a cloned disk with the member's identity copied looks like one machine.
+/// and its node row in the store, and a cloned disk with the member's identity copied looks like one machine to its
+/// offers.
+///
+/// Such a machine is found by its member instead (ADR 0071), which reports `Duplicate` with the other machine's host
+/// name: it marks a live node in `conflict` with that `host` (and the node's own instance for a new mark), and a new
+/// mark queues one `conflict` alert. While its mark has a `host` the node gets no new places and keeps its holders. A
+/// mark set only by reports ends at the first turn one silence time after the last report; one set by offers and
+/// reports ends as an offer's mark does, counted from the later of the two. Going silent ends every mark.
 ///
 /// While a node is live the pool has one `Check` armed, with the crate's shared retry policy, at the earliest `heardAt`
 /// plus the silence of a live node, and keeps its time in `armed` and its id in `armedId`. The armed check marks each
@@ -932,10 +967,16 @@ impl Actor for PlacementActor {
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PlacementMsg) -> HandlerResult {
         let before = targets(turn.state());
+        end_reports(turn);
         match message {
             PlacementMsg::Offer { node, instance, labels, places } => {
                 let labels = check_offer(&node, &instance, labels, places).map_err(HandlerError::permanent)?;
                 offer(turn, node, instance, labels, places)?;
+            }
+            PlacementMsg::Duplicate { node, host } => {
+                check_id("a node", &node).map_err(HandlerError::permanent)?;
+                check_id("a host", &host).map_err(HandlerError::permanent)?;
+                duplicate(turn, node, host)?;
             }
             PlacementMsg::Check => {
                 refuse_foreign(turn, "Check")?;
@@ -1074,12 +1115,14 @@ fn declare_gone(turn: &mut Turn<PlacementActor>, node: &str) -> HandlerResult {
     Ok(())
 }
 
-/// The free places of each live node that is not draining: its offered places minus its holders.
+/// The free places of each live node that is not draining nor reported duplicate: its offered places minus its holders.
 fn free_places(state: &PlacementState) -> BTreeMap<&str, u32> {
     let mut free: BTreeMap<&str, u32> = state
         .nodes
         .iter()
-        .filter(|(_, n)| n.status == PlacementNodeStatus::Live && !n.draining)
+        .filter(|(_, n)| {
+            n.status == PlacementNodeStatus::Live && !n.draining && n.conflict.as_ref().is_none_or(|c| c.host.is_none())
+        })
         .map(|(id, n)| (id.as_str(), n.places))
         .collect();
     for holder in &state.holders {
@@ -1288,7 +1331,8 @@ fn offer(
     if let Some(entry) = live.filter(|n| n.instance != instance) {
         let new = entry.conflict.is_none();
         let entry = turn.state_mut().nodes.get_mut(&node).expect("known");
-        entry.conflict = Some(PlacementConflict { instance, at: now });
+        let host = entry.conflict.take().and_then(|c| c.host);
+        entry.conflict = Some(PlacementConflict { instance, at: now, host });
         if new {
             queue_alert(turn, node, PlacementNoticeKind::Conflict)?;
         }
@@ -1312,6 +1356,44 @@ fn offer(
     let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining, conflict };
     turn.state_mut().nodes.insert(node, entry);
     Ok(())
+}
+
+/// Marks a live `node` in conflict with `host`, with an alert for a new mark; nothing for a silent node, and refused for
+/// good for an unknown one.
+fn duplicate(turn: &mut Turn<PlacementActor>, node: String, host: String) -> HandlerResult {
+    let now = turn.now();
+    let Some(entry) = turn.state_mut().nodes.get_mut(&node) else {
+        return Err(HandlerError::permanent(format!("the pool does not know the node '{node}'")));
+    };
+    if entry.status != PlacementNodeStatus::Live {
+        return Ok(());
+    }
+    let new = entry.conflict.is_none();
+    let instance = entry.conflict.take().map_or_else(|| entry.instance.clone(), |c| c.instance);
+    entry.conflict = Some(PlacementConflict { instance, at: now, host: Some(host) });
+    if new {
+        queue_alert(turn, node, PlacementNoticeKind::Conflict)?;
+    }
+    Ok(())
+}
+
+/// Ends each mark set only by reports (its instance is the node's own) one silence time after the last report.
+fn end_reports(turn: &mut Turn<PlacementActor>) {
+    let now = turn.now();
+    let state = turn.state();
+    let ended: Vec<String> = state
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.conflict.as_ref().is_some_and(|c| {
+                c.host.is_some() && c.instance == n.instance && state.deadline(c.at).is_ok_and(|end| end <= now)
+            })
+        })
+        .map(|(node, _)| node.clone())
+        .collect();
+    for node in ended {
+        turn.state_mut().nodes.get_mut(&node).expect("known").conflict = None;
+    }
 }
 
 /// Marks each live node whose silence ended as silent with an alert for each, and arms the next check; for the armed
@@ -1519,7 +1601,12 @@ mod tests {
         };
         let decoded = decode(with("live", serde_json::json!({"instance": "i2", "at": AT}))).unwrap();
         let at: Timestamp = AT.parse().unwrap();
-        assert_eq!(decoded.nodes["a"].conflict, Some(PlacementConflict { instance: "i2".into(), at }));
+        assert_eq!(decoded.nodes["a"].conflict, Some(PlacementConflict { instance: "i2".into(), at, host: None }));
+        let reported = decode(with("live", serde_json::json!({"instance": "i1", "at": AT, "host": "mac-b"}))).unwrap();
+        let host = Some("mac-b".to_owned());
+        assert_eq!(reported.nodes["a"].conflict, Some(PlacementConflict { instance: "i1".into(), at, host }));
+        let entry = serde_json::to_value(&reported.nodes["a"]).unwrap();
+        assert_eq!(entry["conflict"], serde_json::json!({"instance": "i1", "at": AT, "host": "mac-b"}));
         assert_eq!(decode(with("live", serde_json::Value::Null)).unwrap().nodes["a"].conflict, None);
         let entry = serde_json::to_value(&decoded.nodes["a"]).unwrap();
         assert_eq!(entry["conflict"], serde_json::json!({"instance": "i2", "at": AT}));
@@ -1527,7 +1614,13 @@ mod tests {
         assert!(plain.unwrap().get("conflict").is_none(), "no mark: not written");
         for (status, conflict, why) in [
             ("silent", serde_json::json!({"instance": "i2", "at": AT}), "in conflict only while it is live"),
-            ("live", serde_json::json!({"instance": "i1", "at": AT}), "names its recorded instance"),
+            ("live", serde_json::json!({"instance": "i1", "at": AT}), "names its recorded instance without a host"),
+            ("live", serde_json::json!({"instance": "i1", "at": AT, "host": " "}), "a conflict's host id must be"),
+            (
+                "silent",
+                serde_json::json!({"instance": "i1", "at": AT, "host": "b"}),
+                "in conflict only while it is live",
+            ),
             ("live", serde_json::json!({"instance": " ", "at": AT}), "a conflict's instance id must be"),
             ("live", serde_json::json!({"instance": "i2", "at": "9999-12-31T23:59:30Z"}), "after 9999-12-31"),
         ] {

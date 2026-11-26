@@ -7,7 +7,9 @@
 //! holds or waits, and a deleted target frees its places and leaves the line. And an operator's drain, undrain and gone:
 //! a draining node gets no new places and keeps its holders, and a silent node declared gone tells each holder once.
 //! And a second machine under one node id (ADR 0069): its offers are ignored, the node is marked in conflict with one
-//! alert, and the mark ends when the node goes silent or the other machine stops.
+//! alert, and the mark ends when the node goes silent or the other machine stops. And a member's `Duplicate` report
+//! (ADR 0071): the mark with the other host, one alert, no new places while marked, and the end one silence time after
+//! the last report; a report of a silent node changes nothing and one of an unknown node is refused.
 //! And the operator's `cicada send` recipes for `Drain`, `Undrain`, `Gone` and `Release`, over the HTTP send route.
 
 mod common;
@@ -1214,7 +1216,7 @@ async fn offer_from(test: &TestActors, node: &str, instance: &str, labels: &[&st
 }
 
 fn conflict(instance: &str, start: Timestamp, after: u64) -> Option<PlacementConflict> {
-    Some(PlacementConflict { instance: instance.into(), at: time::add(start, secs(after)).unwrap() })
+    Some(PlacementConflict { instance: instance.into(), at: time::add(start, secs(after)).unwrap(), host: None })
 }
 
 fn told_conflict(node: &str) -> (String, PlacementNoticeKind) {
@@ -1316,6 +1318,103 @@ async fn after_the_second_machine_stops_for_one_silence_time_the_mark_clears_and
     assert_eq!(held(&test).await.nodes["mac-1"].conflict, conflict("i2", start, 75));
     assert_eq!(notices(&test).await, [told_conflict("mac-1"), told_conflict("mac-1")], "a new mark, a new alert");
     assert!(failed(&test).await.is_empty());
+}
+
+async fn report(test: &TestActors, node: &str, host: &str) -> Message {
+    send(test, PlacementMsg::Duplicate { node: node.into(), host: host.into() }).await
+}
+
+fn reported(instance: &str, start: Timestamp, after: u64, host: &str) -> Option<PlacementConflict> {
+    let at = time::add(start, secs(after)).unwrap();
+    Some(PlacementConflict { instance: instance.into(), at, host: Some(host.into()) })
+}
+
+/// Scenario: A copied identity folder. Reports mark the node with the other host and its own instance, with one alert;
+/// the node keeps its holder and offers but gets no new places, and one silence time after the last report the next
+/// turn ends the mark and grants the waiting ask.
+#[tokio::test(start_paused = true)]
+async fn a_reported_duplicate_alerts_once_gives_no_new_places_and_ends_one_silence_time_after_the_last_report() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    ask(&test, "r1", &["arm64"]).await;
+    let m = report(&test, "mac-1", "mac-b").await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, reported("i1", start, 0, "mac-b"));
+    ask(&test, "r2", &["arm64"]).await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED], "no new places while marked");
+    for after in [15, 30] {
+        test.advance_time_by(secs(15)).await;
+        offer(&test, "mac-1", &["arm64"], 2).await;
+        report(&test, "mac-1", "mac-c").await;
+        assert_eq!(held(&test).await.nodes["mac-1"].conflict, reported("i1", start, after, "mac-c"), "the last report");
+    }
+    assert_eq!(notices(&test).await, [told_conflict("mac-1")], "one alert per mark");
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1")], "the holder stays");
+    for _ in 0..3 {
+        test.advance_time_by(secs(15)).await;
+        offer(&test, "mac-1", &["arm64"], 2).await;
+    }
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, reported("i1", start, 30, "mac-c"), "45 s after: kept");
+    assert_eq!(answers(&test, "r2").await, [QUEUED]);
+    test.advance_time_by(secs(15)).await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    assert_eq!((entry.status, entry.conflict), (PlacementNodeStatus::Live, None), "60 s after the last report");
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")], "places again");
+    report(&test, "mac-1", "mac-b").await;
+    assert_eq!(notices(&test).await, [told_conflict("mac-1"), told_conflict("mac-1")], "a new mark, a new alert");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// A report on a node marked by another instance's offer keeps that instance and adds the host without a new alert;
+/// such a mark ends as an offer's mark does, from the later of the two. An offer of another instance on a reported node
+/// keeps the host.
+#[tokio::test(start_paused = true)]
+async fn a_report_and_a_conflicting_offer_share_one_mark() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    offer_from(&test, "mac-1", "i2", &["arm64"], 2).await;
+    test.advance_time_by(secs(10)).await;
+    report(&test, "mac-1", "mac-b").await;
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, reported("i2", start, 10, "mac-b"));
+    test.advance_time_by(secs(10)).await;
+    offer_from(&test, "mac-1", "i3", &["arm64"], 2).await;
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, reported("i3", start, 20, "mac-b"), "the host is kept");
+    assert_eq!(notices(&test).await, [told_conflict("mac-1")]);
+    test.advance_time_by(secs(50)).await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, None, "60 s after the last conflict, at an offer");
+
+    // A mark set only by reports on another node.
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    report(&test, "mac-2", "mac-x").await;
+    test.advance_time_by(secs(5)).await;
+    offer_from(&test, "mac-2", "i2", &["arm64"], 1).await;
+    let at = test.now();
+    let conflict = held(&test).await.nodes["mac-2"].conflict.clone();
+    assert_eq!(conflict, Some(PlacementConflict { instance: "i2".into(), at, host: Some("mac-x".into()) }));
+    assert!(failed(&test).await.is_empty());
+}
+
+/// A report of a silent node changes nothing; one of an unknown node, or out of bounds, is refused for good.
+#[tokio::test(start_paused = true)]
+async fn a_report_of_a_silent_node_changes_nothing_and_of_an_unknown_node_is_refused() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    test.advance_time_by(secs(60)).await;
+    let before = held(&test).await;
+    assert_eq!(status_of(&before, "mac-1"), PlacementNodeStatus::Silent);
+    let m = report(&test, "mac-1", "mac-b").await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(held(&test).await, before);
+    for (node, host) in [("mac-9", "mac-b"), ("mac-1", " "), (" ", "mac-b")] {
+        let m = report(&test, node, host).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{node:?} {host:?}");
+    }
+    assert_eq!(held(&test).await, before);
+    assert_eq!(notices(&test).await, [("mac-1".to_owned(), PlacementNoticeKind::Silent)]);
 }
 
 /// `POST /actors/cicada.placement/runners/messages` on `api` with the type and payload that

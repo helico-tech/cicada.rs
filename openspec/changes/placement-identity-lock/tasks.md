@@ -12,7 +12,7 @@ field on `NodeConfig`; builder.md, Version). Follow `design.md` and ADR 0071
   `PlacementMember` keeps the whole identity; `InvalidIdentity::kind()` with `IdentityErrorKind::{Invalid, Locked}`; a
   file system without locks warns and goes on (decisions 3 and 4). Existing tests that load twice drop the first
   identity first. Verify: the lock tests of the design.
-- [ ] 3. **The duplicate check and the pool.** Each round, first, the member reads `ActorSystem::node(id)` and compares
+- [x] 3. **The duplicate check and the pool.** Each round, first, the member reads `ActorSystem::node(id)` and compares
   its host name with `ActorSystem::hostname()`; on a difference: no offer, one error log per duplicate, `Duplicate {
   node, host }` to the pool. The pool: the mark's optional `host`, one `conflict` alert per mark, no new places while
   marked, the end rules of ADR 0071; unknown nodes refused for good; contract reference and samples regenerated

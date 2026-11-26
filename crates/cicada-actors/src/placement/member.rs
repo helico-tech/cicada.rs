@@ -247,6 +247,19 @@ impl Default for MemberSettings {
     }
 }
 
+/// The host name in the node's row when it is set and differs from the one the node writes; none when either is
+/// missing or the read fails.
+async fn other_host(system: &ActorSystem, pool: &str) -> Option<String> {
+    let own = system.hostname()?;
+    match system.node(system.node_id()).await {
+        Ok(row) => row.and_then(|row| row.hostname).filter(|host| host != own),
+        Err(e) => {
+            tracing::warn!(pool, "placement member: the node's row cannot be read, so no duplicate check: {e}");
+            None
+        }
+    }
+}
+
 /// What a node can take now, as the probe of a [`PlacementMember`] gives it: the labels and places of its offer, in
 /// the bounds of [`PlacementMsg::offer`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +285,16 @@ impl Capacity {
 /// `Offer { node, instance, labels, places }` to the pool, with the node's own id ([`ActorSystem::node_id`], the one its
 /// claims and pins use, also when `--node-id` overrides the identity's) and the identity's instance; `None` sends
 /// nothing, so a node whose runtime does not answer goes silent at the pool by itself.
+///
+/// **Duplicates** (ADR 0071). Each round first reads the node's own row in the node table
+/// ([`ActorSystem::node`]). Two machines under one node id write that one row in turn, so a host name there that is set
+/// and differs from the one this node writes ([`ActorSystem::hostname`], see
+/// [`NodeConfig::hostname`](cicada::runtime::NodeConfig::hostname)) means another machine runs under this id, such as
+/// one started from a copied identity folder. That round then skips the probe and the offer, sends the pool
+/// `Duplicate { node, host }`, and logs an error, once for each other host name in a row. A round without a host name of
+/// its own or in the row, or whose read fails (a warning), checks nothing. A redeploy under a new host name does not
+/// trip it, as the old node removes its row when it stops; a node that crashed leaves its row for one more heartbeat of
+/// the new one at most. Two machines that keep one host name are not told apart.
 ///
 /// **Errors.** Nothing ends `run` but `stop`, also while a probe or a send hangs. An offer out of bounds and a send
 /// that fails or is not accepted, such as to a pool not created yet, are logged as warnings and tried in the next
@@ -308,6 +331,8 @@ pub struct PlacementMember<P> {
     identity: NodeIdentity,
     settings: MemberSettings,
     probe: P,
+    /// The other host name last logged as a duplicate.
+    logged: Option<String>,
 }
 
 impl<P> std::fmt::Debug for PlacementMember<P> {
@@ -328,7 +353,7 @@ where
     /// A member that offers to `pool` under `identity`'s instance what `probe` gives, each round. It keeps `identity`,
     /// and so the lock of its folder, until it is dropped.
     pub fn new(pool: Placement, identity: NodeIdentity, settings: MemberSettings, probe: P) -> Self {
-        Self { pool, identity, settings, probe }
+        Self { pool, identity, settings, probe, logged: None }
     }
 
     /// Offers in rounds through `system` until `stop` completes, then returns. No error ends it.
@@ -349,12 +374,33 @@ where
         }
     }
 
-    /// Calls the probe and sends its offer.
+    /// Reports another machine under the node's id, or calls the probe and sends its offer.
     async fn round(&mut self, system: &ActorSystem) {
+        let pool = self.pool.pool.as_str();
+        if let Some(host) = other_host(system, pool).await {
+            let node = system.node_id().as_str();
+            if self.logged.as_deref() != Some(host.as_str()) {
+                let own = system.hostname().unwrap_or_default();
+                tracing::error!(
+                    pool,
+                    node,
+                    host,
+                    "placement member: another machine, '{host}', runs under this node id ({node}) on this host \
+                     ('{own}'): no offers while it does; give each machine an identity folder of its own"
+                );
+                self.logged = Some(host.clone());
+            }
+            let report = PlacementMsg::Duplicate { node: node.to_owned(), host };
+            match system.send(&self.pool, report).await {
+                Ok(SendResult::Accepted(_)) => {}
+                Ok(other) => tracing::warn!(pool, "placement member: the duplicate report was not accepted: {other:?}"),
+                Err(e) => tracing::warn!(pool, "placement member: the duplicate report failed: {e}"),
+            }
+            return;
+        }
         let Some(Capacity { labels, places }) = (self.probe)().await else {
             return;
         };
-        let pool = self.pool.pool.as_str();
         let offer = match PlacementMsg::offer(system.node_id().as_str(), &self.identity.instance, labels, places) {
             Ok(offer) => offer,
             Err(e) => {

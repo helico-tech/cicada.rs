@@ -17,7 +17,7 @@
             },
             {
               "const": "conflict",
-              "description": "Another instance offered under the live node's id: its offers are ignored. Sent once while the mark lasts; the\nnode's `conflict` names the instance.",
+              "description": "Another instance offered under the live node's id, whose offers are ignored, or a member reported another\nmachine under it (`Duplicate`). Sent once while the mark lasts; the node's `conflict` names the instance and,\nfor a report, the host.",
               "type": "string"
             }
           ]
@@ -147,6 +147,30 @@
         "node"
       ],
       "title": "Drain",
+      "type": "object"
+    },
+    "Duplicate": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A report, from anyone, such as a [`PlacementMember`] that found another host name in its node's row: another\nmachine, `host`, runs under the id of `node` (ADR 0071). For a live node it marks the node in `conflict` with\n`host`, the node's own instance unless another instance marked it already, and the store time; a new mark is told\n`conflict`. The node gets no new places while the mark has a `host`, which ends one silence time after the last\nreport (a mark set by an offer too ends as an offer's would, so when both would). Nothing for a silent node, which\ngets no new places anyway; refused for good for an unknown node.",
+      "properties": {
+        "host": {
+          "description": "The host name of the other machine, as the node table shows it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "node": {
+          "description": "The node id the other machine runs under.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "host"
+      ],
+      "title": "Duplicate",
       "type": "object"
     },
     "Failed": {
@@ -532,15 +556,24 @@
         "type": "object"
       },
       "PlacementConflict": {
-        "description": "An offer of another instance under a live node's id, which the pool ignored.",
+        "description": "An offer of another instance under a live node's id, which the pool ignored, or a report of another machine under\nit (`Duplicate`, ADR 0071).",
         "properties": {
           "at": {
-            "description": "The store time of its turn.",
+            "description": "The store time of the last conflicting offer or report.",
             "format": "date-time",
             "type": "string"
           },
+          "host": {
+            "description": "The host name of the other machine of the last report; set once a report marked the node, and the node gets no\nnew places while it is. 1 through 200 characters, not blank, without NUL. Absent: no report.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "instance": {
-            "description": "Its instance id: not the node's recorded one; 1 through 200 characters, not blank, without NUL.",
+            "description": "The other instance id: not the node's recorded one, except for a mark set only by reports, which names the\nnode's own; 1 through 200 characters, not blank, without NUL.",
             "maxLength": 200,
             "minLength": 1,
             "type": "string"
@@ -623,7 +656,7 @@
                 "type": "null"
               }
             ],
-            "description": "The last offer of another instance while it was live, ignored; set only while it is live. Absent: none."
+            "description": "The last offer of another instance, ignored, or the last report of another machine, while it was live; set only\nwhile it is live. Absent: none."
           },
           "draining": {
             "default": false,

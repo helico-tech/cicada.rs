@@ -622,6 +622,10 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
             PlacementMsg::offer("mac-1", "3f9c", ["docker", "arm64"], 4).unwrap(),
             json!({"type": "Offer", "node": "mac-1", "instance": "3f9c", "labels": ["arm64", "docker"], "places": 4}),
         ),
+        (
+            PlacementMsg::Duplicate { node: "mac-1".into(), host: "mac-b".into() },
+            json!({"type": "Duplicate", "node": "mac-1", "host": "mac-b"}),
+        ),
         (PlacementMsg::Check, json!({"type": "Check"})),
         (PlacementMsg::Rearm, json!({"type": "Rearm"})),
         (
@@ -667,6 +671,8 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "places": 1})),
         ("Offer", json!({"node": "mac-1", "labels": [], "places": 1})),
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": [], "places": -1})),
+        ("Duplicate", json!({"node": "mac-1"})),
+        ("Duplicate", json!({"host": "mac-b"})),
         ("Alert", json!({"node": "mac-1", "kind": "gone"})),
         ("Alert", json!({"node": "mac-1"})),
         ("Alerts", json!({"to": "pager/ops"})),
@@ -783,6 +789,12 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&books);
     assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
+    let mut reported = node("live");
+    reported["conflict"] = json!({"instance": "3f9c", "at": "2026-01-01T00:00:10Z", "host": "mac-b"});
+    let reported = with(json!({"nodes": {"mac-1": reported}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
+    assert_state_sample::<PlacementState>(&reported);
+    let read = json_of(serde_json::from_value::<PlacementState>(reported.clone()).unwrap());
+    assert_eq!(read["nodes"], reported["nodes"]);
     let mut silent_marked = node("silent");
     silent_marked["conflict"] = json!({"instance": "b2c4", "at": "2026-01-01T00:00:10Z"});
     let mut self_marked = node("live");
@@ -826,7 +838,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
 }
 
 /// The state a pool writes with a live node, a silent one, an alert target, holders, one told and one not yet, and a
-/// waiting ask; then a draining node, and a node in conflict.
+/// waiting ask; then a draining node, a node in conflict, and that node reported duplicate.
 #[tokio::test(start_paused = true)]
 async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
@@ -877,6 +889,11 @@ async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["nodes"]["mac-2"]["conflict"]["instance"], "b2c4", "{written}");
     assert_eq!(written["nodes"]["mac-2"]["instance"], "7a1e", "{written}");
+    assert_state_sample::<PlacementState>(&written);
+    test.send(&pool, PlacementMsg::Duplicate { node: "mac-2".into(), host: "mac-b".into() }).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["nodes"]["mac-2"]["conflict"]["host"], "mac-b", "{written}");
     assert_state_sample::<PlacementState>(&written);
 }
 

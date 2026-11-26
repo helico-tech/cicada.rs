@@ -28,6 +28,8 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
+# The duplicate test of the placement member reads what it logs.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
