@@ -1,0 +1,258 @@
+{
+  "messages": {
+    "Alert": {
+      "$defs": {
+        "PlacementNoticeKind": {
+          "description": "What a notice of a pool says about a node.",
+          "oneOf": [
+            {
+              "const": "silent",
+              "description": "The node was not heard from for the silence time: it gets no new places. Sent once per silence.",
+              "type": "string"
+            },
+            {
+              "const": "back",
+              "description": "A silent node offered again and is live.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the alert target a notice about `node`, in a turn of its own so that a failing target fails only this\nalert; nothing without a target. Sent by the pool to itself.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/PlacementNoticeKind",
+          "description": "What happened to it."
+        },
+        "node": {
+          "description": "The node it is about.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "kind"
+      ],
+      "title": "Alert",
+      "type": "object"
+    },
+    "Alerts": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sets where the pool's notices go, replacing the target before.",
+      "properties": {
+        "messageType": {
+          "description": "The message type of the notices, whose payload is a [`PlacementNotice`]; not empty, at most 200 characters,\nwithout NUL.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "The target of the notices.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "messageType"
+      ],
+      "title": "Alerts",
+      "type": "object"
+    },
+    "Check": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The silence timer: sent by the pool to itself. Marks each live node not heard from for the silence time as\nsilent, queues an `Alert` for each, and arms the next check at the earliest end of a live node's silence.",
+      "properties": {},
+      "title": "Check",
+      "type": "object"
+    },
+    "Offer": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once) and\nplaces, heard at the store time of this turn, and live. A silent node that offers is told `back` to the alert\ntarget. A node new to a pool that knows `maxNodes` nodes is refused for good. Send one at an interval shorter\nthan the silence time.",
+      "properties": {
+        "instance": {
+          "description": "An id the member draws at each process start, which tells two processes offering under one node id apart.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "labels": {
+          "description": "What the node offers, such as its processor kind: at most 32, each 1 through 100 characters without NUL.",
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "node": {
+          "description": "The node id the member's node pins its actors under.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "places": {
+          "description": "How many places the node offers, 0 through 1,000; 0 keeps the node known but full.",
+          "format": "uint32",
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node",
+        "instance",
+        "labels",
+        "places"
+      ],
+      "title": "Offer",
+      "type": "object"
+    },
+    "Rearm": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Arms the check again at its unchanged time, at once when that has passed: the recovery of a check that was\npurged, cancelled or failed for good. Nothing when no node is live.",
+      "properties": {},
+      "title": "Rearm",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "PlacementAlerts": {
+        "description": "Where the notices of a pool go.",
+        "properties": {
+          "messageType": {
+            "description": "The message type of the notices; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "description": "The target of the notices.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "messageType"
+        ],
+        "type": "object"
+      },
+      "PlacementNode": {
+        "description": "What a pool knows of a node: its last offer and whether it is heard from.",
+        "properties": {
+          "heardAt": {
+            "description": "The store time of the turn of its last offer.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The instance id of its last offer; 1 through 200 characters, not blank, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "labels": {
+            "description": "The labels of its last offer, sorted, each once; at most 32, each 1 through 100 characters without NUL.",
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "places": {
+            "description": "The places of its last offer, 0 through 1,000.",
+            "format": "uint32",
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/$defs/PlacementNodeStatus",
+            "description": "Whether it is heard from."
+          }
+        },
+        "required": [
+          "instance",
+          "labels",
+          "places",
+          "heardAt",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PlacementNodeStatus": {
+        "description": "Whether a node of a pool is heard from.",
+        "oneOf": [
+          {
+            "const": "live",
+            "description": "Heard from within the silence time.",
+            "type": "string"
+          },
+          {
+            "const": "silent",
+            "description": "Not heard from for the silence time: it gets no new places until it offers again.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the\nnodes it knows by node id, and the time of its armed check. Build it with `PlacementState::new`; a decoded state is\nchecked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"alerts\":null,\"nodes\":{},\"armed\":null}`; `alerts`, `nodes` and\n`armed` may be left out of a create.",
+    "properties": {
+      "alerts": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PlacementAlerts"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where its notices go; absent or null: no notices."
+      },
+      "armed": {
+        "description": "The time of the armed `Check`: present exactly while a node is live.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "maxNodes": {
+        "description": "The most nodes the pool knows; 1 through 1000.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "nodes": {
+        "additionalProperties": {
+          "$ref": "#/$defs/PlacementNode"
+        },
+        "default": {},
+        "description": "The nodes it knows, by node id (1 through 200 characters, not blank, without NUL), at most `maxNodes`; absent:\nnone.",
+        "type": "object"
+      },
+      "silence": {
+        "description": "How long a node may go without an offer before it is silent, as an ISO-8601 duration; 1 second through 1 day.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "silence",
+      "maxNodes"
+    ],
+    "title": "PlacementState",
+    "type": "object"
+  },
+  "type": "cicada.placement"
+}

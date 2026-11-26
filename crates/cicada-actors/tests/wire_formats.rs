@@ -1,4 +1,4 @@
-//! The wire formats of the twelve ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the thirteen ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
@@ -20,7 +20,8 @@ use cicada_actors::{
     HeartbeatWatchMsg, HeartbeatWatchState, JobCancel, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg,
     JobGraphState, JobOutcome, JobStart, JournalEntry, NodeDown, NodeDownMonitor, NodeDownMonitorActor,
     NodeDownMonitorMsg, NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, PermitNotice,
-    PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState, RateLimiter, RateLimiterActor, RateLimiterMsg,
+    PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState, Placement, PlacementActor, PlacementMsg,
+    PlacementNotice, PlacementNoticeKind, PlacementState, RateLimiter, RateLimiterActor, RateLimiterMsg,
     RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
     Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
@@ -93,7 +94,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_twelve_contracts() -> [Contract; 12] {
+fn the_thirteen_contracts() -> [Contract; 13] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -107,12 +108,13 @@ fn the_twelve_contracts() -> [Contract; 12] {
         contract_of::<NodeDownMonitorActor>().unwrap(),
         contract_of::<PermitsActor>().unwrap(),
         contract_of::<JobGraphActor>().unwrap(),
+        contract_of::<PlacementActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_twelve_types_match_their_references() {
-    let contracts = the_twelve_contracts();
+fn the_contracts_of_the_thirteen_types_match_their_references() {
+    let contracts = the_thirteen_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -128,7 +130,8 @@ fn the_contracts_of_the_twelve_types_match_their_references() {
             "cicada.heartbeat-watch",
             "cicada.node-down",
             "cicada.permits",
-            "cicada.job-graph"
+            "cicada.job-graph",
+            "cicada.placement"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -575,6 +578,143 @@ async fn the_state_a_pool_writes_passes_its_sample() {
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["holders"][1]["notified"], true, "{written}");
     assert_state_sample::<PermitsState>(&written);
+}
+
+/// A family of an alert target of a placement pool: it declares `Placement` with the notice of the crate.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum PagerMsg {
+    /// A notice of a placement pool.
+    Placement(PlacementNotice),
+}
+
+/// `pager/{id}`: keeps nothing; it takes the notices of a placement pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Pager {
+    id: String,
+}
+
+impl ActorRef for Pager {
+    const TYPE: &'static str = "pager";
+    type Message = PagerMsg;
+}
+
+struct PagerActor;
+
+impl Actor for PagerActor {
+    type Ref = Pager;
+    type State = Value;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: PagerMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+#[test]
+fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_samples() {
+    let pager = Pager { id: "ops".into() };
+    let placement = [
+        (
+            PlacementMsg::offer("mac-1", "3f9c", ["docker", "arm64"], 4).unwrap(),
+            json!({"type": "Offer", "node": "mac-1", "instance": "3f9c", "labels": ["arm64", "docker"], "places": 4}),
+        ),
+        (PlacementMsg::Check, json!({"type": "Check"})),
+        (PlacementMsg::Rearm, json!({"type": "Rearm"})),
+        (
+            PlacementMsg::Alert { node: "mac-1".into(), kind: PlacementNoticeKind::Silent },
+            json!({"type": "Alert", "node": "mac-1", "kind": "silent"}),
+        ),
+        (
+            PlacementMsg::alerts(&pager, "Placement").unwrap(),
+            json!({"type": "Alerts", "to": "pager/ops", "messageType": "Placement"}),
+        ),
+    ];
+    for (message, written) in placement {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<PlacementMsg>(&written);
+    }
+    for (message_type, invalid) in [
+        ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": []})),
+        ("Offer", json!({"node": "mac-1", "instance": "3f9c", "places": 1})),
+        ("Offer", json!({"node": "mac-1", "labels": [], "places": 1})),
+        ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": [], "places": -1})),
+        ("Alert", json!({"node": "mac-1", "kind": "gone"})),
+        ("Alert", json!({"node": "mac-1"})),
+        ("Alerts", json!({"to": "pager/ops"})),
+        ("Alerts", json!({"to": "not an address", "messageType": "Placement"})),
+    ] {
+        assert!(cicada::message::decode::<PlacementMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
+    }
+
+    for (kind, name) in [(PlacementNoticeKind::Silent, "silent"), (PlacementNoticeKind::Back, "back")] {
+        let notice = PlacementNotice { pool: "runners".into(), node: "mac-1".into(), kind };
+        let written = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": name});
+        assert_eq!(json_of(PagerMsg::Placement(notice.clone())), written);
+        assert_message_sample::<PagerMsg>(&written);
+        let PagerMsg::Placement(read) = serde_json::from_value::<PagerMsg>(written).unwrap();
+        assert_eq!(read, notice);
+    }
+    let unknown = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": "live"});
+    assert!(serde_json::from_value::<PagerMsg>(unknown).is_err(), "two kinds");
+}
+
+#[test]
+fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let written = json_of(PlacementState::new(std::time::Duration::from_secs(60), 1000).unwrap());
+    let settings = json!({"silence": "PT1M", "maxNodes": 1000});
+    let with = |extra: Value| {
+        let mut json = settings.clone();
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json
+    };
+    assert_eq!(written, with(json!({"alerts": null, "nodes": {}, "armed": null})));
+    assert_state_sample::<PlacementState>(&written);
+    assert_state_sample::<PlacementState>(&settings);
+    let node = |status: &str| {
+        json!({"instance": "3f9c", "labels": ["arm64", "docker"], "places": 4,
+        "heardAt": "2026-01-01T00:00:00Z", "status": status})
+    };
+    let books = with(json!({"alerts": {"to": "pager/ops", "messageType": "Placement"},
+        "nodes": {"mac-1": node("live"), "mac-2": node("silent")}, "armed": "2026-01-01T00:01:00Z"}));
+    assert_state_sample::<PlacementState>(&books);
+    assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
+    for invalid in [
+        with(json!({"silence": "PT0S"})),
+        with(json!({"silence": "P2D"})),
+        with(json!({"silence": 60})),
+        with(json!({"maxNodes": 0})),
+        with(json!({"maxNodes": 1001})),
+        with(json!({"nodes": {"mac-1": node("live")}})),
+        with(json!({"nodes": {"mac-1": node("asleep")}})),
+        with(json!({"nodes": {"mac-1": node("silent")}, "armed": "2026-01-01T00:01:00Z"})),
+        with(json!({"alerts": {"to": "pager/ops", "messageType": ""}})),
+        json!({"silence": "PT1M", "maxNodes": 1, "nodes": {"a": node("silent"), "b": node("silent")}}),
+        json!({"silence": "PT1M"}),
+    ] {
+        assert!(serde_json::from_value::<PlacementState>(invalid.clone()).is_err(), "{invalid}");
+    }
+}
+
+/// The state a pool writes with a live node, a silent one and an alert target.
+#[tokio::test(start_paused = true)]
+async fn the_state_a_placement_pool_writes_passes_its_sample() {
+    let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
+    let (pool, pager) = (Placement::named("runners"), Pager { id: "ops".into() });
+    test.create(&pager, &json!({})).await;
+    test.create(&pool, &PlacementState::new(std::time::Duration::from_secs(60), 10).unwrap()).await;
+    test.send(&pool, PlacementMsg::alerts(&pager, "Placement").unwrap()).await;
+    test.send(&pool, PlacementMsg::offer("mac-1", "3f9c", ["arm64"], 4).unwrap()).await;
+    test.run_until_idle().await;
+    test.advance_time_by(std::time::Duration::from_secs(30)).await;
+    test.send(&pool, PlacementMsg::offer("mac-2", "7a1e", ["x86_64", "docker"], 0).unwrap()).await;
+    test.run_until_idle().await;
+    test.advance_time_by(std::time::Duration::from_secs(30)).await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["nodes"]["mac-1"]["status"], "silent", "{written}");
+    assert_eq!(written["nodes"]["mac-2"]["status"], "live", "{written}");
+    assert_eq!(written["nodes"]["mac-2"]["labels"], json!(["docker", "x86_64"]), "{written}");
+    assert_state_sample::<PlacementState>(&written);
+    assert!(test.failures().await.is_empty(), "the silent notice went to the pager");
 }
 
 /// A family of a worker and report target of a job graph: it declares `Build` with the job message of the crate,

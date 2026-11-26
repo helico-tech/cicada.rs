@@ -15,7 +15,7 @@ once `placement-drain-and-gone` has landed (decision 6), so do not mark anything
 - [x] 3. **Silence and alerts.** The self-only `Check` armed at the earliest `heardAt + silence` (kept in `armed`),
   `Rearm`, silent and live nodes, one `Alert` per changed node in its own turn sending `PlacementNotice` to the target
   set by `Alerts` (decision 4). Verify: the silence, return, lost check, foreign check and failing target tests.
-- [ ] 4. **Contract, changelog and docs handoff.** Add the pool to `the_twelve_contracts()` (and its name test) in
+- [x] 4. **Contract, changelog and docs handoff.** Add the pool to `the_twelve_contracts()` (and its name test) in
   `crates/cicada-actors/tests/wire_formats.rs`, its reference JSON under `docs/reference/contracts`
   (`CICADA_UPDATE_CONTRACTS=true`) and message and state samples. The unreleased section of `CHANGELOG.md` names the
   pool under Added. `docs-handoff.md` carries the design's Docs section; nothing blocks. No edit to `README.md`,

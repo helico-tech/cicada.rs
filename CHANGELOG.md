@@ -7,6 +7,29 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.24.0 — unreleased
+
+The first part of the placement pool (ADR 0067): nodes offer places with labels to a pool, and a node that stops
+offering is marked silent, with one notice. Asks, holders, drain and the member follow in this version. Additive: a new
+ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
+guarantees are those of 0.23.1.
+
+### Added
+
+- `cicada-actors`: the placement pool `cicada.placement/<pool>` (`Placement`, `PlacementActor`, `PlacementMsg`,
+  `PlacementState`, `PlacementNode`, `PlacementNodeStatus`, `PlacementAlerts`, `PlacementNotice`,
+  `PlacementNoticeKind`, `InvalidPlacement`). The host creates each pool with `PlacementState::new(silence,
+  max_nodes)` (silence 1 second through 1 day, 1 through 1,000 nodes). A member sends
+  `PlacementMsg::offer(node, instance, labels, places)` at an interval shorter than the silence: up to 32 labels,
+  sorted and kept once, and 0 through 1,000 places; each offer replaces the node's entry and records the store time of
+  its turn as `heardAt`. The pool's own `Check`, armed at the earliest end of a live node's silence (its time in
+  `armed`), marks a node not heard from for the silence as `silent`; each change is sent as a `PlacementNotice`
+  (`silent` once per silence, `back` at the next offer) to the target of the last `Alerts`, in an `Alert` turn of its
+  own, so a failing target fails only that alert. `Rearm` brings back a lost check. Out-of-bounds messages, a new node
+  past `maxNodes`, and a `Check` or `Alert` from another sender are refused for good. Its contract is in
+  `docs/reference/contracts/cicada.placement.json`. Covered by `crates/cicada-actors/tests/placement.rs` and
+  `tests/wire_formats.rs`.
+
 ## 0.23.1 — 2026-11-26
 
 An `OrphanWatch` of `cicada-containers` reports the containers of a job that have no container actor, without removing
