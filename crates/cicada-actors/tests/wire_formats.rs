@@ -687,7 +687,11 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         assert!(cicada::message::decode::<PlacementMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
     }
 
-    for (kind, name) in [(PlacementNoticeKind::Silent, "silent"), (PlacementNoticeKind::Back, "back")] {
+    for (kind, name) in [
+        (PlacementNoticeKind::Silent, "silent"),
+        (PlacementNoticeKind::Back, "back"),
+        (PlacementNoticeKind::Conflict, "conflict"),
+    ] {
         let notice = PlacementNotice { pool: "runners".into(), node: "mac-1".into(), kind };
         let written = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": name});
         assert_eq!(json_of(PagerMsg::Placement(notice.clone())), written);
@@ -696,7 +700,7 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         assert_eq!(read, notice);
     }
     let unknown = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": "live"});
-    assert!(serde_json::from_value::<PagerMsg>(unknown).is_err(), "two kinds");
+    assert!(serde_json::from_value::<PagerMsg>(unknown).is_err(), "three kinds");
 
     let answer = |kind, grant: Option<u64>, node: Option<&str>, reason| PlacementAnswer {
         pool: "runners".into(),
@@ -771,13 +775,26 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
             "node": "mac-1", "notified": notified})
     };
     let waiter = |holder: &str| json!({"holder": holder, "needs": ["gpu"], "to": "pager/ops", "messageType": "Placed"});
+    let mut marked = node("live");
+    marked["conflict"] = json!({"instance": "b2c4", "at": "2026-01-01T00:00:10Z"});
     let books = with(json!({"alerts": {"to": "pager/ops", "messageType": "Placement"},
-        "nodes": {"mac-1": node("live"), "mac-2": node("silent")}, "nextGrant": 6,
+        "nodes": {"mac-1": marked, "mac-2": node("silent")}, "nextGrant": 6,
         "holders": [holder("r1", 3, true), holder("r2", 5, false)], "waiting": [waiter("r3")],
         "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&books);
     assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
+    let mut silent_marked = node("silent");
+    silent_marked["conflict"] = json!({"instance": "b2c4", "at": "2026-01-01T00:00:10Z"});
+    let mut self_marked = node("live");
+    self_marked["conflict"] = json!({"instance": "3f9c", "at": "2026-01-01T00:00:10Z"});
+    let mut no_time = node("live");
+    no_time["conflict"] = json!({"instance": "b2c4"});
+    let live =
+        |entry: Value| with(json!({"nodes": {"mac-1": entry}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     for invalid in [
+        with(json!({"nodes": {"mac-1": silent_marked}})),
+        live(self_marked),
+        live(no_time),
         with(json!({"silence": "PT0S"})),
         with(json!({"silence": "P2D"})),
         with(json!({"silence": 60})),
@@ -809,7 +826,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
 }
 
 /// The state a pool writes with a live node, a silent one, an alert target, holders, one told and one not yet, and a
-/// waiting ask; then a draining node.
+/// waiting ask; then a draining node, and a node in conflict.
 #[tokio::test(start_paused = true)]
 async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
@@ -854,6 +871,12 @@ async fn the_state_a_placement_pool_writes_passes_its_sample() {
         (&written["nodes"]["mac-2"]["draining"], &written["nodes"]["mac-1"]["draining"]),
         (&json!(true), &json!(false))
     );
+    assert_state_sample::<PlacementState>(&written);
+    test.send(&pool, PlacementMsg::offer("mac-2", "b2c4", ["x86_64"], 3).unwrap()).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["nodes"]["mac-2"]["conflict"]["instance"], "b2c4", "{written}");
+    assert_eq!(written["nodes"]["mac-2"]["instance"], "7a1e", "{written}");
     assert_state_sample::<PlacementState>(&written);
 }
 

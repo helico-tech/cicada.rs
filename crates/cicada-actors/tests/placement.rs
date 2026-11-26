@@ -6,6 +6,8 @@
 //! grant nobody received. And holders that go away: the pool watches each target with `watch_existing` while it
 //! holds or waits, and a deleted target frees its places and leaves the line. And an operator's drain, undrain and gone:
 //! a draining node gets no new places and keeps its holders, and a silent node declared gone tells each holder once.
+//! And a second machine under one node id (ADR 0069): its offers are ignored, the node is marked in conflict with one
+//! alert, and the mark ends when the node goes silent or the other machine stops.
 
 mod common;
 
@@ -17,8 +19,8 @@ use cicada::store::{Message, OutcomeStatus};
 use cicada::time::{self, Timestamp};
 use cicada::{Failed, FailureCause, StopCause, Stopped};
 use cicada_actors::{
-    Placement, PlacementActor, PlacementAnswer, PlacementAnswerKind, PlacementMsg, PlacementNodeStatus,
-    PlacementNotice, PlacementNoticeKind, PlacementRefusal, PlacementState,
+    Placement, PlacementActor, PlacementAnswer, PlacementAnswerKind, PlacementConflict, PlacementMsg,
+    PlacementNodeStatus, PlacementNotice, PlacementNoticeKind, PlacementRefusal, PlacementState,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -218,7 +220,7 @@ async fn an_offer_replaces_the_last_one_and_records_when_the_node_was_heard() {
     test.advance_time_by(secs(15)).await;
     let renewal = PlacementMsg::Offer {
         node: "mac-1".into(),
-        instance: "i2".into(),
+        instance: "i1".into(),
         labels: vec!["docker".into(), "arm64".into(), "docker".into()],
         places: 2,
     };
@@ -227,7 +229,7 @@ async fn an_offer_replaces_the_last_one_and_records_when_the_node_was_heard() {
     let entry = &state.nodes["mac-1"];
     assert_eq!(
         (entry.instance.as_str(), entry.labels.clone(), entry.places),
-        ("i2", vec!["arm64".into(), "docker".into()], 2)
+        ("i1", vec!["arm64".into(), "docker".into()], 2)
     );
     assert_eq!((entry.heard_at, entry.status), (time::add(start, secs(15)).unwrap(), PlacementNodeStatus::Live));
     assert_eq!(state.armed, time::add(start, secs(60)).ok(), "armed at the first offer, not moved by the renewal");
@@ -1203,4 +1205,113 @@ async fn a_tell_gone_from_another_sender_is_refused() {
     assert_eq!(failed(&test).await, [refused.clone(), refused]);
     assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
     assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
+}
+
+async fn offer_from(test: &TestActors, node: &str, instance: &str, labels: &[&str], places: u32) -> Message {
+    send(test, PlacementMsg::offer(node, instance, labels.iter().copied(), places).unwrap()).await
+}
+
+fn conflict(instance: &str, start: Timestamp, after: u64) -> Option<PlacementConflict> {
+    Some(PlacementConflict { instance: instance.into(), at: time::add(start, secs(after)).unwrap() })
+}
+
+fn told_conflict(node: &str) -> (String, PlacementNoticeKind) {
+    (node.to_owned(), PlacementNoticeKind::Conflict)
+}
+
+/// Scenario: Two machines under one id. Three offers of a second instance change no entry field, the turns succeed,
+/// and one `conflict` alert goes out; the first machine keeps renewing and its places are granted.
+#[tokio::test(start_paused = true)]
+async fn a_second_instance_under_a_live_node_changes_nothing_and_alerts_once() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    let first = held(&test).await.nodes["mac-1"].clone();
+    for after in [10, 20, 30] {
+        test.advance_time_by(secs(10)).await;
+        let m = offer_from(&test, "mac-1", "i2", &["x86_64"], 7).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "an accepted turn");
+        let entry = held(&test).await.nodes["mac-1"].clone();
+        assert_eq!(entry.conflict, conflict("i2", start, after), "the mark follows the last conflicting offer");
+        let mut unchanged = entry.clone();
+        unchanged.conflict = None;
+        assert_eq!(unchanged, first, "no entry field changes");
+    }
+    assert_eq!(notices(&test).await, [told_conflict("mac-1")], "one alert while the mark lasts");
+    test.advance_time_by(secs(5)).await;
+    offer(&test, "mac-1", &["arm64"], 3).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    assert_eq!((entry.places, entry.heard_at), (3, time::add(start, secs(35)).unwrap()), "the first machine renews");
+    assert_eq!(entry.conflict, conflict("i2", start, 30), "the mark stays within one silence time");
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
+    assert_eq!(done(&test, "Alert").await, 1);
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A third instance. It updates the mark, and no new alert goes out.
+#[tokio::test(start_paused = true)]
+async fn a_third_instance_updates_the_mark_without_an_alert() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    test.advance_time_by(secs(5)).await;
+    offer_from(&test, "mac-1", "i2", &["arm64"], 2).await;
+    test.advance_time_by(secs(5)).await;
+    offer_from(&test, "mac-1", "i3", &["arm64"], 2).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    assert_eq!((entry.instance.as_str(), entry.conflict), ("i1", conflict("i3", start, 10)));
+    assert_eq!(notices(&test).await, [told_conflict("mac-1")]);
+}
+
+/// Scenario: A replaced machine. The first machine stops: the node goes silent, which clears the mark, and the second
+/// machine's next offer takes over the entry and is told `back`.
+#[tokio::test(start_paused = true)]
+async fn after_the_first_machine_goes_silent_the_second_takes_over_and_the_mark_clears() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    for _ in 0..3 {
+        test.advance_time_by(secs(15)).await;
+        offer_from(&test, "mac-1", "i2", &["x86_64"], 1).await;
+    }
+    test.advance_time_by(secs(15)).await;
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-1"), PlacementNodeStatus::Silent, "silent from the first machine's last offer");
+    assert_eq!(state.nodes["mac-1"].conflict, None, "going silent clears the mark");
+    offer_from(&test, "mac-1", "i2", &["x86_64"], 1).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    assert_eq!((entry.instance.as_str(), entry.labels.clone(), entry.places), ("i2", vec!["x86_64".into()], 1));
+    assert_eq!((entry.status, entry.heard_at), (PlacementNodeStatus::Live, time::add(start, secs(60)).unwrap()));
+    assert_eq!(entry.conflict, None);
+    let kinds = [PlacementNoticeKind::Conflict, PlacementNoticeKind::Silent, PlacementNoticeKind::Back];
+    assert_eq!(notices(&test).await, kinds.map(|kind| ("mac-1".to_owned(), kind)));
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: The second machine stops. The first keeps offering; its first offer one silence time after the last
+/// conflicting offer clears the mark, and a later offer of the second machine marks the node again with a new alert.
+#[tokio::test(start_paused = true)]
+async fn after_the_second_machine_stops_for_one_silence_time_the_mark_clears_and_a_later_conflict_alerts_again() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    test.advance_time_by(secs(10)).await;
+    offer_from(&test, "mac-1", "i2", &["arm64"], 2).await;
+    test.advance_time_by(secs(5)).await;
+    for _ in 0..3 {
+        offer(&test, "mac-1", &["arm64"], 2).await;
+        test.advance_time_by(secs(15)).await;
+    }
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, conflict("i2", start, 10), "50 s after the conflict: kept");
+    test.advance_time_by(secs(10)).await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    assert_eq!((entry.status, entry.conflict), (PlacementNodeStatus::Live, None), "60 s after the conflict: cleared");
+    test.advance_time_by(secs(5)).await;
+    offer_from(&test, "mac-1", "i2", &["arm64"], 2).await;
+    assert_eq!(held(&test).await.nodes["mac-1"].conflict, conflict("i2", start, 75));
+    assert_eq!(notices(&test).await, [told_conflict("mac-1"), told_conflict("mac-1")], "a new mark, a new alert");
+    assert!(failed(&test).await.is_empty());
 }

@@ -14,6 +14,11 @@
               "const": "back",
               "description": "A silent node offered again and is live.",
               "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "Another instance offered under the live node's id: its offers are ignored. Sent once while the mark lasts; the\nnode's `conflict` names the instance.",
+              "type": "string"
             }
           ]
         }
@@ -284,10 +289,10 @@
     },
     "Offer": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once) and\nplaces, heard at the store time of this turn, and live. A silent node that offers is told `back` to the alert\ntarget. A node new to a pool that knows `maxNodes` nodes is refused for good. Send one at an interval shorter\nthan the silence time.",
+      "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once) and\nplaces, heard at the store time of this turn, and live. A silent node that offers is told `back` to the alert\ntarget, whatever its instance. An offer of another instance than the recorded one while the node is live\nchanges no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. A node new to a pool\nthat knows `maxNodes` nodes is refused for good. Send one at an interval shorter than the silence time.",
       "properties": {
         "instance": {
-          "description": "An id the member draws at each process start, which tells two processes offering under one node id apart.",
+          "description": "An id that tells two machines offering under one node id apart. One drawn at each process start makes a\nrestart within the silence time look like a second machine.",
           "maxLength": 200,
           "minLength": 1,
           "type": "string"
@@ -526,6 +531,27 @@
         ],
         "type": "object"
       },
+      "PlacementConflict": {
+        "description": "An offer of another instance under a live node's id, which the pool ignored.",
+        "properties": {
+          "at": {
+            "description": "The store time of its turn.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "instance": {
+            "description": "Its instance id: not the node's recorded one; 1 through 200 characters, not blank, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance",
+          "at"
+        ],
+        "type": "object"
+      },
       "PlacementHolder": {
         "description": "A holder of a place on a node of a pool.",
         "properties": {
@@ -588,6 +614,17 @@
       "PlacementNode": {
         "description": "What a pool knows of a node: its last offer and whether it is heard from.",
         "properties": {
+          "conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PlacementConflict"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last offer of another instance while it was live, ignored; set only while it is live. Absent: none."
+          },
           "draining": {
             "default": false,
             "description": "Whether an operator drained it: it gets no new places until `Undrain`. Absent: false.",
