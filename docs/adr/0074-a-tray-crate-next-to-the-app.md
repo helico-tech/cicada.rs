@@ -18,7 +18,8 @@ turns that run.
   and tested everywhere; the macOS menu comes in later changes behind `cfg(target_os = "macos")`.
 - A tray runs a worker over HTTP in its process, built fresh from a host's function for each connect, through
   `App::run_with` and a stop signal; it watches the state and records turns with a `TurnObserver`.
-- `App::type_names()` lists the hosted types.
+- `App::type_names()` lists the hosted types, and `App::on_worker_ready(f)` tells a host when its worker over HTTP has
+  started, with its settled grace period and cancel timeout.
 
 ## Consequences
 
