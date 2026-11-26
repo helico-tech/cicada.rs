@@ -46,7 +46,7 @@ After `app-node-id-after-types`, before `tray-settings`.
 
 ## Impact
 
-Crates: cicada-tray.
+Crates: cicada-tray, cicada-app.
 
 `crates/cicada-tray` (an `appkit` module with the status item, the menu and the header view). New dependencies
 `objc2`, `objc2-foundation` and `objc2-app-kit`, macOS only; `cargo deny` must pass. The `unsafe` calls into AppKit
