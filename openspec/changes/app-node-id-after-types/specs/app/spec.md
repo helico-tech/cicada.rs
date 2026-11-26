@@ -33,3 +33,9 @@ function SHALL fail the command with exit code 1. The operator commands SHALL NO
 
 - **WHEN** the binary runs `get actors`
 - **THEN** the function is not called
+
+#### Scenario: A check after the flags fails
+
+- **WHEN** a worker over HTTP starts with an unknown `--context`, or a node with a store whose feature the binary was
+  built without
+- **THEN** the command exits with code 1 and the function is not called

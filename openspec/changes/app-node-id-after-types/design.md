@@ -33,8 +33,9 @@ app.node_config_for(|types| {
 4. **The hook runs after every local check.** It has side effects (the identity's file lock), so it runs only once
    nothing that reads the flags, the variables or the config file can still fail: after the usage errors (exit code
    2), the refusal of `on_start` and `task` for a worker over HTTP, `settings::http_target` (the config file, the
-   context, the server) and the check that the binary was built with the store's feature; just before the wait for the
-   store or the server. `settings::resolve` and `resolve_http` are split into a parse step (every flag and variable
+   context, the server) and the check that the binary was built with the store's feature (called from `lib.rs` on the
+   parsed store, before the hook, instead of inside `open_unless_stopped`, so there is one path; a worker over HTTP has
+   no store and skips it); just before the wait for the store or the server. `settings::resolve` and `resolve_http` are split into a parse step (every flag and variable
    read and checked, with the types) and an apply step that lays the parsed values over a `NodeConfig`; the hook runs
    between them, so no flag error can show after it ran. An `Err` from `f` fails the command with exit code 1 and the
    error's text (with its causes); a panic is not caught.
