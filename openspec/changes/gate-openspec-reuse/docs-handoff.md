@@ -44,5 +44,5 @@ None.
 
 ## Status
 
-Ran `python3 -m unittest discover -s scripts -p 'test_*.py'` and `openspec validate gate-openspec-reuse --strict`; the
-gate run is reported by the builder. The text above is proposed; no protected prose is written yet.
+Ran `python3 -m unittest discover -s scripts -p 'test_*.py'` (105 passed) and
+`openspec validate gate-openspec-reuse --strict` (valid); `python3 scripts/gate.py run` passed the full checks. The text above is proposed; no protected prose is written yet.
