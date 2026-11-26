@@ -17,7 +17,7 @@ field on `NodeConfig`; builder.md, Version). Follow `design.md` and ADR 0071
   node, host }` to the pool. The pool: the mark's optional `host`, one `conflict` alert per mark, no new places while
   marked, the end rules of ADR 0071; unknown nodes refused for good; contract reference and samples regenerated
   (decisions 1 and 2). Verify: the duplicate tests of the design (two systems under one id with different hostnames).
-- [ ] 4. **Changelog and docs handoff.** A new `## 0.25.0 — unreleased` section with Added (duplicate check, lock,
+- [x] 4. **Changelog and docs handoff.** A new `## 0.25.0 — unreleased` section with Added (duplicate check, lock,
   `NodeConfig::hostname`) and the upgrade note for `NodeConfig` struct literals; the handoff carries the design's Docs
   section and the limits. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs` and `--doc` (report `Docs: blocked` if a guide block builds a `NodeConfig`

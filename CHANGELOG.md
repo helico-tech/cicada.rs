@@ -7,6 +7,67 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.25.0 — unreleased
+
+A placement member notices a second machine under its node id (ADR 0071): two machines started from a copied identity
+folder write one node row in turn, so a member that finds another host name there sends no offers and reports
+`Duplicate` to the pool, which marks the node with that host, alerts once and gives it no new places. A node can set the
+host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` locks its folder, so one machine runs one
+process per identity. **BREAKING** for placement pools: the contract of `cicada.placement` changes (a new message and an
+optional field of the conflict mark), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
+`PlacementConflict` and `PlacementMsg` gain a field or a variant. The store schema, the HTTP API, the other actors'
+contracts and the guarantees are those of 0.24.0.
+
+### Added
+
+- `cicada`: `NodeConfig::hostname`, the host name a node writes to its row in the node table, such as a container's
+  stable name; `None` (the default) keeps the machine's own, looked up once when the node is built. A set value is
+  checked like `label` (not blank, no NUL, at most 200 characters) at the start. `ActorSystem::hostname()` returns the
+  value the node writes; a machine renamed while the node runs keeps writing the old one. Covered by
+  `a_configured_hostname_is_written_to_the_row_and_returned_by_the_node` and
+  `a_blank_a_nul_or_a_too_long_hostname_fails_start`.
+- `cicada-actors`: the duplicate check of `PlacementMember` (ADR 0071). Each round first reads the node's own row
+  (`ActorSystem::node`); a host name there that is set and differs from `ActorSystem::hostname()` makes the round skip
+  its probe and offer, send the pool `Duplicate { node, host }` and log an error, once for each other host name in a
+  row. No host name of its own or in the row, or a failed read (a warning), checks nothing. A redeploy under a new host
+  name trips nothing, as the old node removes its row when it stops. Covered by
+  `crates/cicada-actors/tests/placement_duplicate.rs`.
+- `cicada-actors`: the pool's `Duplicate { node, host }`, from anyone. For a live node it sets the conflict mark of
+  ADR 0069 with the new optional `host` (and the node's own instance for a new mark, which the state's check now
+  accepts only with a `host`), and a new mark is told `conflict` once. While its mark has a `host` the node gets no new
+  places and keeps its holders. A mark set only by reports ends at the first turn one silence time after the last
+  report; one set by offers and reports ends as an offer's mark, counted from the later of the two; going silent ends
+  every mark. Nothing for a silent node; refused for good for an unknown node and a host out of bounds. Covered by
+  `a_reported_duplicate_alerts_once_gives_no_new_places_and_ends_one_silence_time_after_the_last_report`,
+  `a_report_and_a_conflicting_offer_share_one_mark` and
+  `a_report_of_a_silent_node_changes_nothing_and_of_an_unknown_node_is_refused` in
+  `crates/cicada-actors/tests/placement.rs`.
+- `cicada-actors`: `NodeIdentity::load_or_create` first takes an exclusive OS lock on `placement-identity.lock` in its
+  folder and keeps it while the identity or a clone of it lives; `PlacementMember` keeps the identity, so the lock
+  lasts as long as the member. A second load fails with `InvalidIdentity::kind()` `IdentityErrorKind::Locked`; the
+  other errors are `IdentityErrorKind::Invalid` (`#[non_exhaustive]`). Two processes starting at once on a missing file
+  can no longer both write one. On a file system without locks it logs a warning and goes on without one. Covered by
+  `a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped`.
+
+### Changed (breaking)
+
+- The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
+  `host`, so its hash differs from 0.24.0's. Rust code that matches `PlacementMsg` exhaustively gains `Duplicate`, and
+  code that builds `PlacementConflict` gains `host: None`.
+- `NodeConfig` gains the public field `hostname`: a struct literal without `..NodeConfig::default()` no longer
+  compiles; add `hostname: None`.
+- `NodeIdentity` no longer derives `Debug`, `PartialEq` and `Eq` but implements them: equality compares the node id
+  and the instance, and the lock is left out. A second `load_or_create` of one folder in one process fails with
+  `Locked` while the first identity lives: drop it first, such as in a test of a restart.
+
+### Upgrading
+
+- Hosts with placement pools on 0.24.0 follow "Changing a contract" in the operations guide for `cicada.placement`,
+  whose type name is fixed, so in a maintenance window: stop every host of the type, delete its pools and then its
+  registration, and start the new hosts, which create the pools again.
+- A node that shares an identity folder with another process on the same machine, such as a rolling deploy's new
+  container on a shared volume, fails to start with `Locked` until the old process stops.
+
 ## 0.24.0 — 2026-11-26
 
 A placement pool (ADR 0067, ADR 0068), a new ready-made actor: nodes offer places with labels to a pool, a node that
