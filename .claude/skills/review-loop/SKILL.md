@@ -16,13 +16,16 @@ that can read files and run a shell with `git` and `python3`. Work from the main
 1. **Take** a request:
 
    ```sh
-   python3 scripts/review.py take --wait --by "<your harness and model>"
+   python3 scripts/review.py take --wait --by "<your model>"
    ```
+
+   The name starts with your model's family, `claude` or `gpt` (`codex` and `openai` count as `gpt`), for example
+   `gpt-6.2-sol in Codex`: a code review needs it, and is never taken by the family that built the change (ADR 0073).
 
    It waits until a request is open, claims it so that no other reviewer takes it, and prints it. Without `--timeout`
    it waits as long as it takes. If your harness stops long shell commands, add `--timeout <seconds>` below that limit
    and run it again when it ends with status 1. When the owner gives you an id, take exactly that one:
-   `python3 scripts/review.py take <id> --by "<your harness and model>"`.
+   `python3 scripts/review.py take <id> --by "<your model>"`.
 2. **Review** it by the brief the request names: `design.md` or `code.md` in this folder. Each brief ends with how to
    hand in the report (`python3 scripts/review.py done <id> <file>`).
 3. Go to 1.

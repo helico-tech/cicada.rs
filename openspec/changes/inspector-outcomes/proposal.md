@@ -27,5 +27,7 @@ After `inspector-actors`, before `inspector-live`.
 
 ## Impact
 
+Crates: cicada-inspector.
+
 `crates/cicada-inspector`. Tests of the mapping against an in-process server; a manual check list. Docs handoff: the
 app guide.

@@ -30,5 +30,7 @@ After `inspector-window`, before `inspector-outcomes`.
 
 ## Impact
 
+Crates: cicada-inspector.
+
 `crates/cicada-inspector` (tables, pane, outline). Tests of the mapping from API pages to rows against an in-process
 server; a manual check list for the window. Docs handoff: the app guide.

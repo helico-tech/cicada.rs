@@ -1,14 +1,15 @@
 ---
 name: change-loop
-description: Start or resume the change loop of this repository (ADR 0055). One session describes the next OpenSpec change with the owner, has a builder subagent build it in a worktree and fresh reviewer subagents review it through scripts/review.py, then lands it on main and releases the batch when it is time.
+description: Start or resume the change loop of this repository (ADR 0055, ADR 0073). One session describes the next OpenSpec change with the owner, has up to two builders (a Claude subagent, and GPT on Codex) build changes that share no crate, each in its own worktree, has a fresh reviewer of the other model review each change through scripts/review.py, then lands the changes on main one at a time and releases the batch when it is time.
 disable-model-invocation: true
 ---
 
 # The change loop
 
-One session for the whole flow (ADR 0055, superseding parts of ADR 0030). You describe changes with the owner, start
-a builder subagent for each ready change and a fresh reviewer subagent for each review, land each change on `main` and
-release the batch when it is time. The owner talks to you only. The docs session stays a session of its own (ADR 0045).
+One session for the whole flow (ADR 0055, superseding parts of ADR 0030; two builders by ADR 0073). You describe
+changes with the owner, start a builder for each ready change (at most two at once), a fresh reviewer of the other
+model for each review, land each change on `main` and release the batch when it is time. The owner talks to you
+only. The docs session stays a session of its own (ADR 0045).
 
 You orchestrate: you describe, start agents, read reports, talk with the owner, land and release. You do not build or
 review yourself.
@@ -23,11 +24,11 @@ Every time the skill is invoked, and again after a change is ready, has landed o
    The main checkout is on `main`. If the status lists problems, solve them with the owner first.
 3. Take the next step from the status, first that applies:
    - `release:` says to release: go to Release.
-   - `build:` names a ready change and no builder runs for it: go to Build.
+   - `build:` names a ready change and no builder runs for it: go to Build. It names up to two changes.
    - `describe:` names a change: go to Describe. It names none while two ready changes wait.
    - Otherwise wait for the builder or reviewer that runs, and tell the owner in one line.
 
-While a builder or reviewer runs, go on describing the next change. Agent reports come in between: handle each when
+While builders or reviewers run, go on describing the next change. Agent reports come in between: handle each when
 it arrives.
 
 ## Small changes
@@ -51,7 +52,7 @@ A landed change that must reach consumers at once (a security fix, a bug a consu
 1. **Read** the proposal, the ADRs it names, the code it touches, and the proposals before and after it. Documents
    written ahead of their turn (a design, a spec, `draft-tasks.md`) are a draft: go through them with the owner.
 2. **Think it through with the owner**, a few topics per message. Start from the proposal's "To decide" list and add
-   what you found yourself. For each decision:
+   what you found yourself, and the crates the change touches. For each decision:
    - the options, one line each: what it adds and what it costs;
    - a small example per option where it helps: the code a user writes, the request, the table;
    - your pick, why, and why not the others. Say so when something is more than the problem needs.
@@ -76,7 +77,9 @@ A landed change that must reach consumers at once (a security fix, a bug a consu
 
 ### Tasks
 
-Write `tasks.md` by the rules in `openspec/config.yaml`; the last task runs the finishing checks. A change that touches
+Write `tasks.md` by the rules in `openspec/config.yaml`; the last task runs the finishing checks. Check that the
+proposal's `## Impact` has its `Crates:` line (the crates the tasks touch, or `Crates: none` for process and docs
+changes): `status.py` pairs builds by it, and builds a change without it only alone. A change that touches
 `sample-service/`, `e2e/`, the `serve` or `worker` commands of `cicada-app`, or the HTTP crates (`cicada-axum`,
 `cicada-client`) asks for `python3 scripts/gate.py run --e2e` in its last task; any other change runs the gate without
 E2E. A task never asks the builder to edit `README.md`, `AGENTS.md` or the handwritten docs: it asks for that content
@@ -87,8 +90,14 @@ only the change's folder, and its ADR with its row in `docs/adr/README.md` if it
 
 ## Build
 
-One builder at a time: the first change in the order, and only when it has a `tasks.md`. At most two ready changes
+At most two builders at once (ADR 0073), for the changes the `build:` line names: those in build, and for a free
+slot the first ready change in the order whose `Crates:` line meets no crate of a change in build. Shared workspace
+files (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, the ADR index, the skills' versions) do not count: they are merged
+at landing. A change without a `Crates:` line is built only alone. Never a third builder. At most two ready changes
 wait.
+
+Which builder: of the two changes in build, the earlier in the order gets Claude and the later gets GPT, unless the
+owner says otherwise. Keep a note of who builds what: the review needs it.
 
 1. **Earlier work.** If `git worktree list` shows the branch `feat/<change>` and you hold no agent for it, it is left
    from another session. A clean tree: `git worktree remove <path>`; the branch stays and the new builder picks it up.
@@ -99,22 +108,34 @@ wait.
    minor number when the proposal marks something **BREAKING**. A **BREAKING** change while the unreleased version is
    a patch raises it to the next minor: tell the builder that it renames the heading and rewrites the section's summary
    for the whole batch. A change that touches no crate (process or docs only) gets `none`.
-3. **Builder.** Start it with the Agent tool in the background: `subagent_type: "general-purpose"`, `model: "opus"`,
-   `effort: "high"`, `isolation: "worktree"`, `run_in_background: true`. Prompt:
+3. **Builder.** The same prompt for both:
 
    > Read `<main checkout>/.claude/skills/change-loop/builder.md` and follow it. Change: `<change>`. Version: `X.Y.Z`.
    > Main checkout: `<main checkout>`.
 
-   Keep its id, tell the owner in one line, and go on with Describe.
+   - **Claude:** the Agent tool in the background: `subagent_type: "general-purpose"`, `model: "opus"`,
+     `effort: "high"`, `isolation: "worktree"`, `run_in_background: true`.
+   - **GPT:** in T3 Code, `delegate_task` with `isolation: "worktree"` and
+     `target: { providerInstanceId: "codex", model: "gpt-6.2-sol", options: { reasoningEffort: "high" } }`, as the
+     harness's rules require for another provider (call `orchestrator_capabilities` once per session first). It works
+     on the branch `feat/<change>`, so `status.py` finds its worktree. Outside T3 Code, start it the way that harness
+     starts an agent on another provider in its own worktree.
+   - **Codex unavailable:** when `delegate_task` to Codex fails, build the second change with a Claude subagent as
+     above, and tell the owner in one line.
+
+   Keep its id, tell the owner in one line, and go on with Describe. The two builders share the gate's lock: each
+   retries while the other's run holds it (builder.md, Gate evidence).
 4. **When the builder reports.** A question about the design goes to the owner; send the answer with SendMessage.
    `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the builder's report to a file in your
    scratchpad, and ask for a review:
 
    ```sh
-   python3 scripts/review.py request code <change> --head feat/<change> --note-file <that file>
+   python3 scripts/review.py request code <change> --head feat/<change> --built-by <builder's model> \
+       --note-file <that file>
    ```
 
-   Start a reviewer for the id it prints (Review).
+   `--built-by` names the builder's model, starting with its family: `claude-opus-5-5` or `gpt-6.2-sol`. Start a
+   reviewer of the other family for the id it prints (Review).
 5. **When the code review reports.**
    - `Verdict: pass`: go to Present.
    - `Verdict: fix needed`: check each blocking finding against the code. Drop one only when it is plainly wrong, and
@@ -125,12 +146,20 @@ wait.
 
 ## Review
 
-Every review, design or code, fast lane too, is a fresh reviewer subagent. It sees only the files and its brief, not
-your reasoning. Start it with the Agent tool in the background: `subagent_type: "general-purpose"`, `model: "opus"`,
-default effort, no isolation, `run_in_background: true`. Prompt:
+Every review, design or code, fast lane too, is a fresh reviewer. It sees only the files and its brief, not your
+reasoning. A code review goes to the model other than the builder's (ADR 0073): a change built by Claude is reviewed by
+GPT, one built by GPT by Claude. A design review has no builder: either model may take it, Claude by default. Prompt,
+with `<name>` the reviewer's model (`claude-opus-5-5` or `gpt-6.2-sol`; `review.py` takes the family from its start):
 
-> Work in `<main checkout>`. Run `python3 scripts/review.py take <id> --by "Claude Code reviewer subagent"`, then
-> follow the brief it names (`.claude/skills/review-loop/<kind>.md`) and hand in the report as it says.
+> Work in `<main checkout>`. Run `python3 scripts/review.py take <id> --by "<name>"`, then follow the brief it names
+> (`.claude/skills/review-loop/<kind>.md`) and hand in the report as it says. Do not edit, commit or push anything.
+
+- **Claude reviewer:** the Agent tool in the background: `subagent_type: "general-purpose"`, `model: "opus"`, default
+  effort, no isolation, `run_in_background: true`.
+- **GPT reviewer:** a new `delegate_task` on Codex, the same target as the GPT builder, without a worktree. Never a
+  follow-up message to an earlier reviewer or builder thread.
+- **Codex unavailable** for the whole request: a fresh Claude reviewer takes it with
+  `--same-family "Codex unavailable"` added to its `take`. `review.py` records it in the report; tell the owner.
 
 Its final message is not the review: read the report in `.reviews/<id>.result.md` (`python3 scripts/review.py list`
 shows the state). If the owner wants another harness to review, do not start a subagent: tell the owner the id, and
@@ -177,10 +206,14 @@ Tell the owner, in this shape:
 
 ## Land
 
-Only on the owner's yes. A no goes back to the builder, or to Describe. Landing is not releasing.
+Only on the owner's yes. A no goes back to the builder, or to Describe. Landing is not releasing. One change lands
+at a time, in whichever order the changes pass review; `status.py` resolves an `Order` that names an archived change
+through that change's own `Order`, so the open changes stay one line.
 
 1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict, `git rebase --abort`,
-   send the builder to rebase and resolve, and ask for one more review round. A branch with owner fixes integrated is
+   send the builder to rebase and resolve, and ask for one more review round. When the other change landed first,
+   check the ADR number of this change: if `main` took it meanwhile, the builder renumbers the ADR, its row and the
+   references to it, in the branch. A branch with owner fixes integrated is
    checked again after any rebase, also a clean one: you check the paths, and the builder runs the affected checks in
    its worktree on the rebased branch (Blocked on docs, step 3). Merge only when they pass.
 2. `git merge --ff-only feat/<change>` on `main`.
@@ -189,10 +222,12 @@ Only on the owner's yes. A no goes back to the builder, or to Describe. Landing 
 4. `openspec archive <change> -y`, with `--skip-specs` when its `.openspec.yaml` says `skip_specs: true`. A new spec in
    `openspec/specs/` gets one or two real sentences under `## Purpose`. Commit `Archive <change>`, staged by path:
    `git add -A -- openspec/changes/<change> openspec/changes/archive openspec/specs`.
-5. In the main checkout, `python3 scripts/gate.py run` (the full checks on the new tip, about 7 minutes; foreground,
-   Bash timeout 600000), then `git push origin main`. The pre-push hook asks E2E only for a version tag. An abandoned
-   gate run (`python3 scripts/gate.py status` says so) goes to the owner before `recover`. The pre-push hook is
-   installed once per repository, with the owner's yes: `python3 scripts/gate.py install-hook`.
+5. In the main checkout, `python3 scripts/gate.py run` (the full checks on the new tip, about 7 minutes), then
+   `git push origin main`. One gate run at a time: while a builder's run holds the lock, `gate.py run` ends at once
+   with `busy`. Retry in short tries for at most 50 minutes; each try is a background Bash command with
+   `timeout: 7200000`, as the try that gets the lock is the run. Never stop a run once it started. The pre-push hook
+   asks E2E only for a version tag. An abandoned gate run (`python3 scripts/gate.py status` says so) goes to the owner before `recover`. The
+   pre-push hook is installed once per repository, with the owner's yes: `python3 scripts/gate.py install-hook`.
 6. Clean up: `git worktree remove` the builder's worktree, `git branch -d feat/<change>`, delete the leftover
    `worktree-agent-…` branches, `git worktree prune`.
 7. Tell the owner in two lines, with the path of the archived handoff
@@ -210,9 +245,10 @@ release unless they gave a standing yes.
 2. As in `docs/how-to/releasing.md`: the README tag lines and the changelog date (the `unreleased` heading of the batch
    gets today's date) in one commit `Release X.Y.Z: …` on `main`, staged by path: `git add -- README.md CHANGELOG.md`.
 3. `python3 scripts/gate.py release vX.Y.Z` in the main checkout (ADR 0046). It checks the version and dated notes,
-   reuses or runs the gate evidence and the E2E suite, pushes `main` without force, tags, packages the skill, pushes
-   the tag and publishes a verified draft Release. If it fails before the tag push, no tag exists: tell the owner. If
-   it fails later, run it again: it resumes the same commit and tag object; never delete or move a pushed version tag.
+   reuses or runs the gate evidence and the E2E suite (retry its `busy` like Land, step 5), pushes `main` without force,
+   tags, packages the skill, pushes the tag and publishes a verified draft Release. If it fails before the tag push, no
+   tag exists: tell the owner. If it fails later, run it again: it resumes the same commit and tag object; never delete
+   or move a pushed version tag.
 4. **An E2E failure stops landing.** Nothing else lands until the release passes. Find the cause by running the E2E
    suite on the batch's commits (`CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture` in a detached worktree under
    `.claude/worktrees/`). The fix goes first in the line as a change of its own with `Release: now` (fast lane when it
@@ -225,7 +261,8 @@ release unless they gave a standing yes.
 - The owner's yes in Present covers the merge, the archive, the gate run and the push of `main` for that one change.
   A release needs its own yes, unless the owner gave a standing yes. Nothing else is pushed, merged or tagged.
 - Builders and reviewers never push, merge, tag or archive.
-- One change at a time is described, one builder runs, and never more than two ready changes wait.
+- One change at a time is described, at most two builders run (their changes share no crate), a change is reviewed by
+  the model other than its builder's, and never more than two ready changes wait.
 - While a change is built, only its builder edits its files, in its branch. Do not edit them on `main`.
 - Stage by path in the main checkout, never `git add -A` or `git commit -a`.
 - Read an agent's worktree with `git -C <path>` and absolute paths; never `cd` into it.

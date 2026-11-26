@@ -24,5 +24,7 @@ After `inspector-outcomes`, before `inspector-actions`.
 
 ## Impact
 
+Crates: cicada-inspector.
+
 `crates/cicada-inspector` (the stream, the throttle, keeping the selection). Tests on virtual time with an in-process
 server sending hints. Docs handoff: the app guide.

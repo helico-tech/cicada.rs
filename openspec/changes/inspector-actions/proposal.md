@@ -26,5 +26,7 @@ After `inspector-live`. No following change.
 
 ## Impact
 
+Crates: cicada-inspector.
+
 `crates/cicada-inspector` (sheets, alerts, actions). Tests of each action against an in-process server; a manual check
 list. Docs handoff: the app guide.

@@ -46,6 +46,8 @@ After `app-node-id-after-types`, before `tray-settings`.
 
 ## Impact
 
+Crates: cicada-tray.
+
 `crates/cicada-tray` (an `appkit` module with the status item, the menu and the header view). New dependencies
 `objc2`, `objc2-foundation` and `objc2-app-kit`, macOS only; `cargo deny` must pass. The `unsafe` calls into AppKit
 stay in that module, each with its reason. The gate can't drive the GUI: the mapping from state to menu items is a

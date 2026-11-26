@@ -11,7 +11,7 @@ Normal lane, process only: version `none` (no crate change, no release). Follow 
 - [x] 2. **review.py.** `--built-by`, model families from names (`claude`, `gpt`; `codex` and `openai` as `gpt`), `--by`
   required with a family for code reviews, `take ID` refusing and `take` skipping the builder's family,
   `--same-family REASON` recorded, `list` showing builder and reviewer (decisions 4 and 5). Verify: the review tests.
-- [ ] 3. **The loop's skill and the config.** `.claude/skills/change-loop/SKILL.md` and `builder.md`: two builders, the
+- [x] 3. **The loop's skill and the config.** `.claude/skills/change-loop/SKILL.md` and `builder.md`: two builders, the
   Codex call (decision 3), reviews by the other model with the fallback, landing in any order, the gate retry;
   `openspec/config.yaml`: the `Crates:` rule and the throughput line (decision 1); a `Crates:` line in every open
   proposal's Impact. Verify: `python3 scripts/status.py` names the expected builds and no problem.

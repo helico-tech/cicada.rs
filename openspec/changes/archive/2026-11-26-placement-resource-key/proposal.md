@@ -20,5 +20,7 @@ After `placement-identity-lock`, before `change-loop-two-builders`.
 
 ## Impact
 
+Crates: cicada-actors, cicada-containers.
+
 `crates/cicada-actors` (offer, pool state and contract), `crates/cicada-containers` (`RuntimeInfo`, Docker, fake).
 Additive.

@@ -7,7 +7,9 @@ what it says. You do not change the design. Work fast: the owner wants short ite
 ## Start
 
 1. If the caller names a worktree, `cd` into it. `pwd` must be a folder under `.claude/worktrees/`. If it is not,
-   stop and report; do not work anywhere else.
+   stop and report; do not work anywhere else. A builder started by another harness's tool (`delegate_task` in T3
+   Code) works in the worktree that tool made for it. Another builder may run next to you on another change
+   (ADR 0073): never touch its worktree or branch.
 2. Get onto the right commits and branch. The ready change is committed on the local branch `main`, which your
    worktree may not start from:
 
@@ -44,16 +46,20 @@ what it says. You do not change the design. Work fast: the owner wants short ite
   say so in the report.
 - The last task runs the finishing checks. All of them pass before you report the build as done; a check that waits
   for protected prose is reported as blocked (Documentation).
-- **Gate evidence** (ADR 0046). Commit first, then run `python3 scripts/gate.py run` in your worktree, in the
-  foreground with the Bash timeout at 600000 (the full policy, every former CI check with PostgreSQL, about 7
-  minutes). Only when the tasks ask for E2E, follow it with `python3 scripts/gate.py run --e2e` the same way (it reuses
-  that evidence and adds the Docker E2E suite, about 4 minutes); otherwise E2E runs at the release (ADR 0055). The gate
-  checks your committed head in its own worktree and records evidence that the change loop's push and release reuse.
-  Never run the gate in the background, and keep your turn open until it ends: a run still going when your turn ends
-  is killed and leaves a lock only the owner may clear. Uncommitted edits are not checked. Report its final status
-  lines (`python3 scripts/gate.py status`). A failure is a failing check: fix the cause, commit, run it again. `busy`
-  means another session's gate runs: wait and retry. An abandoned-run message is for the owner: report it, do not run
-  `recover` yourself. Never install the hook, push or publish.
+- **Gate evidence** (ADR 0046). Commit first, then run `python3 scripts/gate.py run` in your worktree (the full
+  policy, every former CI check with PostgreSQL, about 7 minutes, longer under load). Only when the tasks ask for E2E,
+  follow it with `python3 scripts/gate.py run --e2e` the same way (it reuses that evidence and adds the Docker E2E
+  suite, about 4 minutes); otherwise E2E runs at the release (ADR 0055). The gate checks your committed head in its own
+  worktree and records evidence that the change loop's push and release reuse. Uncommitted edits are not checked.
+  - **One run at a time** (ADR 0073). While another run holds the lock (the other builder's, or the session's),
+    `gate.py run` ends at once with `busy`. Retry in short tries, a minute or so apart, for at most 50 minutes; then
+    report that the gate stayed busy. The try that gets the lock is the run, so start every try as a background
+    command with a 2-hour limit (in Claude Code: Bash with `run_in_background: true` and `timeout: 7200000`).
+  - Keep your turn open until the run ends, waiting on that command: a run still going when your turn ends is killed
+    and leaves a lock only the owner may clear. Never stop a run once it started.
+  - Report its final status lines (`python3 scripts/gate.py status`). A failure is a failing check: fix the cause,
+    commit, run it again. An abandoned-run message is for the owner: report it, do not run `recover` yourself. Never
+    install the hook, push or publish.
 
 ## Documentation
 

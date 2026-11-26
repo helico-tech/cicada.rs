@@ -30,6 +30,8 @@ After `tray-menu-bar`, before `stats-failed-count`.
 
 ## Impact
 
+Crates: cicada-tray, cicada-app.
+
 `crates/cicada-tray` (the window in the `appkit` module; reading and writing the settings in a plain module),
 `crates/cicada-app` (config code made reachable by the tray). Tests for reading and writing the files, and for
 turning the form's values into worker arguments; the window gets a manual check list. Docs handoff: the app guide.

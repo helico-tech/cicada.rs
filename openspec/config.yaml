@@ -6,8 +6,10 @@ context: |
   Write all artifacts in English, plain words, short sentences.
   Read docs/architecture.md first and follow it: it is the reference for behaviour (guarantees G1-G6, store
   requirements S1-S10, the HTTP contract), and it wins over openspec/specs/ if they differ. Decisions are in docs/adr/.
-  Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
-  Changes go through one change loop (ADR 0055, .claude/skills/change-loop), with builder and reviewer subagents;
+  Priorities, in order: simplicity, ease of use, correctness. Two builders when changes share no crate (ADR 0073);
+  simplicity still comes first.
+  Changes go through one change loop (ADR 0055, .claude/skills/change-loop), with builders and reviewers on two
+  models, a change reviewed by the model other than its builder's (ADR 0073);
   .claude/skills/review-loop lets another harness review. A change with only a proposal.md is an idea or a finding
   that is not started. Its design and specs are written together with the owner in the change loop. Its tasks.md is
   written last, after the design review in the normal lane, and means: ready to build. A change is small, so that it
@@ -21,6 +23,7 @@ rules:
     - Keep a change small - one behaviour, at most 5 tasks plus the finishing checks; split a bigger one into a line of changes
     - Always state what is out of scope
     - Add an Order section that names the change before it and the change after it
+    - "The Impact section starts with a line `Crates: <names>`: the crates the change touches, or `Crates: none` for process and docs changes. Two changes are built at once only when their crates meet nowhere; shared workspace files do not count; a change without the line is built only alone (ADR 0073)"
     - "Optional Lane section (`## Lane`): the line `Lane: fast` puts the change in the fast lane, and `Release: now` releases it as soon as it lands (a security fix, a bug a consumer hits); without the section the change is in the normal lane"
     - "The fast lane is a closed list: rustdoc and comments, tests only, internal refactors. Never a change to the public API, a wire format, the schema, a guarantee, the command line, an actor contract or the docs ownership rules"
   design:
