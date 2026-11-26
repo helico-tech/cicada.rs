@@ -11,15 +11,22 @@ with the kind `design` or `code`. Its state is which of its files exist:
     <id>.taken       who took it, and when: taken
     <id>.result.md   the report: done
 
-    review.py request design|code <change> [--head REF] [--note-file FILE]   ask for a review; prints its id
-    review.py take [ID] [--wait] [--timeout SECONDS] [--by NAME]             take request ID, or the oldest open
-                                                                             one; prints it
-    review.py done <id> <file>                                               hand in the report of a taken review
-    review.py wait <id> [--timeout SECONDS]                                  wait for the report; prints it
-    review.py list                                                           every review and its state
+    review.py request design|code <change> [--head REF] [--built-by NAME] [--note-file FILE]
+                                                         ask for a review; prints its id
+    review.py take [ID] [--wait] [--timeout SECONDS] [--by NAME] [--same-family REASON]
+                                                         take request ID, or the oldest open one it may; prints it
+    review.py done <id> <file>                           hand in the report of a taken review
+    review.py wait <id> [--timeout SECONDS]              wait for the report; prints it
+    review.py list                                       every review, its state, builder and reviewer
 
 `take` and `wait` end with status 1 when nothing came within the timeout; without one they wait as long as it takes.
 `take ID` claims exactly that request and fails when it is missing, taken or done; it does not wait.
+
+A code review is done by a model other than its builder's (ADR 0073). `request code` needs `--built-by` and `take` of a
+code review needs `--by`, each a name that starts with its family: `claude`, or `gpt` (`codex` and `openai` count as
+`gpt`). `take ID` refuses a reviewer of the builder's family, and `take` without an id skips such requests, unless
+`--same-family REASON` says why no other family can review (Codex unavailable); the reason is recorded in the taken
+marker and at the end of the report. Design reviews have no builder: any reviewer may take them.
 """
 
 import argparse
@@ -33,6 +40,7 @@ import time
 
 POLL = 5
 NAME = re.compile(r"^(?P<change>[a-z0-9-]+)\.(?P<kind>design|code)\.(?P<round>[0-9]+)$")
+FAMILIES = {"claude": "claude", "gpt": "gpt", "codex": "gpt", "openai": "gpt"}
 BRIEF = {"design": ".claude/skills/review-loop/design.md", "code": ".claude/skills/review-loop/code.md"}
 
 
@@ -44,6 +52,12 @@ def git(*args):
 # The main checkout, also when this runs from a worktree.
 ROOT = pathlib.Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent
 DIR = ROOT / ".reviews"
+
+
+def family(name):
+    """The model family a name starts with, `claude` or `gpt`; None for a name without one."""
+    lowered = (name or "").lower()
+    return next((fam for prefix, fam in FAMILIES.items() if lowered.startswith(prefix)), None)
 
 
 def now():
@@ -80,6 +94,8 @@ def request(args):
         sys.exit(f"review: no open change {args.change}")
     if args.kind == "code" and not args.head:
         sys.exit("review: a code review needs --head")
+    if args.kind == "code" and family(args.built_by) is None:
+        sys.exit("review: a code review needs --built-by with a name that starts with claude or gpt")
     DIR.mkdir(exist_ok=True)
     names = (NAME.match(review) for review, _ in requests())
     rounds = [int(m["round"]) for m in names if m["change"] == args.change and m["kind"] == args.kind]
@@ -88,7 +104,7 @@ def request(args):
     lines = [f"id: {review}", f"kind: {args.kind}", f"change: {args.change}", f"round: {number}"]
     if args.kind == "code":
         head = git("rev-parse", "--verify", f"{args.head}^{{commit}}")
-        lines += [f"base: {git('merge-base', 'main', head)}", f"head: {head}"]
+        lines += [f"base: {git('merge-base', 'main', head)}", f"head: {head}", f"built-by: {args.built_by}"]
         if number > 1:
             lines.append(f"previous: {fields((DIR / f'{args.change}.code.{number - 1}.md').read_text())['head']}")
     lines.append(f"requested: {now()}")
@@ -110,16 +126,34 @@ def until(found, timeout):
         time.sleep(POLL)
 
 
-def claim(review, by):
-    """Marks an open request as taken; False when another reviewer has it, or it is done."""
+def refusal(review, by, same_family):
+    """(why `by` may not take the request, or None when it may; whether taking it is a same-family review)."""
+    request = fields((DIR / f"{review}.md").read_text())
+    if request.get("kind") != "code":
+        return None, False
+    if family(by) is None:
+        return "a code review needs --by with a name that starts with claude or gpt", False
+    builder = request.get("built-by")
+    if family(builder) != family(by):
+        return None, False
+    if same_family:
+        return None, True
+    return f"built by {builder}; a reviewer of another family takes it, or pass --same-family REASON", False
+
+
+def claim(review, by, same_family=None):
+    """Marks an open request as taken; False when another reviewer has it, it is done, or `by` may not take it."""
     if state(review) != "open":
+        return False
+    reason, same = refusal(review, by, same_family)
+    if reason:
         return False
     try:
         handle = os.open(DIR / f"{review}.taken", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return False
     with os.fdopen(handle, "w") as taken:
-        taken.write(f"by: {by}\ntaken: {now()}\n")
+        taken.write(f"by: {by or 'unknown'}\ntaken: {now()}\n" + (f"same-family: {same_family}\n" if same else ""))
     return True
 
 
@@ -129,13 +163,17 @@ def take(args):
         path = DIR / f"{args.id}.md"
         if not NAME.match(args.id) or not path.exists():
             sys.exit(f"review: no request {args.id}")
-        if not claim(args.id, args.by):
+        if state(args.id) == "open":
+            reason, _ = refusal(args.id, args.by, args.same_family)
+            if reason:
+                sys.exit(f"review: {args.id}: {reason}")
+        if not claim(args.id, args.by, args.same_family):
             sys.exit(f"review: {args.id} is {state(args.id)}, not open")
         got = args.id, path
     else:
 
         def oldest():
-            return next(((review, path) for review, path in requests() if claim(review, args.by)), None)
+            return next(((r, path) for r, path in requests() if claim(r, args.by, args.same_family)), None)
 
         got = until(oldest, args.timeout) if args.wait else oldest()
     if got is None:
@@ -147,12 +185,21 @@ def take(args):
     return 0
 
 
+def taken_fields(review):
+    taken = DIR / f"{review}.taken"
+    return fields("---\n" + taken.read_text() + "---\n") if taken.exists() else {}
+
+
 def done(args):
     if not (DIR / f"{args.id}.md").exists():
         sys.exit(f"review: no request {args.id}")
     if state(args.id) != "taken":
         sys.exit(f"review: {args.id} is {state(args.id)}, not taken")
-    write(DIR / f"{args.id}.result.md", pathlib.Path(args.file).read_text())
+    report = pathlib.Path(args.file).read_text()
+    taken = taken_fields(args.id)
+    if "same-family" in taken:
+        report = report.rstrip("\n") + f"\n\nSame-family review by {taken['by']}: {taken['same-family']}\n"
+    write(DIR / f"{args.id}.result.md", report)
     print(f"handed in {args.id}")
 
 
@@ -169,16 +216,23 @@ def wait(args):
 
 def listing(_args):
     rows = []
-    for review, _ in requests():
-        taken = DIR / f"{review}.taken"
-        by = fields("---\n" + taken.read_text() + "---\n").get("by", "") if taken.exists() else ""
+    for review, path in requests():
+        row = [review, state(review)]
+        builder = fields(path.read_text()).get("built-by")
+        if builder:
+            row.append(f"built by {builder}")
+        taken = taken_fields(review)
+        if "by" in taken:
+            row.append(f"taken by {taken['by']}")
+        if "same-family" in taken:
+            row.append(f"same family: {taken['same-family']}")
         result = DIR / f"{review}.result.md"
         verdict = next((line for line in result.read_text().splitlines() if line.strip()), "") if result.exists() else ""
-        rows.append((review, state(review), by, verdict))
+        rows.append(row + ([verdict] if verdict else []))
     if not rows:
         print("no reviews")
     for row in rows:
-        print("  ".join(row).rstrip())
+        print("  ".join(row))
 
 
 def main():
@@ -188,13 +242,15 @@ def main():
     p.add_argument("kind", choices=["design", "code"])
     p.add_argument("change")
     p.add_argument("--head")
+    p.add_argument("--built-by")
     p.add_argument("--note-file")
     p.set_defaults(run=request)
     p = commands.add_parser("take")
     p.add_argument("id", nargs="?")
     p.add_argument("--wait", action="store_true")
     p.add_argument("--timeout", type=float)
-    p.add_argument("--by", default="unknown")
+    p.add_argument("--by")
+    p.add_argument("--same-family", metavar="REASON")
     p.set_defaults(run=take)
     p = commands.add_parser("done")
     p.add_argument("id")

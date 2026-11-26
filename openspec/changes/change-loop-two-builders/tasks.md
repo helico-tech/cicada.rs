@@ -8,7 +8,7 @@ Normal lane, process only: version `none` (no crate change, no release). Follow 
   changes in build, a free slot to the first ready change whose crates meet none in build, a change without the line
   only alone); up to two names on `build:`; a problem for two changes in build sharing a crate; `Order` resolved through
   archived changes (decision 6). Verify: the status tests of the design.
-- [ ] 2. **review.py.** `--built-by`, model families from names (`claude`, `gpt`; `codex` and `openai` as `gpt`), `--by`
+- [x] 2. **review.py.** `--built-by`, model families from names (`claude`, `gpt`; `codex` and `openai` as `gpt`), `--by`
   required with a family for code reviews, `take ID` refusing and `take` skipping the builder's family,
   `--same-family REASON` recorded, `list` showing builder and reviewer (decisions 4 and 5). Verify: the review tests.
 - [ ] 3. **The loop's skill and the config.** `.claude/skills/change-loop/SKILL.md` and `builder.md`: two builders, the
