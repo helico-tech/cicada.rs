@@ -6,6 +6,7 @@ Date: 2026-11-15
 
 Accepted (local-push-gate, 0.18.9). Supersedes ADR 0016's automatic release-workflow rule and its permission to delete a
 failed unpublished remote version tag. The versioning, single workspace version and consumer pinning rules remain.
+Partly superseded by [ADR 0070](0070-openspec-files-reuse-a-full-pass.md): which files may reuse a full pass.
 
 ## Context
 

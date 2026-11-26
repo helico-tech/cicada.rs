@@ -50,7 +50,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0043](0043-deep-payloads-of-dead-letters.md) | Deep dead-letter payloads use an explicit JSON-text field with exact numeric parsing, ordinary redrive validation and a breaking backup/restore upgrade. |
 | [0044](0044-flow-requests-waits-and-cancellation.md) | Flow sends, correlated reply waits and cancellation share one reserved wire shape, with phase journals and staged behavior: sends since 0.18.0, requests and single reply waits since 0.18.1, their deadlines since 0.18.2, joins of all or the first reply since 0.18.3, cancellation of a running run without cleanup since 0.18.4, and its cleanup, `Flow::on_cancel` over a journal of its own, since 0.18.5. |
 | [0045](0045-docs-handoff-between-loops.md) | Builders hand off prose, integrate exact docs-owner fixes for blocking checks, and keep main green through normal review and release gates, since 0.18.6. |
-| [0046](0046-local-checks-and-releases.md) | Local tree-bound check evidence gates main and version tags; pinned local publication replaces automatic Actions, and remote version tags stay immutable. |
+| [0046](0046-local-checks-and-releases.md) | Local tree-bound check evidence gates main and version tags; pinned local publication replaces automatic Actions, and remote version tags stay immutable. Partly superseded by 0070: files under `openspec/` reuse a full pass. |
 | [0047](0047-canonical-json-and-conformance-fixtures.md) | Fixed canonical/hash and remote-worker fixtures ship as a second verified release archive, with the current formatter and explicit tested dependency limits. |
 | [0048](0048-node-details.md) | Optional hostname, Cicada version and label describe node rows; migration 7 is additive for running old nodes, and metadata does not establish identity. |
 | [0049](0049-consumer-skills-as-a-plugin.md) | Consumer skills also ship as one Claude Code plugin following main, with workspace version checks and the portable release archive retained. |
@@ -74,6 +74,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0067](0067-a-placement-pool.md) | A ready-made placement pool `cicada.placement/<pool>`, created with its settings in its state: nodes renew `Offer`s of instance, labels and places; the pool's own timer marks a quiet node silent (no new places, one notice in its own turn) until it offers again; the line ships as one release. |
 | [0068](0068-asks-in-the-placement-pool.md) | Asks in the placement pool follow the permit pool's protocol with `PlacementAnswer`; a grant goes to a live node with every need, most free places first; the line is served in order but skips asks that cannot be placed now; holders are capped per pool. |
 | [0069](0069-a-second-machine-under-one-node-id.md) | An offer from another instance under a live node's id changes nothing, marks the node in conflict and sends one `conflict` alert; the mark ends at silence or after one quiet silence time; extends ADR 0067. |
+| [0070](0070-openspec-files-reuse-a-full-pass.md) | Any non-executable regular file under `openspec/` may reuse a full pass of the gate, so an archive commit needs no second full run; review markers are written as plain files; partly supersedes ADR 0046. |
 
 ## Design questions
 
