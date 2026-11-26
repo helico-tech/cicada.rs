@@ -15,7 +15,7 @@ Normal lane, process only: version `none` (no crate change, no release). Follow 
   Codex call (decision 3), reviews by the other model with the fallback, landing in any order, the gate retry;
   `openspec/config.yaml`: the `Crates:` rule and the throughput line (decision 1); a `Crates:` line in every open
   proposal's Impact. Verify: `python3 scripts/status.py` names the expected builds and no problem.
-- [ ] 4. **Docs handoff.** `docs-handoff.md` gives `AGENTS.md` ("Specs and changes", Flow) and the change-loop section
+- [x] 4. **Docs handoff.** `docs-handoff.md` gives `AGENTS.md` ("Specs and changes", Flow) and the change-loop section
   of
   `docs/how-to/releasing.md` the new rules; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten
   docs.
