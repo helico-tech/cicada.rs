@@ -10,7 +10,9 @@ moves: a correction is a new version.
 ## 0.23.1 — unreleased
 
 An `OrphanWatch` of `cicada-containers` reports the containers of a job that have no container actor, without removing
-them. Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees are those of 0.23.0.
+them. A collection of outputs that keeps failing, timeouts included, still ends, and `copy_out` reads at most
+`CopyLimits::max_read` bytes. Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees
+are those of 0.23.0.
 
 ### Added
 
@@ -28,6 +30,29 @@ them. Additive: the contracts, wire formats, the store schema, the HTTP API and 
   daemon. Limits: two stores on one daemon with the same prefix see each other's containers as orphans, so give each
   its own prefix; a container made before 0.22.1 carries no label and is never seen. Covered by the tests of
   `src/orphans/`.
+- `cicada-containers`: a cap on what `copy_out` reads. `CopyLimits` gains `max_read`, the most content bytes of
+  regular files one copy reads, kept and skipped alike (a skipped file's data passes through Docker's archive all the
+  same); `CopyLimits::new` sets it to 4 × `max_bytes` (saturating), so 256 MiB for the default `Outputs`, and
+  `with_max_read(bytes)` changes it. A zero `max_read` fails with `InvalidSpec`, as the other limits do. A regular file
+  that would take the bytes read past it stops the copy before its data: the files before it are kept, and one last
+  skipped entry for the path says `the rest was not read: over the read limit of N bytes`. Docker and the fake stop at
+  the same entry. So a huge file in an output folder is no longer read in full on every try of a collection.
+- `cicada-containers`: a collection that keeps failing still ends. A turn past the job's `MAX_TURN` commits nothing,
+  so a copy that always takes too long used to be retried until the poll's retry policy gave up, and the end was never
+  sent. Now a collecting step whose message failed 3 times, timeouts included, makes no copy, log read or progress
+  read on its next try, and records and sends the pending end with `outputs.error` =
+  `(no outputs: the collection failed 3 times; last: <the last error>)` and the counts of the files the store holds.
+- `cicada-containers`: warnings when the output store keeps failing. While collecting, the errors in a row that reach
+  `ContainerSettings::max_errors` log a warning as the end goes out without its outputs; while deleting stored
+  outputs, a warning when the errors reach `max_errors`, once, and the deletion keeps trying (each retry before and
+  after logs at `debug`).
+
+### Changed
+
+- `cicada-containers`: a file of an output folder past the read limit ends the copy there, so smaller files after a
+  huge one are no longer kept: where 0.23.0 skipped the huge file and kept going, 0.23.1 keeps the files before it
+  and reports the rest as not read. Raise the limit with `CopyLimits::with_max_read` to keep the old behaviour for
+  folders with a few large files.
 
 ## 0.23.0 — 2026-11-25
 

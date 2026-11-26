@@ -15,7 +15,7 @@ and `specs/container-runtime/spec.md`. Run the crate's tests with every feature:
   after three timed-out tries the end is sent and no fourth copy is made.
 - [x] 3. **Warnings.** A warning once store errors in a row reach `max_errors` while collecting and while deleting
   outputs; the rustdoc of `max_errors` (decision 3). Verify: a test that one warning is logged.
-- [ ] 4. **Changelog and docs handoff.** The unreleased section names `max_read` and the three-tries rule under Added
+- [x] 4. **Changelog and docs handoff.** The unreleased section names `max_read` and the three-tries rule under Added
   and
   the dropped small files after a huge one under Changed; the handoff carries the design's Docs section. No edit to
   `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
