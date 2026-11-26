@@ -19,7 +19,7 @@ first). Follow `design.md`; the spec is `specs/app/spec.md`. No ADR.
 - [x] 4. **Changelog and docs handoff.** The 0.25.0 section names the method under Added; `docs-handoff.md` carries the
   design's Docs section with decision 5's notes. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `CICADA_UPDATE_CLI` only if the CLI help changed, `openspec validate
   app-node-id-after-types --strict`, commit, then `python3 scripts/gate.py run` (wait for the lock with short tries;
-  the run as its own background command with a 2-hour timeout).
+  the run as its own background command with a 2-hour timeout). The gate ran at landing, on the merged tip.
