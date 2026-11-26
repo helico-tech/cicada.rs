@@ -19,7 +19,7 @@ Moving running work.
 
 ## Order
 
-After `placement-holders`, before `placement-member`.
+After `placement-holders`, before `placement-conflicts`.
 
 ## Impact
 

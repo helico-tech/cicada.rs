@@ -21,7 +21,7 @@ Supervising the node.
 
 ## Order
 
-After `placement-drain-and-gone`, before `placement-operator-commands`.
+After `placement-conflicts`, before `placement-operator-commands`.
 
 ## Impact
 
