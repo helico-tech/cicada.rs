@@ -95,4 +95,6 @@ None.
 
 ## Status
 
-The text above is proposed; no protected prose is written. Checks run are listed in the build report.
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace`
+with PostgreSQL: 3646 passed, 0 failed (`cicada-examples` `--test docs`, `--doc` and `--test skill` included);
+`openspec validate placement-offers --strict` valid. The text above is proposed; no protected prose is written.
