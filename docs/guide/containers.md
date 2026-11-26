@@ -89,6 +89,12 @@ spelling of image platforms, so you can compare them with an image's platform as
 Rust's `std::env::consts::ARCH` (`x86_64`, `aarch64`); `arm` does not say `v6` or `v7`. The call changes nothing and
 also shows that the runtime answers, so a host that offers work only while its runtime answers can call it each round.
 
+From 0.25.0, `RuntimeInfo` also has `id`: Docker's daemon id from `/info`, the same for every node that talks to that
+daemon, or `None` when the runtime gives none. Use it as a placement member's
+[resource key](actors.md#placement-pool), so two nodes on one daemon do not offer its places twice. Docker does not
+promise the id's format: compare it, never parse it. Fetching it is a second call, to `/info`, which can take seconds on
+a busy daemon. The fake has no id until `set_info(RuntimeInfo::new("arm64", "linux").with_id("daemon-1"))`.
+
 Treat every error but `Unsupported` as "not here this round": an unreachable Docker is `DaemonUnavailable`, but one
 that answers and is not healthy (an engine that is starting, a Docker below version 25) is `Other`. The call has no
 time limit of its own and bollard gives up after 120 seconds, so wrap it in `tokio::time::timeout` for a fast answer.

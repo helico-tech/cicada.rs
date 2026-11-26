@@ -588,7 +588,7 @@ Two machines started from a copied identity folder (a copied file, a cloned disk
 and the instance, so their offers look like one machine. They also write one node row in turn, so each member reads its
 node's row before every round (from 0.25.0, [ADR 0071](../adr/0071-a-duplicate-node-reported-by-its-member.md)): when
 its host name differs from the one the node writes (`ActorSystem::hostname()`), the member skips that round's offer,
-logs an error once and sends the pool `Duplicate { node, host }`. The pool marks the node
+logs an error once per run of that duplicate host and sends the pool `Duplicate { node, host }`. The pool marks the node
 `conflict: {instance, at, host}` and tells the alert target once with the kind `conflict`; while the mark has a host,
 the node gets no new places and keeps its holders. A mark set only by reports ends one silence time after the last
 report; one set by both an offer and a report is cleared when both would be, and going silent ends every mark. A report
@@ -606,6 +606,20 @@ of a silent node changes nothing, and one of an unknown node is refused for good
   `back`).
 - The notice does not name the other instance or host; read the node's `conflict` in the pool's state.
 
+**One resource, two nodes.** Two nodes on one machine, each with its own identity, can share one resource, such as a
+Docker daemon, and so offer its places twice. An offer can name the resource its places belong to with a key, and one
+live node holds a key: the first live node whose offer recorded it (from 0.25.0,
+[ADR 0072](../adr/0072-one-live-holder-per-resource.md)). A second live node that offers the same key is ignored: a new
+node is not added, and a known one keeps its last entry, so it goes silent if it keeps offering only that key. It is
+listed in the state's `contested` with the key and the time of its last such offer, and the alert target gets one
+`conflict` notice naming the ignored node. The entry goes one silence time after that node's last such offer, so a
+later contest is told again. When the holder goes silent or is declared gone, the next offer of the key takes it.
+
+- After a holder goes silent, its runs may still use the resource while the new holder gets new places: a brief
+  overbooking.
+- Offers without a key are not checked, and two keys for one resource are not told apart.
+- A pool lists at most `maxNodes` contests; a new one past that is refused, as a failed `Offer`.
+
 **The member.** Each node keeps its identity in a folder of its own with `NodeIdentity::load_or_create(dir)`: the first
 start writes `placement-identity.json` with a node id (`node-` and 16 hex digits) and an instance, and later starts
 read the same, so a restart is the same machine to the pool. Use `node_id()` as `NodeConfig::node_id`; a `--node-id`
@@ -615,7 +629,7 @@ when it does not, and the node then goes silent at the pool by itself. Here Dock
 [`info()`](containers.md#the-runtimes-machine) is the probe:
 
 <!-- doctest
-@@23
+@@27
 -->
 ```rust,no_run
 use std::sync::Arc;
@@ -633,7 +647,11 @@ fn app() -> Result<App, Box<dyn std::error::Error>> {
         let runtime = runtime.clone();
         async move {
             let info = runtime.info().await.ok()?; // no answer: no offer this round
-            Some(Capacity::new([info.arch.as_str(), "docker"], 4))
+            let capacity = Capacity::new([info.arch.as_str(), "docker"], 4);
+            Some(match info.id {
+                Some(id) => capacity.resource(id), // one daemon counts once, however many nodes share it
+                None => capacity,
+            })
         }
     });
     Ok(App::new().node_config(config).task("placement", move |system, stopping| async move {
@@ -653,7 +671,12 @@ yet, are logged and tried at the next round; only `stop` ends `run`, also while 
   keeps it while it runs. A second process on the same folder fails to start with `InvalidIdentity` whose `kind()` is
   `IdentityErrorKind::Locked`, and loading the folder twice in one process fails too while the first identity lives.
   The lock covers one machine only: on one host with a shared volume, a rolling deploy's new container fails with
-  `Locked` until the old one stops. On a file system without locks it logs a warning and runs without one.
+  `Locked` until the old one stops. On a file system without locks, and in a read-only folder that holds the identity
+  file but no lock file, it loads without a lock and logs a warning, so two processes there are not stopped; a
+  read-only lock file that exists is still locked.
+- The probe names the resource its places belong to with `Capacity::resource(key)`, here the daemon's id; see
+  **One resource, two nodes**. A key is 1 through 200 characters without NUL; out of bounds, the member sends no offer
+  and warns each round. Each node on a shared daemon still needs its own identity folder.
 - A corrupt or unreadable identity file stops the start with `InvalidIdentity` (`IdentityErrorKind::Invalid`), which
   names the path; delete the file to take a new identity on purpose (a conflict until the old entry goes silent).
 - The member cannot read the pool's silence: keep the interval below it. Bound a probe that may hang with a timeout of
@@ -666,8 +689,8 @@ silent node's next offer makes it `live` again. Silence counts from the store ti
 slow pool marks a node late, never early.
 
 **Alerts.** The target's family takes a variant such as `Placement(PlacementNotice)`, with the kind `silent` once per
-silence, `back` when a silent node offers again and `conflict` once while a node's conflict mark lasts; match all three
-if you match the kinds exhaustively. Each notice goes out in a turn of the pool's own (`Alert`), so a
+silence, `back` when a silent node offers again, and `conflict` once while a node's conflict mark lasts and once per
+contest of a resource key (read `contested` for the key); match all three if you match the kinds exhaustively. Each notice goes out in a turn of the pool's own (`Alert`), so a
 target that is gone or does not take the message fails only that alert; the node stays silent.
 
 **Asks.** `holder` names this attempt (1 through 200 characters, no NUL) and is unique among the pool's holders and
@@ -737,8 +760,8 @@ cicada send cicada.placement/runners --type Release --payload '{"holder": "r1", 
 
 Read the pool with `cicada describe actor cicada.placement/runners` (`-o json` for JSON), `cicada get actor` or the
 terminal UI. Its state shows `nodes` (per node id: `instance`, `status` `live` or `silent`, `draining`, `places`,
-`labels`, `heardAt` and `conflict`, whose `instance` you compare with the node's), `holders` (`holder`, `grant`,
-`node`) and `waiting`, the line in order; a `Release` takes its holder id and grant number from `holders`. There is no
+`labels`, `heardAt`, `resource` and `conflict`, whose `instance` you compare with the node's), `holders` (`holder`,
+`grant`, `node`), `waiting`, the line in order, and `contested` (`resource`, `node`, `at`); a `Release` takes its holder id and grant number from `holders`. There is no
 dedicated `cicada placement` command: the app layer does not depend on the ready-made actors, which are all operated
 this way.
 

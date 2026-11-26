@@ -284,12 +284,15 @@ clients require, as 0.6.0 does, needs its clients upgraded together with the nod
 ## Upgrade to 0.25.0
 
 **Version 0.25.0 changes the contract of `cicada.placement`.** `PlacementMsg` gains `Duplicate` and the conflict mark
-the optional `host`, so the [placement pool's](../guide/actors.md#placement-pool) contract hash changes. The type name
+the optional `host`, the offer and the node gain the optional `resource` and the state gains `contested`, so the
+[placement pool's](../guide/actors.md#placement-pool) contract hash changes. The type name
 is fixed, so hosts with pools use a maintenance window: stop every host of the type, delete its pools and then its
 registration, and start the new hosts, which create the pools again.
 
 In Rust, add `hostname: None` to `NodeConfig` literals that do not end with `..NodeConfig::default()`, `host: None` to
-`PlacementConflict` literals, and a `Duplicate` arm to exhaustive matches of `PlacementMsg`. Drop a `NodeIdentity`
+`PlacementConflict` literals, `resource: None` to `PlacementMsg::Offer`, `PlacementNode` and `Capacity` literals
+(prefer `Capacity::new`), `contested: vec![]` to `PlacementState` literals, and a `Duplicate` arm to exhaustive matches
+of `PlacementMsg`. Drop a `NodeIdentity`
 before loading its folder again: it now locks the folder, and a process that shares an identity folder with another on
 the same machine fails with `IdentityErrorKind::Locked` until the other stops.
 
