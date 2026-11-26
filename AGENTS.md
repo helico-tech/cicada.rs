@@ -115,7 +115,7 @@ The `advisories` check needs `cargo-deny` 0.20.2 and network access; see the rel
 ## Specs and changes: OpenSpec
 
 Specs, changes, designs and tasks live in `openspec/` ([OpenSpec](https://github.com/Fission-AI/OpenSpec), ADR 0010).
-Work on them goes through one change loop (ADR 0055).
+Work on them goes through one change loop (ADR 0055; two builders by ADR 0073).
 
 - `openspec/specs/`: what the system does, one folder per capability. It grows as changes are archived;
   `docs/architecture.md` stays the reference for behaviour.
@@ -123,12 +123,16 @@ Work on them goes through one change loop (ADR 0055).
   `proposal.md` is not started. `tasks.md` is written last: a change that has one is agreed and ready to build.
   Fast-lane changes omit the design and spec deltas, as below.
 - Every proposal has an `Order` section that names the change before it, so the open changes form one line.
+- Every proposal's `## Impact` starts with `Crates: <names>`, or `Crates: none` for process and docs changes.
+  `status.py` names up to two changes to build, whose crates meet nowhere; a change without the line is built only alone.
   `python3 scripts/status.py` prints the line and the state of each change.
 - `openspec/changes/archive/`: finished changes, and the old epics and issues (`2026-11-09-work-tracker-history/`).
-- Flow: one session, `/change-loop`, describes the next change with the owner, has a builder subagent build it in a
-  worktree under `.claude/worktrees/` and a fresh reviewer subagent review it, lands it on `main` and releases the
-  batch when it is time. Reviews go through `scripts/review.py`, which keeps requests in `.reviews/`; another harness
-  can take one with `/review-loop` (`.claude/skills/review-loop/SKILL.md`). Each built change hands user prose to the
+- Flow: one session, `/change-loop`, describes the next change with the owner, has up to two builders build changes
+  that share no crate, each in its own worktree (a Claude subagent, and GPT through Codex), has a fresh reviewer of the
+  other model review each change, lands the changes on `main` one at a time and in any order, and releases the batch
+  when it is time. Reviews go through `scripts/review.py`, which keeps requests in `.reviews/`, records who built a
+  change and refuses a reviewer of the same model family; another harness can take one with `/review-loop`
+  (`.claude/skills/review-loop/SKILL.md`). Each built change hands user prose to the
   docs session in `docs-handoff.md` (ADR 0045). A change is small (one behaviour, at most 5 tasks) and built through
   the change loop unless the owner says otherwise. The rules for the artifacts are in `openspec/config.yaml`.
 - The fast lane is for rustdoc and comments, tests only, and internal refactors. Its proposal has `Lane: fast` in a

@@ -18,6 +18,9 @@ publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
 Landing merges, archives and pushes a change to `main`; it does not release it
 ([ADR 0055](../adr/0055-one-change-loop-a-fast-lane-and-batched-releases.md)). The change loop commits the archive
 at landing, runs `python3 scripts/gate.py run` on the new tip with the full checks, then pushes main normally.
+Up to two builders may run at once on changes that share no crate
+([ADR 0073](../adr/0073-two-builders-in-the-change-loop.md)). The change loop lands them one at a time, in the order
+they pass review: it rebases each on `main`, checks its ADR number, and runs the gate on the landed tip.
 Builders run E2E only when their tasks ask for it: changes to `sample-service/`, `e2e/`, the `serve` or `worker`
 commands of `cicada-app`, or the HTTP crates (`cicada-axum`, `cicada-client`). Every release requires E2E evidence.
 
@@ -180,6 +183,8 @@ ancestor toolchain files are refused. A check that changes its source checkout f
 ### Interrupted or busy runs
 
 All sessions share one lock and owned checkout. A busy gate refuses another run; wait for its owner to finish.
+Builders and the change loop retry `busy` in short tries for at most 50 minutes; each try runs as a background command
+with a 2-hour limit, since the try that gets the lock is the run. Never stop a run once it started.
 After interruption, inspect `status`, then run:
 
 ```sh

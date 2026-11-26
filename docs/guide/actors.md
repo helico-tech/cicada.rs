@@ -494,8 +494,9 @@ actors to; it releases the place with its grant number when done.
 
 1. Host `PlacementActor` (no settings) and create each pool with
    `PlacementState::new(silence, max_nodes, max_waiting, max_holders)`: silence 1 second through 1 day, 1 through
-   1,000 nodes; the line holds 0 through 1,000 waiting asks, the pool 1 through 1,000 holders. The settings are fixed
-   at the create; creating a pool that exists changes nothing.
+   1,000 nodes; the line holds 0 through 1,000 waiting asks, the pool 1 through 1,000 holders. The settings are given
+   at the create, and `Configure` changes them on a live pool (see **Changing the settings**); creating a pool that
+   exists changes nothing.
 2. Send `PlacementMsg::alerts(&target, message_type)` to say where notices go; the last one stands, and without one no
    notices are sent.
 3. On each member node, run a `PlacementMember` (see **The member** below) as an app task. It sends
@@ -686,7 +687,8 @@ yet, are logged and tried at the next round; only `stop` ends `run`, also while 
 silence), keeping its time in `armed` and its id in `armedId`. At the check each node past it becomes `silent`. Only
 the armed check counts: one made due early by an operator marks nothing and arms itself again at the same time. A
 silent node's next offer makes it `live` again. Silence counts from the store time an offer was handled, so a paused or
-slow pool marks a node late, never early.
+slow pool marks a node late, never early. A `Configure` with another silence re-arms the check at the new earliest end,
+at once when that has passed.
 
 **Alerts.** The target's family takes a variant such as `Placement(PlacementNotice)`, with the kind `silent` once per
 silence, `back` when a silent node offers again, and `conflict` once while a node's conflict mark lasts and once per
@@ -748,7 +750,8 @@ Drain, undrain or gone of an unknown node is refused for good.
 - A holder granted from the line but not yet told can hear `gone` for a grant it never saw, and its `granted` answer
   then never comes: handle a `gone` for an unknown grant.
 
-**From the command line.** An operator drains, undrains, declares gone and releases with the generic `cicada send`,
+**From the command line.** An operator drains, undrains, declares gone, releases and configures with the generic
+`cicada send`,
 which sends the same messages as the Rust constructors:
 
 ```sh
@@ -756,6 +759,7 @@ cicada send cicada.placement/runners --type Drain   --payload '{"node": "mac-1"}
 cicada send cicada.placement/runners --type Undrain --payload '{"node": "mac-1"}'
 cicada send cicada.placement/runners --type Gone    --payload '{"node": "mac-1"}'   # only once the node is silent
 cicada send cicada.placement/runners --type Release --payload '{"holder": "r1", "grant": 1}'
+cicada send cicada.placement/runners --type Configure --payload '{"maxHolders": 8, "silence": "PT2M"}'
 ```
 
 Read the pool with `cicada describe actor cicada.placement/runners` (`-o json` for JSON), `cicada get actor` or the
@@ -765,13 +769,28 @@ terminal UI. Its state shows `nodes` (per node id: `instance`, `status` `live` o
 dedicated `cicada placement` command: the app layer does not depend on the ready-made actors, which are all operated
 this way.
 
-- `cicada send` answers once the message is accepted, not handled: a `Gone` of a live node or a `Drain` of an unknown
-  node is refused later, as a failed message of the pool (`cicada get outcomes --status failed`).
-- A payload that does not match the type's schema is refused at once with `422`.
+- `cicada send` answers once the message is accepted, not handled: a `Gone` of a live node, a `Drain` of an unknown
+  node or an empty `Configure` is refused later, as a failed message of the pool (`cicada get outcomes --status
+  failed`).
+- A payload that does not match the type's schema is refused at once with `422`, such as a `silence` given as a number
+  rather than an ISO-8601 duration (`"PT2M"`).
 - An operator's `Release` frees a place the holder may still use: release only a grant whose work you know has ended.
 
 **Fewer places.** An offer with fewer places than holders keeps every holder, and new grants wait until holders
 release; a silent node keeps its holders too.
+
+**Changing the settings.** Send `PlacementMsg::Configure { silence, max_nodes, max_waiting, max_holders }` with the
+fields to change as `Some` and the rest `None` (from 0.25.0); it takes the create's bounds and comes from anyone. A
+message with no field set, or a value out of bounds, is refused for good and changes nothing. A lower limit removes
+nothing: the nodes, holders, waiting asks and contests stay, and new ones are refused (a new node, a new contest, an ask
+that must wait while the line is full) or queued (an ask while the pool holds `maxHolders` or more) until the count is
+below the new limit. A higher `maxHolders` grants waiting asks at once; a higher `maxNodes` admits a new node at its
+next offer. A new silence re-arms the check: a shorter one marks the quiet nodes silent in the next turn, a longer one
+moves the check later, and conflict marks and contests end one new silence time after their last offer or report.
+
+- Keep the silence above the members' offer interval (15 s by default), or nodes flip between silent and back.
+- A `Configure` that also raises `maxHolders` may grant a place on a node that the next turn marks silent.
+- Unknown fields are ignored, so a misspelled field next to a valid one changes nothing: read the state afterwards.
 
 **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
 replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
