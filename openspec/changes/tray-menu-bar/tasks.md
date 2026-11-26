@@ -1,8 +1,8 @@
 # Tasks
 
 Normal lane, in the batch after 0.25.0 (check the `release:` line of `python3 scripts/status.py`, builder.md,
-Version). Builds after `app-node-id-after-types` (also changes `cicada-app`; rebase onto it when it landed first). Follow
-`design.md`; the spec is `specs/menu-bar-tray/spec.md`. No ADR.
+Version). Builds after `app-node-id-after-types` (also changes `cicada-app`; rebase onto it when it landed first).
+Follow `design.md`; the spec is `specs/menu-bar-tray/spec.md`. No ADR.
 
 - [ ] 1. **What the model needs from `cicada-app`.** `WorkerReady::types` (`#[non_exhaustive]`, no `Copy`), filled
   from the worker's picked types; `cicada_app::Contexts::load(&Env)` with `names()` and `current()`, no servers or
