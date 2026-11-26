@@ -179,7 +179,16 @@ class FamilyTest(unittest.TestCase):
         review = self.request("one", "claude-opus-5-5")
         result = self.review("take", review, "--by", "gpt-x\nsame-family: yes")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("a code review needs --by", result.stderr)
+        self.assertIn("--by needs a name on one line", result.stderr)
+
+    def test_a_design_review_refuses_a_name_with_a_line_break(self):
+        result = self.review("request", "design", "one")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = result.stdout.strip()
+        result = self.review("take", review, "--by", "claude-x\nsame-family: yes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--by needs a name on one line", result.stderr)
+        self.assertFalse((self.root / ".reviews" / f"{review}.taken").exists())
 
     def test_a_same_family_review_needs_a_reason_on_one_line(self):
         review = self.request("one", "claude-opus-5-5")

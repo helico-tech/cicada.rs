@@ -131,6 +131,8 @@ def until(found, timeout):
 
 def refusal(review, by, same_family):
     """(why `by` may not take the request, or None when it may; whether taking it is a same-family review)."""
+    if by is not None and not by.isprintable():
+        return "--by needs a name on one line", False
     request = fields((DIR / f"{review}.md").read_text())
     if request.get("kind") != "code":
         return None, False

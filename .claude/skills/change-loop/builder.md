@@ -15,7 +15,7 @@ what it says. You do not change the design. Work fast: the owner wants short ite
 
    ```sh
    git show-ref --verify --quiet refs/heads/feat/<change> && git merge --ff-only feat/<change>   # earlier work, if any
-   git rebase main
+   git rebase --autostash main   # keeps the uncommitted work of a resumed worktree
    git branch -M feat/<change>
    ```
 
