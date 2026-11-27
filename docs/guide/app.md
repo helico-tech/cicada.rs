@@ -362,11 +362,28 @@ Closing a row keeps its loaded pages. A child row shows its address, type and ru
 address is outside the running sample's prefix. An actor can appear in the root list and under a parent, and each row
 folds and selects on its own.
 
-Selecting an actor fills the pane on the right, read only: its type, version, created time, parent, pinned node and
+Selecting an actor fills the pane on the right: its type, version, created time, parent, pinned node and
 paused flag, its running turn, and tabs for its state as highlighted JSON, its mailbox (the pending messages among its
 first 50) and its watches. An actor that is gone shows "Not found". The toolbar's pane button hides and shows the pane
 (in the standalone app also View › Hide Pane). ⌘R on the Actors page reloads the list from the top and the pane, and
 reopens surviving rows as their pages load; a new search prefix or context starts with all rows folded.
+
+From 0.26.0 the pane acts on the actor, through the same routes and context credentials as `cicada`: **Pause** or
+**Resume** for its mailbox (a pause lets a running turn finish), **Cancel Turn…** while it shows a running turn,
+**Purge Mailbox…** (a running message stays) and **Delete…**, which removes the actor, every descendant and all their
+mailboxes. Cancel Turn, Purge Mailbox and Delete first open a sheet that names the target; Return and Escape both
+cancel it. An absent actor answers "actor not found", and Cancel Turn "no turn was running" when the server finds none.
+A refusal or a timeout shows as an alert whatever is selected, and so does a "not found" for an actor no longer
+selected, naming its address. A successful write, or a timeout, since the server may have applied it, schedules a fresh
+read, also while live updates are paused; an acknowledged Delete drops the actor and its known descendants from the
+outline at once, and selecting another actor before the reply keeps the newer pane.
+
+- An action goes to the address named in the sheet, which may belong to a recreated actor by the time the server gets
+  it.
+- Cancel Turn names the last-read message, but the server asks whichever turn is running then to cancel; "Cancel
+  requested" acknowledges the request, and the handler may already have finished.
+- Purge counts the pending rows among the mailbox's first 50 as last read, and Delete counts the loaded direct children;
+  the sheet says when a count is a lower bound or was not read.
 
 - The running status is a sample: with more than 200 running turns under the prefix, an actor past them shows no
   `running` even when it runs. Search a narrower prefix to see it.
@@ -406,7 +423,7 @@ scroll. Select a turn to see it in the pane, read only, from its row; **Show Act
 actor reads the actor's turn again: the pane shows the turn running now, which may be another message, marks an ended
 one "no longer running", or shows a failed read with **Retry**. The list is a snapshot of when each page was read, so
 a turn may have ended by the time you see it; ⌘R reads it again from the top and clears the selection, and a failed
-page shows **Retry**. Cancelling a turn is not in the inspector yet.
+page shows **Retry**. Cancel a turn from its actor's pane, with **Cancel Turn…**.
 
 **Outcomes** lists the finished messages of the actors under the address prefix, 100 at a time as you scroll. A status
 switch in the toolbar, shown only on this page, picks Failed (the default), Cancelled, Done or All; All adds a status
