@@ -6,7 +6,7 @@ Normal lane, no version bump (process only). Follow `design.md`; the spec is `sp
   boards into `mockup/` with `SOURCE.md`, has "Departures from the board" (additions included), names the board in its
   building task, and starts its manual list with "next to board X, light and dark"; the builder's prompt names the
   boards; Land reads the live boards again and waits on a changed one (decisions 1, 2 and 4).
-- [ ] 2. **The builder's brief.** `builder.md`: read the boards before building; never depart without asking; report
+- [x] 2. **The builder's brief.** `builder.md`: read the boards before building; never depart without asking; report
   departures (decision 2).
 - [ ] 3. **The review briefs.** `review-loop/design.md`: every screen named, every board element in the design or under
   Departures, every addition under Departures. `review-loop/code.md`: compare the screen's code with the board in both

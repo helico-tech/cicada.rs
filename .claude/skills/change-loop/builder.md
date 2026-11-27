@@ -21,6 +21,11 @@ what it says. You do not change the design. Work fast: the owner wants short ite
 
 3. Read `openspec/changes/<change>/` (proposal, design, specs, tasks), `AGENTS.md`, and the parts of
    `docs/architecture.md` and the ADRs that the change names. Read Documentation below before the first task.
+4. A GUI change (a screen with a board in `openspec/changes/<change>/mockup/`): read each board and the design's
+   `Departures from the board` before building. Build each screen as its board shows it: its sections, columns and
+   their order, controls, texts and states. Depart only where the design lists it. A departure you find necessary (a
+   native control that cannot look the same, missing data) is a question for the owner: stop and report it, never
+   choose another look yourself. Never drive the GUI (no `osascript`, no screen capture).
 
 ## Build
 
@@ -143,7 +148,8 @@ At most 300 words:
 1. Each task: done, or not done and why.
 2. The checks you ran, with results in numbers (tests passed and failed), and the checks you did not run, with the
    reason.
-3. Where you departed from the design, and your open questions.
+3. Where you departed from the design, and your open questions. A GUI change: each departure from a board, listed in
+   the design or asked.
 4. An example for the owner: at most 20 lines of code, a command or a request that shows what is new. Take it from a
    test or a doc block in your branch, so that it is true.
 5. New concepts: each new term or idea that a user of the library meets, with two or three plain sentences on how it
