@@ -13,8 +13,8 @@ it off (2026-11-27).
   without a flash.
 - Children past their first page, and the children kept for closed rows, are marked not refreshed.
 
-To decide in the design: how the view tells the model which open rows are visible, and the cost of re-reading full
-actor states.
+Decided in the design: the view reports the open rows on screen and the first visible row; the cost of full states is
+capped at 300 rows and named in the handoff.
 
 ## Order
 

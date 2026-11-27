@@ -4,7 +4,8 @@ Date: 2026-11-13
 
 ## Status
 
-Accepted for `actor-change-sse`. The owner delegated design decisions to an Opus 5.5 adviser.
+Accepted for `actor-change-sse`. Partly superseded by [ADR 0077](0077-a-client-for-the-change-stream.md) for the Rust
+client. The owner delegated design decisions to an Opus 5.5 adviser.
 
 ## Context
 
