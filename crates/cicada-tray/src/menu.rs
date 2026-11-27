@@ -222,11 +222,13 @@ impl TrayState {
     }
 }
 
-/// `text` as the menu shows it: split on white space, each word that holds `://` replaced whole by what comes before
+/// `text` as the menu shows it: tabs and line breaks removed, as the URL parser removes them, so none splits a URL;
+/// then split on white space, each word that holds `://` replaced whole by what comes before
 /// its scheme and `<scheme>://<host>[:<port>]` as the `url` crate parses the rest of the word, or `<url>` when it does
 /// not parse or has no host, so nothing after the host survives; control characters made spaces; the words joined by
 /// one space and cut at `limit` characters, the last an ellipsis when cut. URLs are replaced before the cut.
 pub(crate) fn display_text(text: &str, limit: usize) -> String {
+    let text: String = text.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
     let words: Vec<String> = text.split_whitespace().map(redacted_word).collect();
     let cleaned: String = words.join(" ").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -970,8 +972,8 @@ mod tests {
         fixture.failed_at = Some(at(9, 1, 0));
         let failure = fixture.model().failure.unwrap();
         assert_eq!(
-            failure.subtitle,
-            "error sending request for url (https://actors.internal:8443 connection refused at 09:01"
+            failure.subtitle, "error sending request for url (https://actors.internal:8443 at 09:01",
+            "the line break joins the next word to the URL's, and both go"
         );
         let long = format!("http://a@b/x {}", "y".repeat(400));
         let shown = display_text(&long, FAILURE_LENGTH);
@@ -991,6 +993,10 @@ mod tests {
             ("at ://user:secret@host and http://[bad", "at <url> and <url>"),
             ("'ftp://u:p@h/x'", "'ftp://h"),
             ("no\u{7}bell", "no bell"),
+            ("https://user:pa\tss@host/private?token=hidden#frag", "https://host"),
+            ("https:\t//user:pass@host/private", "https://host"),
+            ("at https://user:pa\nss@host/p?q=1\r\nnext", "at https://host"),
+            ("one\ntwo three", "onetwo three"),
         ] {
             assert_eq!(display_text(text, 200), shown, "{text}");
         }
