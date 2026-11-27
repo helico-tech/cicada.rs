@@ -29,5 +29,5 @@ After `tray-settings`, before `inspector-window`.
 Crates: cicada, cicada-axum, cicada-client, cicada-app.
 
 `crates/cicada` (store query, both backends, conformance), `crates/cicada-axum` (`StatsView`), `crates/cicada-client`,
-`crates/cicada-app` (`stats` output); `docs/openapi.json` and `docs/reference/cli.md` regenerated. A change to the HTTP
-contract, so the design names whether it needs an ADR. Docs handoff: the HTTP guide and operations.
+`crates/cicada-app` (`stats` output); `docs/openapi.json` and `docs/reference/cli.md` regenerated. An additive change to
+the HTTP contract; the design says why it needs no ADR. Docs handoff: the HTTP guide and operations.
