@@ -20,7 +20,7 @@ landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the de
   released before AppKit calls (decision 5). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p
   cicada-inspector --all-targets`, and the manual check list below, each item noted as done, run by code (not seen),
   or not done in the report.
-- [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Outcomes page, the cause chain
+- [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Outcomes page, the cause chain
   and the sidebar count; `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md` or
   the handwritten docs. Then `cargo fmt --all --check` (lines ≤120, `Cargo.toml` and comments included), `cargo clippy
   --workspace --all-targets`, `cargo test --workspace`, `cargo test -p cicada-examples --test docs` and `--doc`,
