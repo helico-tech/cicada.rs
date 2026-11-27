@@ -73,6 +73,12 @@ the server's message, and a success SHALL be followed by a fresh read.
 - **WHEN** the operator cancels a message that the server is handling by then
 - **THEN** the pane says it is being handled and was not cancelled
 
+#### Scenario: A cancelled message past the refreshed range
+
+- **WHEN** the operator cancels a Messages row that lies past the soft refresh's range, with Live paused
+- **THEN** the pane shows the message as cancelled with no buttons, whichever of the refresh and the message's own read
+  answers first
+
 ### Requirement: Actions on several messages
 
 The Messages and Outcomes tables SHALL allow several rows to be selected; Outcomes SHALL offer to retry the selected

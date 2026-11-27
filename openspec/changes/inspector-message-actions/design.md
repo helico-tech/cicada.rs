@@ -45,7 +45,7 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    of N as new messages? M already retried, G gone and S not read are skipped, as just read. It may repeat external
    work."; with K = 0 it says nothing is left to retry and offers only Close. A confirmed sheet sends the K ids and
    shows "retried K' of K". Stop during the checks ends the run with nothing sent; Stop during the writes shows
-   "stopped: K done of N; the rest not sent". A chunk whose call fails or times out stops the run: the page says how
+   "stopped: D done of N; the rest not sent". A chunk whose call fails or times out stops the run: the page says how
    many were done before it, that the result of that chunk is unknown and the rest were not sent, and to read the page
    again; nothing is sent again on its own. Between the check and the send another client can retry.
 6. **One action at a time, results and refreshes.** As for the actor actions: from the press until the answer (for bulk,
@@ -55,11 +55,16 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    sends nothing ("selection changed; nothing done"). Once sent, a bulk result shows in the page's footer whatever the
    list does meanwhile, and only a context switch or a closed window drops it (and stops further chunks), as it drops
    any pending result. Alerts use the actor actions' text rules (problem title and detail or "HTTP <status>", control
-   characters and credentials removed, 500 characters per part). After a successful write (for bulk, after the run) the
-   page asks for a soft refresh queued behind one already running, also with Live paused; a single action's message is
-   also read by `status`, started after the answer, and fills the pane unless the pane shows another message by then, so
-   a row past the soft refresh's range, or a refresh that paging blocks, never leaves the pane showing the row as it was
-   before the write. The Overview's and sidebar's failed count follow from that refresh.
+   characters and credentials removed, 500 characters per part). After a successful write, and after a bulk run that
+   wrote anything (also one stopped or failed), the page asks for a soft refresh queued behind one already running, also
+   with Live paused; a single action's message is also read by `status`, started after the answer. While the pane still
+   shows that message, the refresh's effect on the pane waits for the `status` answer: on success the answer fills the
+   pane, and the refresh neither refills it from a row it kept past its range nor clears it because the row left the
+   list; on failure the refresh applies to the pane as usual. A message that is no longer pending stays in the pane with
+   its new state ("cancelled", "finished: <status>") and no buttons, marked "no longer listed" when its row is gone,
+   until the user selects another; `MessagePane` gains that state. So a row past the soft refresh's range, or a refresh
+   that paging blocks, never leaves the pane showing the message as it was before the write. The Overview's and
+   sidebar's failed count follow from that refresh.
 7. **Where it lives.** A `message_actions` module in the model (the state rules, targets and checks, the selected-id
    sets' rules, the chunked bulk runs and the Caused checks, the sheet texts and counts, the result mapping) using the
    `actions` module's alert text and refresh request; the tables' multiple selection, buttons, sheets and alerts in the
@@ -77,9 +82,10 @@ chunk, a failed chunk stopping the run and never sent again; the Caused checks' 
 disabling the button; the selected-id set kept and dropped across a soft refresh and cleared by a manual Refresh and a
 new prefix; a bulk sheet confirmed after a Refresh sending nothing; one action at a time, a changed target sending
 nothing, a context switch dropping a result and stopping chunks; the fresh read after each write, also with Live paused,
-and a cancelled Messages row past the refreshed range read again by `status`; Stop during the checks and during the
-writes. The table selection, sheets and alerts get a manual check list in the tasks (⇧- and ⌘-click, Cancel the default,
-Return and Escape cancel, Retry only by click, VoiceOver labels).
+and a cancelled Messages row past the refreshed range read again by `status`, with `status` answering before and after
+the refresh, and a cancelled row inside the range staying in the pane as "cancelled"; Stop during the checks and during
+the writes. The table selection, sheets and alerts get a manual check list in the tasks (⇧- and ⌘-click, Cancel the
+default, Return and Escape cancel, Retry only by click, VoiceOver labels).
 
 ## Docs
 
