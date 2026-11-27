@@ -32,7 +32,8 @@ After `gui-mockup-boards`. Before `tray-settings-mockup`.
 
 ## Impact
 
-Crates: cicada-tray.
+Crates: cicada-tray, cicada-app.
 
-`crates/cicada-tray` (`src/menu.rs`, the portable menu model; `src/appkit`, custom item views). The menu model's
-tests; a manual check list next to the boards, light and dark. Docs handoff: the app guide's menu bar section.
+`crates/cicada-tray` (`src/menu.rs`, the portable menu model; `src/appkit`, the menu view) and `crates/cicada-app`
+(`Contexts::host`, `WorkerReady::concurrency`). The menu model's tests; a manual check list next to the boards, light
+and dark. Docs handoff: the app guide's menu bar section.
