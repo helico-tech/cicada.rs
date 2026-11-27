@@ -338,7 +338,7 @@ owns the app until the window closes: a regular app with a Dock icon and a main 
 Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
-Overview and Actors have pages, and the others say "Coming soon". The Overview shows tiles for actors, pending
+Overview, Actors and Messages have pages, and the others say "Coming soon". The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
@@ -371,6 +371,28 @@ reopens surviving rows as their pages load; a new search prefix or context start
 - A state longer than 256 KiB shows its first 256 KiB with a notice.
 - Pages are not a snapshot: an actor created or deleted while you scroll can be missed or appear late, and a row that
   disappeared is forgotten once a page passes its address. Refresh reads again from the top.
+
+**Messages** lists the pending messages, delayed ones included, to the actors whose address starts with the text in the
+search field; Actors and Messages share the field, and each page keeps its own prefix. The table loads 100 messages at a
+time as you scroll and shows each one's id, target, type, delivery time and attempt. A message retried while you scroll
+can be on two pages of the server's answer; the table shows it once, as first read. The footer shows how many messages
+are loaded, that none are pending under the prefix, or why the next page failed, with **Retry**.
+
+Select a message to see its envelope in the pane, read only: id, target, sender, type, delivery time, attempt and
+failures, correlation id and headers, and its payload as highlighted JSON, cut at 256 KiB with a notice. The pane shows
+what the table read and makes no request of its own. A new search whose fully loaded list no longer holds the selected
+message clears the selection, and ⌘R reloads the list from the top and clears it.
+
+**Show Actor** opens the Actors page with the message's target address in the search field and selects that actor once
+the first page has loaded; a gone actor shows "Not found", and Retry after a failed page still selects it. Back (⌘[)
+returns to Messages with the prefix and message it showed when you left, reading that prefix again if you searched
+another since; Forward (⌘]) goes to the actor again. Picking another context clears back and forward, so no place of
+the old server is replayed against the new one, and leaving the Actors page or typing before the page loads cancels the
+selection.
+
+- The table is not a snapshot: messages handled or retried after a page was read stay as read until ⌘R.
+- It shows no "due" mark, as the server's answer has no store time to compare with.
+- It is read only: no cancel, retry or deliver-now yet.
 
 The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
 a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
