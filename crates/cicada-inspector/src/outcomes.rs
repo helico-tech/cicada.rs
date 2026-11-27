@@ -200,7 +200,7 @@ impl Subject {
     }
 }
 
-/// The messages caused by the pane's message, a page at a time.
+/// The messages that record the pane's message as their cause (`causedBy`), one level down, a page at a time.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Caused {
     /// Those read so far, in the server's order.
@@ -293,6 +293,9 @@ struct State {
     seen: HashSet<MessageId>,
     /// The selected row; `None` while the pane shows a message that is not a loaded row.
     selected: Option<MessageId>,
+    /// The row of an outcome restored from the history before a page brought it: selected when one does, unless the
+    /// pane shows something else by then.
+    pending: Option<MessageId>,
     pane_generation: u64,
     format_task: Option<JoinHandle<()>>,
     link_task: Option<JoinHandle<()>>,
@@ -508,15 +511,19 @@ impl Outcomes {
         }
     }
 
-    /// Restores a place of the history: an outcome as it was read, with its row selected only when it is loaded; or
-    /// a linked message, read again.
+    /// Restores a place of the history: an outcome as it was read, with its row selected when it is loaded or once a
+    /// page brings it; or a linked message, read again.
     pub fn restore(&self, place: OutcomePlace) {
         let mut state = self.shared.lock();
         match place {
             OutcomePlace::Nothing => self.shared.show(&mut state, None, None),
             OutcomePlace::Outcome(outcome) => {
-                let row = self.shared.list.borrow().index(&outcome.id).map(|_| outcome.id.clone());
-                self.shared.show(&mut state, Some(Subject::Outcome(outcome)), row);
+                let id = outcome.id.clone();
+                let loaded = self.shared.list.borrow().index(&id).is_some();
+                self.shared.show(&mut state, Some(Subject::Outcome(outcome)), loaded.then(|| id.clone()));
+                if !loaded {
+                    state.pending = Some(id);
+                }
             }
             OutcomePlace::Linked(id) => self.shared.show(&mut state, Some(Subject::Linked(id, Read::Loading)), None),
         }
@@ -643,6 +650,12 @@ impl Shared {
         };
         let fresh: Vec<_> = items.into_iter().filter(|o| state.seen.insert(o.id.clone())).map(Arc::new).collect();
         let added = !fresh.is_empty();
+        // The restored outcome's row arrived: it is selected, and the pane keeps the outcome as it was read.
+        if let Some(id) = state.pending.take_if(|id| fresh.iter().any(|row| &row.id == id)) {
+            state.selected = Some(id);
+        } else if !more {
+            state.pending = None;
+        }
         self.list.send_modify(|list| {
             list.rows.extend(fresh);
             list.paging = Paging::Idle;
@@ -663,8 +676,12 @@ impl Shared {
     fn show(self: &Arc<Self>, state: &mut State, subject: Option<Subject>, selected: Option<MessageId>) {
         state.supersede_pane();
         state.selected = selected;
+        state.pending = None;
         let generation = state.pane_generation;
-        self.pane.send_replace(OutcomePane { generation, subject: subject.clone(), ..OutcomePane::default() });
+        // An outcome's Caused is read at once: it shows as loading from the first view, never as "None".
+        let reads = matches!(subject, Some(Subject::Outcome(_))) && state.client.is_some();
+        let caused = Caused { paging: if reads { Paging::Loading } else { Paging::Idle }, ..Caused::default() };
+        self.pane.send_replace(OutcomePane { generation, subject: subject.clone(), caused, ..OutcomePane::default() });
         match subject {
             Some(Subject::Outcome(outcome)) => {
                 let id = outcome.id.clone();
@@ -722,7 +739,14 @@ impl Shared {
                 Read::Found(status) => Some(status.clone()),
                 _ => None,
             };
-            shared.pane.send_modify(|pane| pane.subject = Some(Subject::Linked(id.clone(), read)));
+            // A found message's Caused is read at once: the view that shows it shows Caused loading, never "None".
+            let reads = found.is_some();
+            shared.pane.send_modify(|pane| {
+                pane.subject = Some(Subject::Linked(id.clone(), read));
+                if reads {
+                    pane.caused.paging = Paging::Loading;
+                }
+            });
             if let Some(status) = found {
                 shared.format(&mut state, status, |s| &s.message.payload);
                 shared.request_caused(&mut state, id);

@@ -177,7 +177,7 @@ impl OutcomesPage {
 /// The ids of the pane's links as they were shown: the one a button's tag names is the one followed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Links {
-    /// The message whose turn sent the shown one.
+    /// The message recorded as the shown one's cause (`causedBy`).
     pub caused_by: Option<MessageId>,
     /// The rows of Caused, by index.
     pub caused: Vec<MessageId>,
@@ -244,10 +244,10 @@ fn details(layout: &mut Layout<'_>, pane: &OutcomePane, target: &AnyObject, acti
     match &details.message.caused_by {
         Some(cause) => {
             let text = format!("Message {cause}");
-            layout.link(&text, target, actions.follow, CAUSED_BY, &format!("Show the causing message {cause}"));
+            layout.link(&text, target, actions.follow, CAUSED_BY, &format!("Show the recorded cause, message {cause}"));
             links.caused_by = Some(cause.clone());
         }
-        None => layout.text("Sent from outside an actor.", Style::Secondary),
+        None => layout.text("No recorded cause", Style::Secondary),
     }
     layout.heading("Caused");
     links.caused = caused(layout, &pane.caused, target, actions);

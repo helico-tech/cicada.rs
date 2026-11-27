@@ -721,7 +721,9 @@ define_class!(
             if c.finished.get() {
                 return;
             }
-            let id = c.links_shown.borrow().get(sender.tag());
+            // The tag is read from AppKit before the links are borrowed.
+            let tag = sender.tag();
+            let id = c.links_shown.borrow().get(tag);
             if let Some(id) = id {
                 c.session.follow(&mut c.navigation.borrow_mut(), id);
                 self.render();

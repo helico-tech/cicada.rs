@@ -385,6 +385,7 @@ async fn caused_by_is_followed_to_pending_finished_and_gone_messages_as_places()
     assert_eq!(pane.borrow().subject, Some(Subject::Linked(id("p1"), Read::Loading)));
     assert_eq!(outcomes.selected(), None);
     let linked = until(&mut pane, |p| matches!(p.subject, Some(Subject::Linked(_, Read::Found(_))))).await;
+    assert!(!linked.caused.none(), "Caused shows loading, not None, until its first page answers");
     let details = linked.subject.as_ref().unwrap().details().unwrap();
     assert_eq!((details.status, details.finished_at), (MessageState::Pending, None));
     until(&mut pane, |p| p.payload.is_some() && p.caused.none()).await;
@@ -557,16 +558,18 @@ async fn a_failed_linked_read_shows_retry_also_from_back_and_forward() {
 }
 
 /// Scenario: Back to an outcome no longer listed. After Caused by and a switch to Done, Back shows the failed outcome
-/// as it was read, with no row selected.
+/// as it was read, with no row selected; the switch left the link's place as it was, so Forward reads the linked
+/// message fresh again.
 #[tokio::test]
-async fn back_restores_an_outcome_whose_row_is_no_longer_loaded() {
+async fn back_and_forward_across_a_status_switch_restore_the_outcome_and_the_link() {
     let actors = actors().await;
     let rule = routes(vec![
         ("/outcomes?limit=100&status=failed", page(&[outcome("m1", "bag/a", "failed", Some("p1"))], None)),
         ("/outcomes?limit=100&status=done", page(&[outcome("d1", "bag/d", "done", None)], None)),
         ("/messages/p1", Fake::Answer(StatusCode::OK, status("p1", "done"))),
+        ("/messages/p1/caused?limit=50", page(&[], None)),
     ]);
-    let server = serve(&actors, rule, Duration::ZERO).await;
+    let mut server = serve(&actors, rule, Duration::ZERO).await;
     let dir = tempfile::tempdir().unwrap();
     let session = session(&server, &dir);
     let outcomes = session.outcomes();
@@ -586,6 +589,129 @@ async fn back_restores_an_outcome_whose_row_is_no_longer_loaded() {
     assert!(matches!(&back.subject, Some(Subject::Outcome(o)) if Arc::ptr_eq(o, &view.rows[0])), "{back:?}");
     assert_eq!(back.subject.as_ref().unwrap().details().unwrap().status, MessageState::Failed);
     assert_eq!((outcomes.selected(), list.borrow().status), (None, StatusFilter::Done));
+
+    served(&mut server, "");
+    assert!(session.navigate(&mut navigation, Navigation::forward));
+    assert_eq!(pane.borrow().subject, Some(Subject::Linked(id("p1"), Read::Loading)));
+    let forward = until(&mut pane, |p| matches!(p.subject, Some(Subject::Linked(_, Read::Found(_))))).await;
+    assert_eq!(forward.subject.as_ref().unwrap().id(), &id("p1"));
+    assert_eq!(served(&mut server, "served /messages/p1").first().map(String::as_str), Some("served /messages/p1"));
+    assert!(session.navigate(&mut navigation, Navigation::back));
+    assert_eq!(shown(&pane.borrow()), Some("m1".into()));
+    session.stop();
+}
+
+/// Back to an outcome whose row is not loaded shows it as it was read; once paging brings its row, the row is
+/// selected and the pane keeps the outcome. When the user selected another row first, that selection stays.
+#[tokio::test]
+async fn a_restored_outcome_is_selected_once_a_page_brings_its_row() {
+    let actors = actors().await;
+    let rule = routes(vec![
+        ("/outcomes?limit=100&status=failed", page(&[outcome("m1", "bag/a", "failed", None)], Some("c1"))),
+        ("/outcomes?cursor=c1&limit=100&status=failed", page(&[outcome("m2", "bag/b", "failed", Some("p1"))], None)),
+        ("/messages/p1", Fake::Answer(StatusCode::OK, status("p1", "done"))),
+    ]);
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let outcomes = session.outcomes();
+    let (mut list, mut pane) = (outcomes.list(), outcomes.pane());
+    let mut navigation = Navigation::default();
+    session.navigate(&mut navigation, select_outcomes);
+    outcomes.show();
+    until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 1).await;
+    outcomes.more();
+    let view = until(&mut list, |l| l.paging == Paging::Idle && !l.more).await;
+    let m2_id = view.rows[1].id.clone();
+    for user_selects_first in [false, true] {
+        // The row as the list holds it now: each reload reads it as a new row.
+        let m2 = list.borrow().rows.iter().find(|row| row.id == m2_id).cloned().expect("m2 is listed");
+        outcomes.select(Some(&m2.id));
+        session.follow(&mut navigation, id("p1"));
+        until(&mut pane, |p| matches!(p.subject, Some(Subject::Linked(_, Read::Found(_))))).await;
+        // Refresh on the link's place reads the list from its first page again, which does not hold m2.
+        outcomes.refresh();
+        let first = until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 1).await;
+        assert!(first.index(&m2.id).is_none());
+
+        assert!(session.navigate(&mut navigation, Navigation::back));
+        let back = pane.borrow().clone();
+        assert!(matches!(&back.subject, Some(Subject::Outcome(o)) if Arc::ptr_eq(o, &m2)), "{back:?}");
+        assert_eq!(outcomes.selected(), None, "its row is not loaded");
+        if user_selects_first {
+            outcomes.select(Some(&id("m1")));
+        }
+        outcomes.more();
+        until(&mut list, |l| l.paging == Paging::Idle && !l.more).await;
+        if user_selects_first {
+            assert_eq!((outcomes.selected(), shown(&pane.borrow())), (Some(id("m1")), Some("m1".into())));
+        } else {
+            assert_eq!(outcomes.selected(), Some(m2.id.clone()), "the row is selected once a page brings it");
+            let kept = pane.borrow().clone();
+            assert!(matches!(&kept.subject, Some(Subject::Outcome(o)) if Arc::ptr_eq(o, &m2)), "{kept:?}");
+        }
+    }
+    session.stop();
+}
+
+/// The failed count shows as soon as the Overview's `/stats` answers, while another route is still out; and a
+/// refresh that a later one replaced publishes no count, even when its `/stats` answers last.
+#[tokio::test]
+async fn the_failed_count_shows_once_stats_answers_and_never_from_a_replaced_refresh() {
+    let actors = actors().await;
+    let (nodes_arrived, nodes_release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let (stats_arrived, stats_release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let stats_calls = Arc::new(AtomicUsize::new(0));
+    let (calls, nodes, stats) = (
+        stats_calls.clone(),
+        (nodes_arrived.clone(), nodes_release.clone()),
+        (stats_arrived.clone(), stats_release.clone()),
+    );
+    let counted = |failed: u64| json!({"actors": 0, "pending": 0, "oldestDue": null, "failed": failed});
+    let rule: Rule = Arc::new(move |target| match target {
+        "/nodes" if calls.load(Ordering::SeqCst) <= 1 => Some(Fake::Later {
+            arrived: nodes.0.clone(),
+            release: nodes.1.clone(),
+            status: StatusCode::OK,
+            body: json!({"items": []}),
+        }),
+        "/stats" => Some(match calls.fetch_add(1, Ordering::SeqCst) {
+            0 => Fake::Answer(StatusCode::OK, counted(3)),
+            1 => Fake::Later {
+                arrived: stats.0.clone(),
+                release: stats.1.clone(),
+                status: StatusCode::OK,
+                body: counted(9),
+            },
+            _ => Fake::Answer(StatusCode::OK, counted(4)),
+        }),
+        _ => None,
+    });
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let (mut count, mut view) = (session.outcomes().count(), session.view());
+
+    timeout(WAIT, nodes_arrived.notified()).await.expect("the first refresh's /nodes is held");
+    let first = until(&mut count, |c| c.value.is_some()).await;
+    assert_eq!(first.text(), "3");
+    assert!(view.borrow_and_update().overview.is_none(), "the Overview still waits for /nodes");
+    nodes_release.notify_one();
+    until(&mut view, |v| v.overview.is_some()).await;
+
+    // The second refresh's /stats is held; a third replaces it and answers; then the second answers last.
+    session.refresh();
+    timeout(WAIT, stats_arrived.notified()).await.expect("the second refresh's /stats is held");
+    session.refresh();
+    let third = until(&mut count, |c| c.value == Some(Some(4))).await;
+    assert_eq!(third.text(), "4");
+    stats_release.notify_one();
+    for task in session.take_superseded() {
+        let ended = timeout(WAIT, task).await.expect("the replaced refresh ends");
+        assert!(ended.as_ref().is_err_and(|error| error.is_cancelled()) || ended.is_ok(), "{ended:?}");
+    }
+    until(&mut view, |v| !v.refreshing).await;
+    assert_eq!(count.borrow_and_update().text(), "4", "the replaced refresh publishes no count");
     session.stop();
 }
 

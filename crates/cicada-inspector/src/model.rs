@@ -132,7 +132,17 @@ pub struct Overview {
 /// Gathers an Overview within `limits`: the base routes at once, and once `/types` answers, the actor counts of the
 /// first types, a bounded number at a time. At the deadline the answers that came are kept; a base route still out
 /// fails with [`TIMED_OUT`], and a type still uncounted is [`Count::NotCounted`].
+#[cfg(test)]
 pub async fn overview(client: &ActorClient, limits: Limits) -> Overview {
+    overview_with(client, limits, |_| {}).await
+}
+
+/// [`overview`], handing `/stats` to `on_stats` as soon as it answers, before the other routes have.
+pub(crate) async fn overview_with(
+    client: &ActorClient,
+    limits: Limits,
+    on_stats: impl FnOnce(&Part<StatsView>),
+) -> Overview {
     let deadline = Instant::now() + limits.deadline;
     let turns = async {
         let page = client.turns(None, "", None, Some(TURNS_PAGE)).await?;
@@ -147,8 +157,13 @@ pub async fn overview(client: &ActorClient, limits: Limits) -> Overview {
             Part::Failed(error) => Part::Failed(error),
         }
     };
+    let stats = async {
+        let stats = within(deadline, client.stats("")).await;
+        on_stats(&stats);
+        stats
+    };
     let (stats, health, nodes, turns, types) = tokio::join!(
-        within(deadline, client.stats("")),
+        stats,
         within(deadline, client.health()),
         within(deadline, client.nodes()),
         within(deadline, turns),
@@ -363,7 +378,8 @@ impl Session {
     }
 
     /// Starts a refresh of the context in use, cancelling one that runs; its `/stats` also gives the sidebar's failed
-    /// count. Without a client it does nothing.
+    /// count as soon as it answers, unless a later refresh or a context switch came first. Without a client it does
+    /// nothing.
     pub fn refresh(&self) {
         let mut current = self.shared.current.lock().expect("inspector session");
         current.supersede();
@@ -371,9 +387,15 @@ impl Session {
         let generation = current.generation;
         self.shared.view.send_modify(|view| view.refreshing = true);
         let (shared, limits, count) = (self.shared.clone(), self.limits, self.outcomes.count_ticket());
+        let counted = shared.clone();
         current.task = Some(self.handle.spawn(async move {
-            let overview = overview(&client, limits).await;
-            count.land(&overview.stats);
+            let land = move |stats: &Part<StatsView>| {
+                let current = counted.current.lock().expect("inspector session");
+                if current.generation == generation {
+                    count.land(stats);
+                }
+            };
+            let overview = overview_with(&client, limits, land).await;
             let current = shared.current.lock().expect("inspector session");
             if current.generation == generation {
                 shared.view.send_modify(|view| {
@@ -405,7 +427,10 @@ impl Session {
         let recorded = navigation.place().clone();
         match left {
             Section::Messages => navigation.current.messages = Some(self.messages.source()),
-            Section::Outcomes => navigation.current.outcomes = Some(self.outcomes.source()),
+            // A link place holds its message, read fresh on every return; a status switch there does not clear it.
+            Section::Outcomes if !matches!(navigation.current.outcomes, Some(OutcomePlace::Linked(_))) => {
+                navigation.current.outcomes = Some(self.outcomes.source())
+            }
             Section::Watches => navigation.current.watches = Some(self.watches.source()),
             _ => {}
         }

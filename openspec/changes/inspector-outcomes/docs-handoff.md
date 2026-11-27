@@ -15,7 +15,9 @@ paging by the server's cursor with duplicates kept once, the status switch's res
 value with the error, "—", the reset on a context switch), the pane from the row with the payload formatted on
 selection, Caused by followed to pending, finished and expired messages, Caused paging with one request at a time,
 Retry and empty pages followed, a failed linked read with Retry also after back and forward, Back to an outcome that
-is no longer listed, a context switch clearing the history, and stale reads dropped.
+is no longer listed and its row selected once a page brings it, back and forward across a status switch, a context
+switch clearing the history, stale reads dropped, and the failed count published as soon as `/stats` answers and not
+by a refresh that a later one replaced.
 
 ## 1. The Outcomes page
 
@@ -30,9 +32,9 @@ message that appears on two pages shows once, as first read. Switching the statu
 clears the selection and the pane.
 
 The sidebar's Outcomes item shows the store's failed count, the number of failed outcomes that retention still keeps.
-It is read with the Overview's refresh and with ⌘R on Outcomes, not live. It shows "…" until a read answers and again
-after a context switch. When a read fails, the last count stays and its tooltip names the error. "—" means the server
-is older and sends no count, or the first read failed.
+It is read with the Overview's refresh, where it shows as soon as `/stats` answers, and with ⌘R on Outcomes; it is not
+live. It shows "…" until a read answers and again after a context switch. When a read fails, the last count stays
+and its tooltip names the error. "—" means the server is older and sends no count, or the first read failed.
 
 Select an outcome to see, read only: the status and error, the attempt and failures, the last retried error, the
 retry policy, the envelope (id, target, sender, correlation id, finished time and headers) and the payload as
@@ -46,15 +48,20 @@ message are not in the inspector yet.
 
 **Where.** `docs/guide/app.md`, `Inspector on macOS`, under the Outcomes page.
 
-**Text.** The pane follows the chain one step at a time. **Caused by** links to the message whose turn sent this
-one; a message sent from outside an actor has none. **Caused** lists the messages this one caused: those its turn sent
-and operator retries of it. It shows the first 50, with **more…** for the next ones and **Retry** when a page fails.
-It says "None" when there are none, and "not found" when the message is past retention.
+**Text.** The pane follows the chain one step at a time, by the cause each message records (`causedBy`). **Caused
+by** links to the message recorded as this one's cause: the message whose turn sent it, the original message of an
+operator retry, or, for a `Stopped` notice the store wrote, the message whose turn stopped or deleted the actor. It
+says "No recorded cause" when there is none: a send from outside an actor, a `Failed` notice, or a stop from outside
+a turn. **Caused** lists the messages that record this one as their cause, one level down: pending or running ones,
+and finished ones whose outcome retention still keeps. It shows the first 50, with **more…** for the next ones and
+**Retry** when a page fails. It says "None" when there are none, and "not found" when the message is unknown or past
+retention.
 
 Following a link is a new place in back and forward. The pane reads that message fresh and shows it whether it is
 pending, running or finished. A message past retention shows "not found"; a read that fails shows its error with
 **Retry**. Back to an outcome shows it as it was read, even when its row is no longer listed (another status, a later
-page or another prefix); its row is selected when it is listed. Forward to a link reads the message again.
+page or another prefix); its row is selected when it is listed, or once scrolling brings it, unless you selected
+something else first. Forward to a link reads the message again, also after you switched the status.
 
 **Caveats.** A context switch clears back and forward. The chain is not a snapshot: messages caused later can appear
 when you return.
