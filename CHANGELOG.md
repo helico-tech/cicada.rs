@@ -15,7 +15,10 @@ Now cancels its running turns at once instead of waiting out the grace period. I
 context, sets its server and token, and chooses the types the worker runs and how many turns run at once, kept per
 context in `tray.toml` next to the config file.
 `cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
-reads and writes the config file with the code of `cicada config`.
+reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
+native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
+health, the nodes, the running turns and the types with their actor counts, for a context of `cicada config`;
+`cicada_app::context_client` makes the client for it.
 
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
@@ -26,6 +29,23 @@ directly or use `..` in matches.
 
 ### Added
 
+- `cicada-inspector`: a new crate, a native macOS inspector over the HTTP API (ADR 0076, which supersedes in part ADR
+  0011 for a native macOS console only; no library crate depends on it). `Inspector::new().run()` owns the main
+  thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
+  elsewhere, or before macOS 14, it prints an error and returns exit code 1. The window has a sidebar (Overview;
+  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, which say "Coming soon" for now), a
+  toolbar with back and forward, the title, a context pop-up and Refresh, and the Overview: tiles for actors, pending,
+  oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
+  turns with a mark when there are more, and the types with their actor counts. A refresh is by hand and bounded: at
+  most 50 types counted, 8 counts at a time, 10 s in all; a part that fails shows its error alone, and a type past
+  the 50 or the deadline shows as not counted. A refresh superseded by another or by a context switch is cancelled
+  and its result discarded. Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual
+  check list.
+- `cicada-app`: `context_client(&Env, Option<&str>)`, a client for a context of the config file resolved as the
+  operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
+  the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL
+  first, so no error quotes it. `hide_passwords` is the password hiding of the usage errors
+  (`scheme://user:***@host`). Covered by the `a_context_client_…` tests in `crates/cicada-app/src/config.rs`.
 - `cicada`, `cicada-client`, `cicada-app`: `GET /stats` and `cicada stats` report the number of failed outcomes
   currently visible under the address prefix, using the visibility rules of `GET /outcomes`. The CLI table shows
   `-` when an older server omits the count.

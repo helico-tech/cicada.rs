@@ -22,10 +22,10 @@ are `.reviews/inspector-window.design.*`.
   and the manual check list below, each item noted as done or not done in the report. Built and reported: a start
   on this Mac against an in-process server stayed up for 5 s with nothing on stderr; screen capture was refused, so no
   item of the list was seen on screen. The owner runs it before 0.26.0 is released.
-- [ ] 4. **Changelog and docs handoff.** The 0.26.0 section names the crate and `context_client`; `docs-handoff.md`
+- [x] 4. **Changelog and docs handoff.** The 0.26.0 section names the crate and `context_client`; `docs-handoff.md`
   carries the design's Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test
   -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `cargo deny check advisories`, `openspec validate inspector-window --strict`, commit. The
   change loop runs the gate at landing.
 
