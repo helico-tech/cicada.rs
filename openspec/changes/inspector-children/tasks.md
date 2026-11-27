@@ -21,7 +21,7 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
 - [x] 4. **Changelog and docs handoff.** The 0.26.0 section names the folding; `docs-handoff.md` carries the design's
   Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples
   --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate inspector-children --strict`, commit. The change loop runs the gate at
   landing.
 

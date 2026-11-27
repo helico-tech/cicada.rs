@@ -5,7 +5,7 @@ Version: 0.26.0. Refresh the dependency pins of `docs/how-to/install.md` once it
 ## What changed
 
 The Actors page shows an outline. Opening a row reads the direct children created by that actor. Each open row pages
-its children independently. Selecting a child fills the existing inspector pane. The public Rust API stays the same.
+its children independently. Selecting a child fills the existing inspector pane.
 
 The tests in `crates/cicada-inspector/src/tests/actors/children.rs` cover child paging, retries, stale reads, separate
 selection and folding for each occurrence, the running sample, and restoration across root and child pages. The
@@ -36,7 +36,11 @@ None.
 
 ## Status
 
-Proposed app guide text. The 11 documentation tests and 54 doctests passed. An AppKit smoke run exercised parent
-expansion and more…, arrow-key folding, independent fold and selection in duplicate rows, the child pane, fold
-restoration through the Refresh action, prefix reset, and root paging on scroll. The ⌘R shortcut dispatch,
-VoiceOver, and visual checks in light and dark still need a manual pass.
+Proposed app guide text. The inspector built and passed Clippy and all 19 Actors model tests. All 11 documentation
+tests and 54 doctests passed. Workspace formatting, Clippy, 3,905 tests with PostgreSQL, and strict OpenSpec
+validation passed. The change loop runs the gate at landing.
+
+An AppKit smoke run exercised parent expansion and more…, arrow-key folding, independent fold and selection in
+duplicate rows, the child pane, fold restoration through the Refresh action, prefix reset, and root paging on
+scroll. The ⌘R shortcut dispatch, broader keyboard and VoiceOver checks, and visual checks in light and dark
+still need a manual pass.
