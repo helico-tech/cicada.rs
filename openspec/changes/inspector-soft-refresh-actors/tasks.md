@@ -22,7 +22,7 @@ landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the de
   restore after applying; every `unsafe` with its reason, borrows released before AppKit calls (decision 6). Verify:
   the pane tests, `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, and the manual
   check list below, each item noted as done, run by code (not seen), or not done in the report.
-- [ ] 5. **Docs handoff and finishing checks.** `docs-handoff.md` carries the design's Docs section (the cost of full
+- [x] 5. **Docs handoff and finishing checks.** `docs-handoff.md` carries the design's Docs section (the cost of full
   states named); no changelog entry unless a user-visible effect is found; no edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Then `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace
   --all-targets`, `cargo test --workspace`, `cargo test -p cicada-examples --test docs` and `--doc`, `openspec validate
