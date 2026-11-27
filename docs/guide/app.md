@@ -276,7 +276,42 @@ it opens (`Contexts::load` in code). Running shows each turn's actor, message ty
 Registered Types marks the types the worker runs; Recent Turns shows the last 50 finished turns, with a badge for failed
 and abandoned ones. While the worker drains after a disconnect or a Quit, a Stop Now row under the header ends the
 grace period, and the countdown drops to the cancel timeout. Quit, Ctrl-C and logout drain the worker before the app
-exits. Settings is not enabled yet.
+exits.
+
+**Settings.** From 0.26.0, Settings… (⌘, while the menu is open) opens a Settings window. Pick a context, or Add… a new
+one (1 to 64 characters from `A-Z a-z 0-9 . _ -`), set its server and token, switch the types this worker runs (the
+list scrolls past eight), and set the turns at once (1 to 1,000). Apply and Reconnect saves only what you changed and,
+while the tray holds a connection, disconnects and connects to the applied context with the new settings; an offline
+tray stays offline. Revert shows the saved values again, a validation error shows under its field and writes nothing,
+and Esc or ⌘W closes the window without saving.
+
+- The token is stored in the config file, as `cicada config` stores it, not in the Keychain. `CICADA_SERVER` and
+  `CICADA_TOKEN` in the tray's environment win over the window's server and token, and the window says so.
+- The connection is saved first, then the worker settings. When the second write fails, the window says "connection
+  saved; worker settings not saved: <error>" (or "worker settings not saved: <error>" when only those changed), keeps
+  your values and does not reconnect; Apply again once the cause is fixed.
+
+**`tray.toml`.** The tray keeps per-context worker settings in `tray.toml`, in the folder of the config path as given
+(next to a symlink, not its target), with mode 0644 and no secrets:
+
+```toml
+[contexts.prod]
+types = ["checkout"]
+concurrency = 4
+```
+
+A context listed there connects with `--types` (its saved types that the binary still registers, or `all` when that is
+every registered type) and `--concurrency`, which win over `CICADA_TYPES` and `CICADA_CONCURRENCY`. A context not
+listed uses those variables and the defaults, and the window shows every type on with 16 turns at once, until an Apply
+saves its entry. An app with no registered type, a saved selection with none of its types registered any more, or a
+lone type named `all` or `none` among others ends the connection `Failed`, with an error that says to open Settings.
+Two config files in one folder share one `tray.toml`.
+
+**`ContextFile` for hosts.** `cicada_app::ContextFile` reads and writes the config file with the code of `cicada config`
+(`Contexts` only reads the names and the current one). Use `ContextFile::update(&env, |file| { ...; Ok(()) })` for a
+write that may run next to another: it re-reads the file under the lock and saves it when it changed.
+`set_server_and_token` keeps the context's headers and leaves `current-context` alone; `set_context` replaces the whole
+context and makes it current when none is.
 
 - On macOS 14.0 to 14.3 the running turn's details go in its title.
 - For a distributed `.app`, build the binary with the intended `MACOSX_DEPLOYMENT_TARGET`, put it in `Contents/MacOS`,
@@ -348,6 +383,14 @@ Resolve each field independently:
 Context headers/token still apply when its URL is overridden. A missing file is empty; an unreadable file or unknown
 context fails. `config set-context` replaces a context; `config use-context` switches it. Writes replace the file’s
 comments, preserve symlinks and set Unix permissions to 0600.
+
+From 0.26.0, `config set-context` and `config use-context` take a lock on `<file>.lock` next to the config file (next to
+its target when it is a symlink) while they write, so they and the [menu bar app](#menu-bar-app-on-macos) keep each
+other's changes; readers take no lock, and the lock covers one machine. On a file system without file locks, such as
+some network mounts, the write fails rather than risk another writer's change: point `CICADA_CONFIG` at a local file.
+An unreadable file is reported with its path and line, never its contents. A config path whose name, or whose symlink
+target's name, is `tray.toml` or ends in `.lock`, in any letter case, is refused, and so is one that ends in `/` or
+`/.`.
 
 ### Terminal keys
 

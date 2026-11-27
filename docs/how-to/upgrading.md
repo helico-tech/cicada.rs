@@ -286,7 +286,11 @@ clients require, as 0.6.0 does, needs its clients upgraded together with the nod
 `WorkerReady`, which `App::on_worker_ready` passes, is now `#[non_exhaustive]`, has the new fields `types` and
 `stop_now`, and no longer implements `Copy`, `PartialEq` or `Eq`. Destructure it with `..`, call `clone()` when you need
 a second owned value, compare its fields (such as `types`, `grace_period` and `cancel_timeout`) instead of whole values,
-and get it only from the callback: code outside `cicada-app` can no longer build one. Nothing else changes for hosts.
+and get it only from the callback: code outside `cicada-app` can no longer build one.
+
+`cicada config set-context` and `use-context` now lock `<config>.lock` while they write and fail on a file system
+without file locks; they refuse a config path named `tray.toml`, ending in `.lock`, or ending in `/` or `/.`. Point
+`CICADA_CONFIG` at a local file with an ordinary name. See [Server and credentials](../guide/app.md#server-and-credentials).
 
 ## Upgrade to 0.25.0
 
