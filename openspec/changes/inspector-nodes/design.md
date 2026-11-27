@@ -13,16 +13,16 @@ earlier inspector changes.
    pane on the Actors page has the rest).
 2. **Nodes.** `nodes` once per refresh, first visit and next visit after a context switch (the API answers them all):
    id, status (alive, suspect, dead, from the server's view in the store's clock), label, host name, hosted types,
-   running turns, and the last heartbeat. The answer carries no store time to measure an age against, so the page
-   shows `last_seen` as a time next to the status the server computed, and computes no age on the Mac's clock (which
-   can differ from the store's). The search field filters the cached list by id prefix locally. A failed read
-   shows its error with Retry and keeps no stale list.
+   running turns, and the last heartbeat. The answer carries no store time to measure an age against, so the page shows
+   `last_seen` as a time next to the status the server computed, and computes no age on the Mac's clock (which can
+   differ from the store's). The search field filters the cached list by id prefix locally. A failed read shows its
+   error with Retry and keeps no stale list.
 3. **A node's pane.** Selecting a node reads `node(id)` under the pane's generation: the node's fields and its running
-   turns (actor, message id, lease until, cancel asked), each turn with Show Actor. A node that is gone says "not found";
-   a failed read shows its error with Retry. Refresh clears the selection, as on the other pages.
+   turns (actor, message id, lease until, cancel asked), each turn with Show Actor. A node that is gone says "not
+   found"; a failed read shows its error with Retry. Refresh clears the selection, as on the other pages.
 4. **Read only, and where it lives.** No cancel until `inspector-actions`. Model code in `nodes.rs` and `turns.rs` with
-   tests against an in-process server; the `appkit` module gains the two pages, `NSTableView`s sharing the search
-   field (each page keeping its own filter text and placeholder), footer and pane toggle.
+   tests against an in-process server; the `appkit` module gains the two pages, `NSTableView`s sharing the search field
+   (each page keeping its own filter text and placeholder), footer and pane toggle.
 
 ## Tests
 

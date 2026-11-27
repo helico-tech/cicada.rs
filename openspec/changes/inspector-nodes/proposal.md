@@ -9,8 +9,8 @@ The Running Turns and Nodes items of the inspector's sidebar still say "Coming s
 ## What Changes
 
 - Running Turns: the running turns (`/turns`, paged), with actor, message, node and lease end; Show Actor.
-- Nodes: the nodes (`/nodes`), with id, status, hosted types, label, host and last heartbeat, and the running turns of the
-  selected node in the pane (`/nodes/{node}`).
+- Nodes: the nodes (`/nodes`), with id, status, hosted types, label, host and last heartbeat, and the running turns of
+  the selected node in the pane (`/nodes/{node}`).
 - Read only.
 
 Decided in the design: a node's pane reads its turns with `/nodes/{node}`, and the last heartbeat shows as a time next
