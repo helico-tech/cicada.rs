@@ -20,3 +20,8 @@ chain one step at a time, recorded in back and forward.
 
 - **WHEN** the causing message is past retention
 - **THEN** following Caused by shows "not found" in the pane
+
+#### Scenario: Back to an outcome no longer listed
+
+- **WHEN** the user follows Caused by from a failed outcome, switches the status to Done, and goes back
+- **THEN** the pane shows the failed outcome as it was read
