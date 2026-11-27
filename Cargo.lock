@@ -792,6 +792,7 @@ dependencies = [
  "cicada",
  "cicada-app",
  "cicada-axum",
+ "cicada-inspector",
  "cicada-test",
  "objc2",
  "objc2-app-kit",

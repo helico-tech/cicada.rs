@@ -218,6 +218,17 @@ pub struct View {
     pub refreshing: bool,
 }
 
+impl View {
+    /// The subtitle's target, including a server configured without a named context.
+    pub fn target_label(&self) -> &str {
+        self.context.as_deref().or(self.picked.as_deref()).unwrap_or(if self.target_error.is_some() {
+            "No context"
+        } else {
+            "Server"
+        })
+    }
+}
+
 /// The context in use and its refreshes, publishing each [`View`] through a `watch`. A new refresh, or a switch of
 /// context, cancels the one before; a refresh that still finishes after that is discarded.
 pub struct Session {

@@ -78,6 +78,7 @@ impl Embedded {
     /// If already open, brings the window forward and keeps its current context.
     pub fn show(&self, context: Option<&str>) {
         let target = self.windows.show(|| {
+            // A new window gets its own generation and view channel, independent of any closed window.
             let session = Session::new(self.env.clone(), self.handle.clone(), Limits::DEFAULT);
             let target = Target::new(self.mtm, session, Some(Rc::downgrade(&self.windows)));
             target.start(context);
@@ -247,9 +248,10 @@ define_class!(
 
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _: &NSNotification) {
-            if let Some(window) = self.ivars().window.get() {
-                let view = self.ivars().view.borrow().borrow().clone();
-                let section = self.ivars().navigation.borrow().current();
+            let c = self.ivars();
+            if !c.finished.get() && let Some(window) = c.window.get() {
+                let view = c.view.borrow().borrow().clone();
+                let section = c.navigation.borrow().current();
                 content::render(&window.document, &window.content, section, &view);
             }
         }
@@ -421,8 +423,12 @@ impl Target {
 
     fn show(&self) {
         NSApplication::sharedApplication(self.mtm()).activate();
+        let window = &self.window().window;
+        if !self.ivars().finished.get() && window.isMiniaturized() {
+            window.deminiaturize(None);
+        }
         if !self.ivars().finished.get() {
-            self.window().window.makeKeyAndOrderFront(None);
+            window.makeKeyAndOrderFront(None);
         }
     }
 
@@ -598,7 +604,7 @@ impl Target {
 
 /// The window's subtitle: the context in use, and the variables that win over it.
 fn subtitle(view: &View) -> String {
-    let context = view.context.as_deref().or(view.picked.as_deref()).unwrap_or("No context");
+    let context = view.target_label();
     if view.overrides.is_empty() {
         context.to_owned()
     } else {

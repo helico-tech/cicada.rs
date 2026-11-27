@@ -10,10 +10,10 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
 - [x] 2. **Focus and keys.** `show` activates and makes the window key and front; ⌘R, ⌘W, ⌘[ and ⌘] through the
   window's own key handling (decision 2). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector
   --all-targets`.
-- [ ] 3. **The tray's feature.** `inspector = ["dep:cicada-inspector"]`, the menu item (⌘I) and its disabled state while
+- [x] 3. **The tray's feature.** `inspector = ["dep:cicada-inspector"]`, the menu item (⌘I) and its disabled state while
   quitting, one `Embedded` in the view, the context passed, every quit path closing it first (decisions 3 and 4).
   Verify: the tray tests of the design with the feature on and off; the manual check list below, each item noted as
-  done or not done in the report.
+  done or not done in the report. Feature-on and feature-off tests passed on macOS. The manual GUI checks are pending.
 - [ ] 4. **The gate and the docs.** `scripts/ci/feature-builds.sh` runs check, clippy and test of `cicada-tray` with
   `--features inspector`; the dependency check passes with the feature on and off; the 0.26.0 section names the feature
   and `Embedded`; `docs-handoff.md` carries the design's Docs section. No edit to `README.md`, `AGENTS.md` or the

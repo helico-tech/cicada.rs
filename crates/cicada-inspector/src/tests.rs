@@ -399,12 +399,14 @@ async fn a_window_keeps_its_context_until_close_and_reopens_with_a_fresh_session
     windows.closed(|window| Rc::ptr_eq(window, &first));
     assert!(Rc::ptr_eq(&second, &windows.show(|| make("staging"))));
     let mut view = second.view();
-    let done = timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some()))
-        .await
-        .expect("reopened window refreshed")
-        .unwrap();
-    assert_eq!(done.context.as_deref(), Some("prod"));
-    assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
+    {
+        let done = timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some()))
+            .await
+            .expect("reopened window refreshed")
+            .unwrap();
+        assert_eq!(done.context.as_deref(), Some("prod"));
+        assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
+    }
 
     release.notify_waiters();
     let superseded = first.take_superseded();
@@ -414,8 +416,7 @@ async fn a_window_keeps_its_context_until_close_and_reopens_with_a_fresh_session
         assert!(ended.as_ref().is_err_and(|error| error.is_cancelled()) || ended.is_ok(), "{ended:?}");
     }
     assert!(!old_view.has_changed().unwrap(), "the closed window publishes no more results");
-    assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
-    drop(done);
+    assert!(!view.has_changed().unwrap(), "the reopened window keeps its own result");
 
     let on_quit = windows.take().expect("the reopened window is still held");
     assert!(Rc::ptr_eq(&second, &on_quit));
@@ -505,6 +506,40 @@ async fn a_target_error_is_shown_and_overrides_are_named() {
         timeout(Duration::from_secs(5), view.wait_for(|v| v.overview.is_some())).await.expect("refreshed").unwrap();
     assert_eq!((done.overrides.as_slice(), done.context.as_deref()), (&["CICADA_SERVER"][..], Some("prod")));
     assert!(done.target_error.is_none());
+}
+
+#[tokio::test]
+async fn no_named_context_uses_a_server_only_target_and_reports_malformed_config_safely() {
+    let actors = actors().await;
+    let server = serve(&actors, no_rule(), Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let env = Env::from([
+        ("CICADA_CONFIG".into(), file.to_str().unwrap().into()),
+        ("CICADA_SERVER".into(), server.url.clone()),
+    ]);
+    let session = Session::new(env.clone(), tokio::runtime::Handle::current(), Limits::DEFAULT);
+    session.use_context(None);
+    let mut view = session.view();
+    {
+        let done = timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some()))
+            .await
+            .expect("refreshed")
+            .unwrap();
+        assert_eq!(done.target_label(), "Server");
+        assert_eq!(done.context, None);
+        assert_eq!(done.overrides, ["CICADA_SERVER"]);
+        assert!(done.target_error.is_none());
+    }
+
+    std::fs::write(file, "[contexts.prod]\ntoken = \"dummy-secret\n").unwrap();
+    let session = Session::new(env, tokio::runtime::Handle::current(), Limits::DEFAULT);
+    session.use_context(None);
+    let invalid = session.view().borrow().clone();
+    assert_eq!(invalid.target_label(), "No context");
+    assert!(invalid.contexts_error.as_deref().is_some_and(|text| text.contains("not a valid config file")));
+    assert!(invalid.target_error.is_some() && invalid.overview.is_none() && !invalid.refreshing);
+    assert!(!format!("{invalid:?}").contains("dummy-secret"));
 }
 
 /// Scenario: Back and forward.
