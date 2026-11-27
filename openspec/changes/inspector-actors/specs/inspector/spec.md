@@ -14,12 +14,13 @@ that no longer matches the current prefix, selection or context SHALL be dropped
 #### Scenario: A search drops older pages
 
 - **WHEN** the user types a prefix while a page for the earlier prefix is still loading
-- **THEN** that page is dropped and the table shows only actors under the new prefix
+- **THEN** that page is dropped at the first key press and the table shows only actors under the new prefix
 
 #### Scenario: The pane
 
 - **WHEN** the user selects an actor with a running turn and two pending messages
-- **THEN** the pane shows its state as JSON, the turn's message type and attempt, and two rows under Mailbox
+- **THEN** the pane shows its state as JSON, the turn's message type and attempt from the mailbox's first 50 rows,
+  and the two pending messages under Mailbox
 
 #### Scenario: Back to an earlier selection
 
