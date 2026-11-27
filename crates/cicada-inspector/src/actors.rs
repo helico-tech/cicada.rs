@@ -3,7 +3,7 @@
 //! matches: the list's generation grows at every key press in the search field, on Refresh and on a context switch;
 //! the pane's at every selection, on Refresh and on a context switch.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::ActorAddress;
@@ -15,10 +15,10 @@ use cicada_client::ActorClient;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 
 use crate::json::{self, Json};
-use crate::model::{Limits, Part, within};
+use crate::model::{Limits, Part, TIMED_OUT, within};
 
 /// The rows of one page of the list.
 pub const PAGE: usize = 100;
@@ -58,16 +58,62 @@ impl From<ActorView> for ActorRow {
     }
 }
 
+/// A row's path from the root list, including its own address.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActorPath(Vec<ActorAddress>);
+
+impl ActorPath {
+    /// The occurrence of an actor in the root list.
+    pub fn root(address: ActorAddress) -> Self {
+        Self(vec![address])
+    }
+
+    /// The occurrence of `address` in this row's children.
+    pub fn child(&self, address: ActorAddress) -> Self {
+        let mut path = self.clone();
+        path.0.push(address);
+        path
+    }
+
+    /// The actor at this row.
+    pub fn address(&self) -> &ActorAddress {
+        self.0.last().expect("a path starts with a root actor")
+    }
+
+    /// True for the occurrence in the root list.
+    pub fn is_root(&self) -> bool {
+        self.0.len() == 1
+    }
+
+    /// The parent row, or `None` for a root row.
+    pub fn parent(&self) -> Option<Self> {
+        (!self.is_root()).then(|| Self(self.0[..self.0.len() - 1].to_vec()))
+    }
+}
+
 /// The state of the list's paging.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Paging {
     /// No page is asked for.
     #[default]
     Idle,
-    /// A page is asked for, or the first page waits for the search field to settle.
+    /// A page is asked for, or the first root page waits for the search field to settle.
     Loading,
-    /// The last page failed; it is asked again only by [`Actors::retry`].
+    /// The last page failed and can be asked again with Retry.
     Failed(String),
+}
+
+/// The loaded children and paging state of one occurrence of a parent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Children {
+    /// Child addresses loaded so far, in address order.
+    pub rows: Vec<ActorAddress>,
+    /// Whether a page is asked for or failed.
+    pub paging: Paging,
+    /// True when the server says the parent has gone.
+    pub not_found: bool,
+    /// True when the server has more children after those read so far.
+    pub more: bool,
 }
 
 /// Which actors run a turn, from one read of the first [`SAMPLE`] running turns under the list's prefix.
@@ -102,6 +148,10 @@ pub struct ListView {
     pub more: bool,
     /// The running turns' sample.
     pub running: Running,
+    /// Children read at each parent row, including rows since closed.
+    pub children: BTreeMap<ActorPath, Children>,
+    /// Open rows to restore as they are loaded, including those still awaiting their page.
+    pub open: BTreeSet<ActorPath>,
 }
 
 /// The status column of a row: both hold together when they do.
@@ -132,6 +182,31 @@ impl ListView {
         RowStatus { running, paused: row.paused }
     }
 
+    /// The running status of a child, with `—` outside the sample's prefix.
+    pub fn child_status(&self, child: &ActorAddress) -> &'static str {
+        if !child.as_str().starts_with(&self.prefix) {
+            "—"
+        } else if matches!(&self.running, Running::Sample { actors, .. } if actors.contains(child)) {
+            "running"
+        } else {
+            ""
+        }
+    }
+
+    /// The index of this address in the root list.
+    pub fn root_index(&self, address: &ActorAddress) -> Option<usize> {
+        self.rows.binary_search_by(|row| row.address.cmp(address)).ok()
+    }
+
+    fn contains(&self, path: &ActorPath) -> bool {
+        match path.parent() {
+            Some(parent) => {
+                self.children.get(&parent).is_some_and(|page| page.rows.binary_search(path.address()).is_ok())
+            }
+            None => self.root_index(path.address()).is_some(),
+        }
+    }
+
     /// The footer under the table: what the running status covers, when it is not every running turn.
     pub fn footer(&self) -> Option<String> {
         match &self.running {
@@ -143,7 +218,7 @@ impl ListView {
         }
     }
 
-    /// True when the view should ask for the next page with `last` the last visible row: it is within [`NEAR_END`]
+    /// True when the view should ask for the next page with `last` the last visible root index: it is within [`NEAR_END`]
     /// of the end, the server has more, and no page is asked for or failed.
     pub fn wants_more(&self, last: usize) -> bool {
         self.more && self.paging == Paging::Idle && last + NEAR_END >= self.rows.len()
@@ -266,14 +341,21 @@ impl PaneView {
 }
 
 /// Where the next page starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum Cursor {
     /// The first page is not read yet.
+    #[default]
     Start,
     /// The server's cursor of the next page, passed back unchanged.
     Next(String),
     /// The last page is read.
     End,
+}
+
+#[derive(Default)]
+struct ChildRead {
+    cursor: Cursor,
+    task: Option<JoinHandle<()>>,
 }
 
 /// The Actors page's reads, publishing a [`ListView`] and a [`PaneView`]. Owned by the session, which hands it the
@@ -302,8 +384,12 @@ struct State {
     page_task: Option<JoinHandle<()>>,
     sample_task: Option<JoinHandle<()>>,
     debounce_task: Option<JoinHandle<()>>,
+    /// A parent's cursor and request marker. The whole map is dropped with the list's generation.
+    child_reads: BTreeMap<ActorPath, ChildRead>,
+    /// The prefix last read, which owns the open paths kept across reloads.
+    fold_prefix: String,
     pane_generation: u64,
-    selected: Option<ActorAddress>,
+    selected: Option<ActorPath>,
     pane_task: Option<JoinHandle<()>>,
     /// The tasks aborted so far, for tests that await their end.
     #[cfg(test)]
@@ -325,6 +411,9 @@ impl State {
         self.page = None;
         for task in [self.page_task.take(), self.sample_task.take(), self.debounce_task.take()] {
             self.abort(task);
+        }
+        for (_, read) in std::mem::take(&mut self.child_reads) {
+            self.abort(read.task);
         }
     }
 
@@ -348,6 +437,8 @@ impl Actors {
             page_task: None,
             sample_task: None,
             debounce_task: None,
+            child_reads: BTreeMap::new(),
+            fold_prefix: String::new(),
             pane_generation: 0,
             selected: None,
             pane_task: None,
@@ -409,12 +500,11 @@ impl Actors {
     }
 
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
-    /// still for `limits.debounce`. A selected actor outside the new prefix leaves the list, so it is unselected: its
-    /// reads are dropped and the pane empties.
+    /// still for `limits.debounce`. A selection whose root is outside the prefix is cleared and its reads are dropped.
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.lock();
         state.prefix = prefix.to_owned();
-        if state.selected.as_ref().is_some_and(|address| !address.as_str().starts_with(prefix)) {
+        if state.selected.as_ref().is_some_and(|path| !path.0[0].as_str().starts_with(prefix)) {
             self.shared.select(&mut state, None);
         }
         if state.client.is_none() {
@@ -440,11 +530,61 @@ impl Actors {
         }
     }
 
-    /// Selects `address` and reads it into the pane; `None` empties the pane. Reads of an earlier selection are
-    /// dropped, also when they are of the same actor.
-    pub fn select(&self, address: Option<ActorAddress>) {
+    /// Opens a loaded row and asks for its children the first time it opens in `generation`.
+    pub fn open(&self, generation: u64, path: &ActorPath) {
         let mut state = self.shared.lock();
-        self.shared.select(&mut state, address);
+        if state.list_generation != generation {
+            return;
+        }
+        let mut first = false;
+        self.shared.list.send_if_modified(|list| {
+            if !list.contains(path) || !list.open.insert(path.clone()) {
+                return false;
+            }
+            first = !list.children.contains_key(path);
+            true
+        });
+        if first {
+            self.shared.request_children(&mut state, path.clone());
+        }
+    }
+
+    /// Closes a row without discarding its children or the fold state within them.
+    pub fn close(&self, generation: u64, path: &ActorPath) {
+        let state = self.shared.lock();
+        if state.list_generation == generation {
+            self.shared.list.send_if_modified(|list| list.open.remove(path));
+        }
+    }
+
+    /// Asks for the next page of a parent's children. Returns true if the read started.
+    pub fn more_children(&self, generation: u64, parent: &ActorPath) -> bool {
+        self.page_children(generation, parent, |page| page.more && page.paging == Paging::Idle)
+    }
+
+    /// Asks again for a parent's failed page, from the cursor it kept. Returns true if the read started.
+    pub fn retry_children(&self, generation: u64, parent: &ActorPath) -> bool {
+        self.page_children(generation, parent, |page| matches!(page.paging, Paging::Failed(_)))
+    }
+
+    fn page_children(&self, generation: u64, parent: &ActorPath, can_page: impl FnOnce(&Children) -> bool) -> bool {
+        let mut state = self.shared.lock();
+        let list = self.shared.list.borrow();
+        let ready = state.list_generation == generation
+            && list.open.contains(parent)
+            && list.children.get(parent).is_some_and(can_page);
+        drop(list);
+        if ready {
+            self.shared.request_children(&mut state, parent.clone());
+        }
+        ready
+    }
+
+    /// Selects `path` and reads its actor into the pane; `None` empties the pane. Reads of an earlier selection are
+    /// dropped, also when they are of the same actor.
+    pub fn select(&self, path: Option<ActorPath>) {
+        let mut state = self.shared.lock();
+        self.shared.select(&mut state, path);
     }
 
     /// The window closes: every read is dropped.
@@ -454,8 +594,8 @@ impl Actors {
         state.supersede_pane();
     }
 
-    /// The selected actor.
-    pub fn selected(&self) -> Option<ActorAddress> {
+    /// The selected row's path.
+    pub fn selected(&self) -> Option<ActorPath> {
         self.shared.lock().selected.clone()
     }
 
@@ -483,13 +623,15 @@ impl Shared {
         state.loaded = true;
         state.cursor = Cursor::Start;
         let (generation, prefix) = (state.list_generation, state.prefix.clone());
-        self.list.send_replace(ListView {
-            prefix,
-            generation,
-            rows: Vec::new(),
-            paging: Paging::Loading,
-            more: true,
-            running: Running::Loading,
+        self.list.send_modify(|list| {
+            *list = ListView {
+                prefix,
+                generation,
+                paging: Paging::Loading,
+                more: true,
+                open: std::mem::take(&mut list.open),
+                ..ListView::default()
+            };
         });
         if debounce {
             let shared = self.clone();
@@ -520,6 +662,10 @@ impl Shared {
         if state.page.is_some() {
             return;
         }
+        if state.fold_prefix != state.prefix {
+            state.fold_prefix.clone_from(&state.prefix);
+            self.list.send_modify(|list| list.open.clear());
+        }
         let generation = state.list_generation;
         state.page = Some((generation, cursor.clone()));
         self.list.send_modify(|list| list.paging = Paging::Loading);
@@ -538,13 +684,107 @@ impl Shared {
                 Part::Ready(page) => {
                     state.cursor = page.next.map_or(Cursor::End, Cursor::Next);
                     let more = state.cursor != Cursor::End;
+                    let mut reopen = Vec::new();
                     shared.list.send_modify(|list| {
+                        let first_new = list.rows.len();
                         list.rows.extend(page.items.into_iter().map(ActorRow::from));
                         list.paging = Paging::Idle;
                         list.more = more;
+                        retain_open(&mut list.open, &[], list.rows.last().map(|row| &row.address), more, |address| {
+                            list.rows.binary_search_by(|row| row.address.cmp(address)).is_ok()
+                        });
+                        reopen.extend(list.rows[first_new..].iter().filter_map(|row| {
+                            let path = ActorPath::root(row.address.clone());
+                            list.open.contains(&path).then_some(path)
+                        }));
                     });
+                    for parent in reopen {
+                        shared.request_children(&mut state, parent);
+                    }
                 }
                 Part::Failed(error) => shared.list.send_modify(|list| list.paging = Paging::Failed(error)),
+            }
+        }));
+    }
+
+    fn request_children(self: &Arc<Self>, state: &mut State, parent: ActorPath) {
+        let Some(client) = state.client.clone() else { return };
+        let read = state.child_reads.entry(parent.clone()).or_default();
+        if read.task.is_some() || read.cursor == Cursor::End {
+            return;
+        }
+        self.list.send_modify(|list| {
+            list.children.entry(parent.clone()).or_default().paging = Paging::Loading;
+        });
+        let generation = state.list_generation;
+        let (shared, path, asked) = (self.clone(), parent, read.cursor.clone());
+        read.task = Some(self.handle.spawn(async move {
+            let cursor = match &asked {
+                Cursor::Start => None,
+                Cursor::Next(cursor) => Some(cursor.as_str()),
+                Cursor::End => unreachable!("the last page was read"),
+            };
+            let deadline = Instant::now() + shared.limits.deadline;
+            // Error bodies and request URLs can carry credentials. Report only the status of a failed read.
+            let page = match timeout_at(deadline, client.children(path.address(), cursor, Some(PAGE))).await {
+                Ok(Ok(page)) => Part::Ready(page),
+                Ok(Err(error)) => Part::Failed(match error.status() {
+                    Some(status) => format!("HTTP {status}"),
+                    None => "The server's response could not be read.".into(),
+                }),
+                Err(_) => Part::Failed(TIMED_OUT.into()),
+            };
+            let mut state = shared.lock();
+            if state.list_generation != generation {
+                return;
+            }
+            let Some(read) = state.child_reads.get_mut(&path) else { return };
+            if read.cursor != asked || read.task.is_none() {
+                return;
+            }
+            read.task = None;
+            let missing = matches!(page, Part::Ready(None));
+            let descendant = |other: &ActorPath| other != &path && other.0.starts_with(&path.0);
+            let mut reopen = Vec::new();
+            shared.list.send_modify(|list| {
+                let children = list.children.get_mut(&path).expect("the parent has a page in flight");
+                let first_new = children.rows.len();
+                match page {
+                    Part::Ready(Some(page)) => {
+                        children.rows.extend(page.items);
+                        read.cursor = page.next.map_or(Cursor::End, Cursor::Next);
+                    }
+                    Part::Ready(None) => {
+                        children.rows.clear();
+                        children.not_found = true;
+                        read.cursor = Cursor::End;
+                    }
+                    Part::Failed(error) => {
+                        children.paging = Paging::Failed(error);
+                        return;
+                    }
+                }
+                children.paging = Paging::Idle;
+                children.more = read.cursor != Cursor::End;
+                retain_open(&mut list.open, &path.0, children.rows.last(), children.more, |address| {
+                    children.rows.binary_search(address).is_ok()
+                });
+                reopen.extend(children.rows.iter().skip(first_new).filter_map(|address| {
+                    let child = path.child(address.clone());
+                    list.open.contains(&child).then_some(child)
+                }));
+                if missing {
+                    list.children.retain(|other, _| !descendant(other));
+                }
+            });
+            if missing {
+                let reads: Vec<_> = state.child_reads.extract_if(.., |other, _| descendant(other)).collect();
+                for (_, read) in reads {
+                    state.abort(read.task);
+                }
+            }
+            for child in reopen {
+                shared.request_children(&mut state, child);
             }
         }));
     }
@@ -571,10 +811,11 @@ impl Shared {
         }));
     }
 
-    /// Selects `address` under a new pane generation and starts its reads, each published as it answers.
-    fn select(self: &Arc<Self>, state: &mut State, address: Option<ActorAddress>) {
+    /// Selects a row under a new pane generation and starts its actor's reads, each published as it answers.
+    fn select(self: &Arc<Self>, state: &mut State, path: Option<ActorPath>) {
         state.supersede_pane();
-        state.selected = address.clone();
+        let address = path.as_ref().map(|path| path.address().clone());
+        state.selected = path;
         let generation = state.pane_generation;
         let reading = address.is_some() && state.client.is_some();
         self.pane.send_replace(match &address {
@@ -651,6 +892,20 @@ impl Shared {
         };
         tokio::join!(actor, turn, mailbox, watching, watched_by);
     }
+}
+
+/// Once a page passes a missing row (or ends its list), forget the row and any saved open paths through it.
+fn retain_open(
+    open: &mut BTreeSet<ActorPath>,
+    parent: &[ActorAddress],
+    last: Option<&ActorAddress>,
+    more: bool,
+    found: impl Fn(&ActorAddress) -> bool,
+) {
+    open.retain(|path| {
+        let address = path.0.strip_prefix(parent).and_then(|tail| tail.first());
+        address.is_none_or(|address| (more && last.is_none_or(|last| address > last)) || found(address))
+    });
 }
 
 /// The pane's details of `view`, with its state formatted; the rest of the view is dropped.

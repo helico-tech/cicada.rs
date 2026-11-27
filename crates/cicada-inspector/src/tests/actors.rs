@@ -2,6 +2,8 @@
 //! and the pane's reads, with answers held back at the server to order them. Real sockets and the real clock, as in
 //! the parent module; every wait has a bound.
 
+mod children;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -15,7 +17,7 @@ use tokio::sync::{Notify, watch};
 use tokio::time::timeout;
 
 use super::{Counter, CounterActor, Fake, Rule, Server, Work, config, no_rule, problem, serve};
-use crate::actors::{Actors, ListView, Paging, PaneView, Read, RowStatus, Running};
+use crate::actors::{ActorPath, Actors, ListView, Paging, PaneView, Read, RowStatus, Running};
 use crate::model::{Limits, Session};
 
 /// The longest a test waits for one change.
@@ -50,6 +52,10 @@ impl Actor for BagActor {
 
 async fn test_actors() -> TestActors {
     TestActors::builder().with(|node| node.host(CounterActor).host(BagActor)).build().await.unwrap()
+}
+
+fn root(address: &str) -> ActorPath {
+    ActorPath::root(ActorAddress::parse(address).unwrap())
 }
 
 fn model(server: &Server, limits: Limits) -> Actors {
@@ -354,7 +360,7 @@ async fn a_page_in_flight_at_a_context_switch_is_dropped() {
     let mut list = session.actors().list();
     let mut pane = session.actors().pane();
     session.actors().show();
-    session.actors().select(Some(ActorAddress::parse("counter/old").unwrap()));
+    session.actors().select(Some(root("counter/old")));
     timeout(WAIT, arrived.notified()).await.expect("the old page is held");
 
     session.use_context(Some("fast".into()));
@@ -406,7 +412,7 @@ async fn the_pane_shows_the_state_turn_mailbox_and_watches() {
     assert!(server.client.pause_mailbox(&address).await.unwrap());
     let model = model(&server, Limits::DEFAULT);
     let mut pane = model.pane();
-    model.select(Some(address.clone()));
+    model.select(Some(ActorPath::root(address.clone())));
     let generation = pane.borrow().generation;
     let view = pane_until(&mut pane, generation).await;
 
@@ -447,14 +453,14 @@ async fn a_turn_off_the_first_page_has_no_type_and_an_idle_actor_no_turn() {
     let server = serve(&actors, rule, Duration::ZERO).await;
     let model = model(&server, Limits::DEFAULT);
     let mut pane = model.pane();
-    model.select(Some(ActorAddress::parse("bag/a").unwrap()));
+    model.select(Some(root("bag/a")));
     let view = answered(&mut pane).await;
     let Read::Ready(Some(turn)) = &view.turn else { panic!("{:?}", view.turn) };
     assert!(turn.cancel_requested);
     assert_eq!(view.turn_message(), None);
     assert_eq!(view.mailbox, Read::Ready(Default::default()));
 
-    model.select(Some(ActorAddress::parse("bag/idle").unwrap()));
+    model.select(Some(root("bag/idle")));
     let view = answered(&mut pane).await;
     assert_eq!(view.turn, Read::Ready(None));
     assert!(matches!(view.actor, Read::Ready(Some(_))));
@@ -470,11 +476,11 @@ async fn a_missing_actor_is_not_found_and_one_read_fails_alone() {
     let model = model(&server, Limits::DEFAULT);
     let mut pane = model.pane();
 
-    model.select(Some(ActorAddress::parse("bag/ghost").unwrap()));
+    model.select(Some(root("bag/ghost")));
     let view = answered(&mut pane).await;
     assert!(view.not_found(), "{view:?}");
 
-    model.select(Some(ActorAddress::parse("bag/a").unwrap()));
+    model.select(Some(root("bag/a")));
     let view = answered(&mut pane).await;
     assert!(matches!(&view.mailbox, Read::Failed(error) if error.contains("500")), "{:?}", view.mailbox);
     assert!(matches!(view.actor, Read::Ready(Some(_))) && view.turn == Read::Ready(None));
@@ -506,10 +512,10 @@ async fn a_then_b_then_a_shows_only_the_last_read_of_a() {
     let mut pane = model.pane();
     let (a, b) = (ActorAddress::parse("bag/a").unwrap(), ActorAddress::parse("bag/b").unwrap());
 
-    model.select(Some(a.clone()));
+    model.select(Some(ActorPath::root(a.clone())));
     timeout(WAIT, arrived.notified()).await.expect("the first read of A is held");
-    model.select(Some(b));
-    model.select(Some(a.clone()));
+    model.select(Some(ActorPath::root(b)));
+    model.select(Some(ActorPath::root(a.clone())));
     let generation = pane.borrow().generation;
     let view = pane_until(&mut pane, generation).await;
     let Read::Ready(Some(details)) = &view.actor else { panic!("{:?}", view.actor) };
@@ -545,10 +551,10 @@ async fn a_search_that_leaves_out_the_selection_empties_the_pane() {
     let mut pane = model.pane();
     let address = ActorAddress::parse("bag/a").unwrap();
 
-    model.select(Some(address.clone()));
+    model.select(Some(ActorPath::root(address.clone())));
     answered(&mut pane).await;
     model.search("bag/");
-    assert_eq!(model.selected(), Some(address.clone()), "a prefix that holds the actor keeps it");
+    assert_eq!(model.selected(), Some(ActorPath::root(address.clone())), "a prefix that holds the actor keeps it");
     model.refresh();
     timeout(WAIT, arrived.notified()).await.expect("the refreshed read of the actor is held");
     let before = pane.borrow_and_update().generation;

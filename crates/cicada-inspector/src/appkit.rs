@@ -10,21 +10,20 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cicada::ActorAddress;
 use cicada_app::Env;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSControl, NSControlStateValueOn, NSControlTextEditingDelegate,
-    NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSScrollView,
-    NSSearchField, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewDataSource,
-    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
-    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSView, NSViewController, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSControl, NSControlStateValueOn,
+    NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton, NSScrollView, NSSearchField,
+    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
+    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
+    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSView, NSViewController, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -36,7 +35,7 @@ use crate::actors::{ListView, PaneView};
 use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
-use actors::{Page, TableRow};
+use actors::{CellContent, Item, ItemId, Items, Page};
 use content::FlippedView;
 
 /// The rows of the sidebar: the Overview, then the items under Browse.
@@ -169,8 +168,8 @@ struct Controller {
     pane: RefCell<watch::Receiver<PaneView>>,
     /// The rows the table shows; the data source reads them.
     list_shown: RefCell<ListView>,
-    /// The selected actor, kept across reloads of the table.
-    selected: RefCell<Option<ActorAddress>>,
+    /// One retained AppKit item per identity in the snapshot.
+    items: RefCell<Items>,
     /// The prefix last searched, so that a field that sends the same text again reads nothing.
     searched: RefCell<String>,
     /// The state the pane's text view holds.
@@ -181,7 +180,7 @@ struct Controller {
     rendered: Cell<Option<Section>>,
     /// What the context pop-up shows, so that it is rebuilt only when that changes.
     contexts_shown: RefCell<Option<ContextsShown>>,
-    /// True while the sidebar's selection is set from the navigation, so that its change is not taken as a pick.
+    /// True while the sidebar or outline is updated from the model. Callbacks then ignore selection and folds.
     syncing: Cell<bool>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     finished: Cell<bool>,
@@ -292,40 +291,125 @@ define_class!(
     // SAFETY: The callback has the signature required by NSTableViewDataSource.
     unsafe impl NSTableViewDataSource for Target {
         #[unsafe(method(numberOfRowsInTableView:))]
-        fn number_of_rows(&self, table: &NSTableView) -> NSInteger {
-            if self.is_sidebar(table) {
-                ROWS as NSInteger
-            } else {
-                actors::row_count(&self.ivars().list_shown.borrow()) as NSInteger
-            }
+        fn number_of_rows(&self, _: &NSTableView) -> NSInteger {
+            ROWS as NSInteger
         }
     }
 
-    // SAFETY: These callbacks have the signatures required by NSTableViewDelegate.
+    // SAFETY: These callbacks have the signatures required by NSTableViewDelegate and are used by the sidebar.
     unsafe impl NSTableViewDelegate for Target {
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn view_for_row(
             &self,
-            table: &NSTableView,
-            column: Option<&NSTableColumn>,
+            _: &NSTableView,
+            _: Option<&NSTableColumn>,
             row: NSInteger,
         ) -> Option<Retained<NSView>> {
-            self.cell_for(table, column, row)
+            row_at(row).map(|row| sidebar_cell(self.mtm(), row))
         }
 
         #[unsafe(method(tableView:isGroupRow:))]
-        fn is_group_row(&self, table: &NSTableView, row: NSInteger) -> bool {
-            self.is_group(table, row)
+        fn is_group_row(&self, _: &NSTableView, row: NSInteger) -> bool {
+            matches!(row_at(row), Some(Row::Group(_)))
         }
 
         #[unsafe(method(tableView:shouldSelectRow:))]
-        fn should_select_row(&self, table: &NSTableView, row: NSInteger) -> bool {
-            self.can_select(table, row)
+        fn should_select_row(&self, _: &NSTableView, row: NSInteger) -> bool {
+            matches!(row_at(row), Some(Row::Item(_)))
         }
 
         #[unsafe(method(tableViewSelectionDidChange:))]
         fn selection_did_change(&self, notification: &NSNotification) {
-            self.selection_changed(notification);
+            let c = self.ivars();
+            if c.syncing.get() || c.finished.get() {
+                return;
+            }
+            let sidebar = &self.window().sidebar;
+            let sender: &AnyObject = sidebar.as_ref();
+            if notification.object().is_some_and(|object| std::ptr::eq(&*object, sender))
+                && let Some(Row::Item(section)) = row_at(sidebar.selectedRow())
+            {
+                c.navigation.borrow_mut().select(section);
+                self.render();
+            }
+        }
+    }
+
+    // SAFETY: The callbacks conform to NSOutlineViewDataSource. A nonnil item is one returned from outline_child.
+    unsafe impl NSOutlineViewDataSource for Target {
+        #[unsafe(method(outlineView:numberOfChildrenOfItem:))]
+        fn outline_count(&self, _: &NSOutlineView, item: Option<&AnyObject>) -> NSInteger {
+            let parent = item.map(|item| Item::id(item).expect("the outline owns its item identities"));
+            actors::child_count(&self.ivars().list_shown.borrow(), parent) as NSInteger
+        }
+
+        #[unsafe(method_id(outlineView:child:ofItem:))]
+        fn outline_child(&self, _: &NSOutlineView, index: NSInteger, item: Option<&AnyObject>) -> Retained<AnyObject> {
+            let c = self.ivars();
+            let parent = item.map(|item| Item::id(item).expect("the outline owns its item identities"));
+            let id = actors::child_at(&c.list_shown.borrow(), parent, index as usize);
+            c.items.borrow()[&id].clone().into()
+        }
+
+        #[unsafe(method(outlineView:isItemExpandable:))]
+        fn outline_can_expand(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+            matches!(Item::id(item), Some(ItemId::Actor(_)))
+        }
+    }
+
+    // SAFETY: The callbacks have the signatures required by NSOutlineViewDelegate and handle only its own items.
+    unsafe impl NSOutlineViewDelegate for Target {
+        #[unsafe(method_id(outlineView:viewForTableColumn:item:))]
+        fn outline_cell(
+            &self,
+            _: &NSOutlineView,
+            column: Option<&NSTableColumn>,
+            item: &AnyObject,
+        ) -> Option<Retained<NSView>> {
+            let column = column.map(|column| column.identifier().to_string());
+            Item::id(item).and_then(|item| {
+                let content = CellContent::of(&self.ivars().list_shown.borrow(), item, column.as_deref())?;
+                Some(content.view(
+                    self.mtm(), column.as_deref(), self.as_ref(), sel!(inspectorRetry:), sel!(inspectorMoreChildren:),
+                ))
+            })
+        }
+
+        #[unsafe(method(outlineView:isGroupItem:))]
+        fn outline_is_group(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+            matches!(Item::id(item), Some(ItemId::Status(None)))
+        }
+
+        #[unsafe(method(outlineView:shouldSelectItem:))]
+        fn outline_can_select(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+            matches!(Item::id(item), Some(ItemId::Actor(_)))
+        }
+
+        #[unsafe(method(outlineViewSelectionDidChange:))]
+        fn outline_selection_changed(&self, _: &NSNotification) {
+            let c = self.ivars();
+            if c.syncing.get() || c.finished.get() {
+                return;
+            }
+            let table = &self.window().page.table;
+            let row = table.selectedRow();
+            let item = (row >= 0).then(|| table.itemAtRow(row)).flatten();
+            let path = match item.as_deref().and_then(Item::id) {
+                Some(ItemId::Actor(path)) => Some(path.clone()),
+                _ => None,
+            };
+            c.session.actors().select(path);
+            self.render_pane();
+        }
+
+        #[unsafe(method(outlineViewItemDidExpand:))]
+        fn outline_opened(&self, notification: &NSNotification) {
+            self.fold_changed(notification, true);
+        }
+
+        #[unsafe(method(outlineViewItemDidCollapse:))]
+        fn outline_closed(&self, notification: &NSNotification) {
+            self.fold_changed(notification, false);
         }
     }
 
@@ -367,6 +451,7 @@ define_class!(
                 if c.pane.borrow().has_changed().unwrap_or(false) {
                     self.render_pane();
                 }
+                self.check_more();
             }
         }
 
@@ -383,17 +468,41 @@ define_class!(
             }
             c.searched.replace(prefix.clone());
             c.session.actors().search(&prefix);
-            // A selected actor outside the prefix was unselected with its reads; the pane empties.
-            c.selected.replace(c.session.actors().selected());
             self.render_list();
             self.render_pane();
         }
 
-        // SAFETY: The Retry button of the table's status row sends this action with itself as the sender.
+        // SAFETY: The Retry buttons of outline status rows send this action with themselves as the sender.
         #[unsafe(method(inspectorRetry:))]
-        fn retry(&self, _: Option<&AnyObject>) {
-            if !self.ivars().finished.get() {
-                self.ivars().session.actors().retry();
+        fn retry(&self, sender: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let item = self.item_for_button(sender);
+            let generation = c.list_shown.borrow().generation;
+            match item.as_deref().and_then(Item::id) {
+                Some(ItemId::Status(None)) => c.session.actors().retry(),
+                Some(ItemId::Status(Some(parent))) if c.session.actors().retry_children(generation, parent) => {
+                    sender.setEnabled(false);
+                }
+                _ => {}
+            }
+        }
+
+        // SAFETY: The more… buttons of outline status rows send this action with themselves as the sender.
+        #[unsafe(method(inspectorMoreChildren:))]
+        fn more_children(&self, sender: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let item = self.item_for_button(sender);
+            let generation = c.list_shown.borrow().generation;
+            if let Some(ItemId::Status(Some(parent))) = item.as_deref().and_then(Item::id)
+                && c.session.actors().more_children(generation, parent)
+            {
+                sender.setEnabled(false);
             }
         }
 
@@ -437,8 +546,6 @@ define_class!(
             }
             let Some(item) = sender.selectedItem() else { return };
             let name = item.title().to_string();
-            // The selection goes with the context; the session drops the pane's reads.
-            self.ivars().selected.replace(None);
             self.ivars().session.use_context(Some(name));
             self.render();
         }
@@ -481,7 +588,7 @@ impl Target {
             list: RefCell::new(list),
             pane: RefCell::new(pane),
             list_shown: RefCell::default(),
-            selected: RefCell::default(),
+            items: RefCell::new(Items::from([(ItemId::Status(None), Item::new(mtm, ItemId::Status(None)))])),
             searched: RefCell::default(),
             state_shown: RefCell::default(),
             pane_shown: Cell::new(true),
@@ -551,71 +658,25 @@ impl Target {
         }
     }
 
-    fn cell_for(
-        &self,
-        table: &NSTableView,
-        column: Option<&NSTableColumn>,
-        row: NSInteger,
-    ) -> Option<Retained<NSView>> {
-        if self.is_sidebar(table) {
-            return row_at(row).map(|row| sidebar_cell(self.mtm(), row));
-        }
-        let row = usize::try_from(row).ok()?;
-        let column = column.map(|column| column.identifier().to_string());
-        let (view, wants_more) = {
-            let list = self.ivars().list_shown.borrow();
-            let target: &AnyObject = self.as_ref();
-            let cell = actors::table_row(&list, row)
-                .map(|cell| actors::cell(self.mtm(), &list, cell, column.as_deref(), target, sel!(inspectorRetry:)));
-            (cell, list.wants_more(row))
-        };
-        // A row near the end comes into view: the next page is asked for.
-        if wants_more {
-            self.ivars().session.actors().more();
-        }
-        view
+    fn item_for_button(&self, sender: &NSButton) -> Option<Retained<AnyObject>> {
+        let table = &self.window().page.table;
+        let row = table.rowForView(sender);
+        (row >= 0).then(|| table.itemAtRow(row)).flatten()
     }
 
-    fn is_group(&self, table: &NSTableView, row: NSInteger) -> bool {
-        if self.is_sidebar(table) {
-            return matches!(row_at(row), Some(Row::Group(_)));
-        }
-        let list = self.ivars().list_shown.borrow();
-        let row = usize::try_from(row).unwrap_or(usize::MAX);
-        matches!(actors::table_row(&list, row), Some(TableRow::Status(_)))
-    }
-
-    fn can_select(&self, table: &NSTableView, row: NSInteger) -> bool {
-        if self.is_sidebar(table) {
-            return matches!(row_at(row), Some(Row::Item(_)));
-        }
-        let list = self.ivars().list_shown.borrow();
-        usize::try_from(row).is_ok_and(|row| row < list.rows.len())
-    }
-
-    /// A pick in the sidebar navigates; a pick in the Actors table reads the actor into the pane.
-    fn selection_changed(&self, notification: &NSNotification) {
+    fn fold_changed(&self, notification: &NSNotification, open: bool) {
         let c = self.ivars();
         if c.syncing.get() || c.finished.get() {
             return;
         }
-        let window = self.window();
-        let sidebar: &AnyObject = window.sidebar.as_ref();
-        if notification.object().is_some_and(|object| std::ptr::eq(&*object, sidebar)) {
-            let row = window.sidebar.selectedRow();
-            if let Some(Row::Item(section)) = row_at(row) {
-                c.navigation.borrow_mut().select(section);
-                self.render();
-            }
-            return;
+        let item = notification.userInfo().and_then(|info| info.objectForKey(ns_string!("NSObject").as_ref()));
+        let Some(ItemId::Actor(path)) = item.as_deref().and_then(Item::id) else { return };
+        let generation = c.list_shown.borrow().generation;
+        if open {
+            c.session.actors().open(generation, path);
+        } else {
+            c.session.actors().close(generation, path);
         }
-        let row = window.page.table.selectedRow();
-        let address = usize::try_from(row)
-            .ok()
-            .and_then(|row| c.list_shown.borrow().rows.get(row).map(|actor| actor.address.clone()));
-        c.selected.replace(address.clone());
-        c.session.actors().select(address);
-        self.render_pane();
     }
 
     fn collapse_pane(&self, collapsed: bool) {
@@ -629,43 +690,67 @@ impl Target {
         }
     }
 
-    fn is_sidebar(&self, table: &NSTableView) -> bool {
-        self.ivars().window.get().is_some_and(|window| std::ptr::eq(table, &*window.sidebar))
-    }
-
-    /// Shows the latest rows: the table reloads, keeps the selected actor selected when it is among them, and asks for
-    /// the next page when the end is in view.
+    /// Reloads the outline, reopens its loaded paths and restores selection by identity.
     fn render_list(&self) {
         let c = self.ivars();
-        if c.finished.get() {
+        if c.finished.get() || c.syncing.get() {
             return;
         }
         let Some(window) = c.window.get() else { return };
         let list = c.list.borrow_mut().borrow_and_update().clone();
         let target_error = c.view.borrow().borrow().target_error.clone();
         window.page.show_footer(&list, target_error.as_deref());
-        let selected = c.selected.borrow().clone();
-        let row = selected.and_then(|address| list.rows.iter().position(|row| row.address == address));
+        let selected = c.session.actors().selected().map(ItemId::Actor);
+        let mut previous = c.items.take();
+        let items = actors::items(self.mtm(), &list, &mut previous);
+        let selected = selected.as_ref().and_then(|id| items.get(id)).cloned();
+        let (open, closed): (Vec<_>, Vec<_>) = items
+            .iter()
+            .filter_map(|(id, item)| match id {
+                ItemId::Actor(path) => Some((list.open.contains(path), item.clone())),
+                ItemId::Status(_) => None,
+            })
+            .partition(|(open, _)| *open);
+        c.items.replace(items);
         c.list_shown.replace(list);
+        let table = &window.page.table;
         c.syncing.set(true);
-        window.page.table.reloadData();
-        match row {
-            Some(row) => {
-                window.page.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false)
+        table.reloadData();
+        drop(previous);
+        // SAFETY: These items belong to the reloaded outline and stay retained throughout the calls. The syncing
+        // guard ignores the callbacks from programmatic folding and selection.
+        unsafe {
+            for (_, item) in &closed {
+                if table.isItemExpanded(Some(item.as_ref())) {
+                    table.collapseItem(Some(item.as_ref()));
+                }
             }
-            // SAFETY: deselectAll: takes an optional sender.
-            None => unsafe { window.page.table.deselectAll(None) },
+            // The paths are sorted, so each open ancestor is expanded before any of its descendants.
+            for (_, item) in &open {
+                let item = Some(item.as_ref());
+                if table.rowForItem(item) >= 0 && !table.isItemExpanded(item) {
+                    table.expandItem(item);
+                }
+            }
+            let row = selected.as_ref().map_or(-1, |item| table.rowForItem(Some(item.as_ref())));
+            if let Ok(row) = usize::try_from(row) {
+                table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
+            } else {
+                table.deselectAll(None);
+            }
         }
         c.syncing.set(false);
         self.check_more();
     }
 
-    /// Asks for the next page when the last visible row is near the end; after rows came in or the window resized.
+    /// Asks for a page when the last visible root row is near the end, including after scrolling.
     fn check_more(&self) {
         let c = self.ivars();
         let Some(window) = c.window.get() else { return };
-        let last = window.page.last_visible();
-        let wants = c.list_shown.borrow().wants_more(last);
+        let Some(last) = window.page.last_visible_root() else { return };
+        let list = c.list_shown.borrow();
+        let wants = list.root_index(last.address()).is_some_and(|index| list.wants_more(index));
+        drop(list);
         if wants {
             c.session.actors().more();
         }

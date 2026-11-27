@@ -1,20 +1,22 @@
 //! The Actors page: the table of actors with its footer, and the inspector pane of the selected actor with its tabs.
 //! The target owns the data and the actions; this module builds the views and fills them.
 
+use std::collections::BTreeMap;
+
 use cicada::time::Timestamp;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSScrollView, NSTabView, NSTabViewItem, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewStyle, NSTextField,
+    NSForegroundColorAttributeName, NSLineBreakMode, NSOutlineView, NSScrollView, NSTabView, NSTabViewItem,
+    NSTableColumn, NSTableColumnResizingOptions, NSTableViewColumnAutoresizingStyle, NSTableViewStyle, NSTextField,
     NSTextView, NSView,
 };
-use objc2_foundation::{NSPoint, NSRange, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSInteger, NSObject, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string};
 
 use super::content::{FlippedView, Layout, Style, color, label};
-use crate::actors::{ActorRow, ListView, MAILBOX_ROWS, Paging, PaneView, Read, WATCH_ROWS};
+use crate::actors::{ActorPath, ListView, MAILBOX_ROWS, Paging, PaneView, Read, WATCH_ROWS};
 use crate::json::{Json, Token, utf16_ranges};
 use crate::model::age;
 
@@ -29,39 +31,110 @@ const COLUMNS: [(&str, &str, f64); 5] = [
 const FOOTER: f64 = 26.0;
 const PANE_MARGIN: f64 = 16.0;
 
-/// A row of the table: an actor, or the row after them that says what the paging does.
-pub(super) enum TableRow<'a> {
-    Actor(&'a ActorRow),
-    Status(StatusRow),
+/// The identity of one row in the outline. A paging row stays in place as its text or action changes.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ItemId {
+    Actor(ActorPath),
+    Status(Option<ActorPath>),
 }
 
-/// The row after the actors.
-pub(super) enum StatusRow {
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and Item does not implement Drop.
+    #[unsafe(super = NSObject)]
+    #[name = "CicadaInspectorOutlineItem"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ItemId]
+    pub(super) struct Item;
+);
+
+impl Item {
+    pub(super) fn new(mtm: MainThreadMarker, id: ItemId) -> Retained<Self> {
+        let item = Self::alloc(mtm).set_ivars(id);
+        // SAFETY: The ivars are set, and NSObject's init has no additional requirements.
+        unsafe { msg_send![super(item), init] }
+    }
+
+    pub(super) fn id(item: &AnyObject) -> Option<&ItemId> {
+        item.downcast_ref::<Self>().map(DefinedClass::ivars)
+    }
+}
+
+pub(super) type Items = BTreeMap<ItemId, Retained<Item>>;
+
+/// The objects for a new snapshot. Surviving identities keep their object. The caller keeps the remaining
+/// `previous` objects alive through reloadData.
+pub(super) fn items(mtm: MainThreadMarker, list: &ListView, previous: &mut Items) -> Items {
+    let roots = list.rows.iter().map(|row| ActorPath::root(row.address.clone()));
+    let children =
+        list.children.iter().flat_map(|(parent, page)| page.rows.iter().map(|address| parent.child(address.clone())));
+    let mut items = Items::new();
+    for path in roots.chain(children) {
+        if child_status_row(list, &path).is_some() {
+            let id = ItemId::Status(Some(path.clone()));
+            items.insert(id.clone(), previous.remove(&id).unwrap_or_else(|| Item::new(mtm, id)));
+        }
+        let actor = ItemId::Actor(path);
+        items.insert(actor.clone(), previous.remove(&actor).unwrap_or_else(|| Item::new(mtm, actor)));
+    }
+    if root_status_row(list).is_some() {
+        let id = ItemId::Status(None);
+        items.insert(id.clone(), previous.remove(&id).unwrap_or_else(|| Item::new(mtm, id)));
+    }
+    items
+}
+
+pub(super) fn child_count(list: &ListView, item: Option<&ItemId>) -> usize {
+    match item {
+        None => list.rows.len() + usize::from(root_status_row(list).is_some()),
+        Some(ItemId::Actor(path)) => {
+            list.children.get(path).map_or(0, |page| page.rows.len())
+                + usize::from(child_status_row(list, path).is_some())
+        }
+        Some(ItemId::Status(_)) => 0,
+    }
+}
+
+pub(super) fn child_at(list: &ListView, item: Option<&ItemId>, index: usize) -> ItemId {
+    match item {
+        None => {
+            list.rows.get(index).map_or(ItemId::Status(None), |row| ItemId::Actor(ActorPath::root(row.address.clone())))
+        }
+        Some(ItemId::Actor(path)) => list
+            .children
+            .get(path)
+            .and_then(|page| page.rows.get(index))
+            .map_or_else(|| ItemId::Status(Some(path.clone())), |address| ItemId::Actor(path.child(address.clone()))),
+        Some(ItemId::Status(_)) => unreachable!("a status row has no children"),
+    }
+}
+
+enum StatusRow<'a> {
     Loading,
-    Failed(String),
-    Empty,
+    Failed(&'a str),
+    NoActors,
+    NoChildren,
+    NotFound,
+    More { loading: bool },
 }
 
-/// The rows the table shows for `list`: its actors, then a status row while a page loads, after a failed page, or
-/// when there are no actors.
-pub(super) fn row_count(list: &ListView) -> usize {
-    list.rows.len() + usize::from(status_row(list).is_some())
-}
-
-fn status_row(list: &ListView) -> Option<StatusRow> {
+fn root_status_row(list: &ListView) -> Option<StatusRow<'_>> {
     match &list.paging {
         Paging::Loading => Some(StatusRow::Loading),
-        Paging::Failed(error) => Some(StatusRow::Failed(error.clone())),
-        Paging::Idle if list.rows.is_empty() && !list.more => Some(StatusRow::Empty),
+        Paging::Failed(error) => Some(StatusRow::Failed(error)),
+        Paging::Idle if list.rows.is_empty() && !list.more => Some(StatusRow::NoActors),
         Paging::Idle => None,
     }
 }
 
-pub(super) fn table_row(list: &ListView, row: usize) -> Option<TableRow<'_>> {
-    match list.rows.get(row) {
-        Some(actor) => Some(TableRow::Actor(actor)),
-        None if row == list.rows.len() => status_row(list).map(TableRow::Status),
-        None => None,
+fn child_status_row<'a>(list: &'a ListView, parent: &ActorPath) -> Option<StatusRow<'a>> {
+    let Some(page) = list.children.get(parent) else { return Some(StatusRow::Loading) };
+    match &page.paging {
+        Paging::Failed(error) => Some(StatusRow::Failed(error)),
+        paging if page.more => Some(StatusRow::More { loading: *paging == Paging::Loading }),
+        Paging::Loading => Some(StatusRow::Loading),
+        Paging::Idle if page.not_found => Some(StatusRow::NotFound),
+        Paging::Idle if page.rows.is_empty() => Some(StatusRow::NoChildren),
+        Paging::Idle => None,
     }
 }
 
@@ -69,7 +142,7 @@ pub(super) fn table_row(list: &ListView, row: usize) -> Option<TableRow<'_>> {
 pub(super) struct Page {
     /// The table with the footer under it.
     pub root: Retained<NSView>,
-    pub table: Retained<NSTableView>,
+    pub table: Retained<NSOutlineView>,
     footer: Retained<NSTextField>,
     /// The pane's root, laid out from the top.
     pub pane: Retained<FlippedView>,
@@ -91,7 +164,7 @@ impl Page {
     pub(super) fn new(mtm: MainThreadMarker) -> Self {
         let size = NSSize::new(760.0, 600.0);
         let root = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, size));
-        let table = NSTableView::new(mtm);
+        let table = NSOutlineView::new(mtm);
         for (identifier, title, width) in COLUMNS {
             let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &NSString::from_str(identifier));
             column.setTitle(&NSString::from_str(title));
@@ -99,6 +172,10 @@ impl Page {
             column.setMinWidth(50.0);
             column.setResizingMask(NSTableColumnResizingOptions::UserResizingMask);
             table.addTableColumn(&column);
+            if identifier == "address" {
+                // SAFETY: This is a column already added to this outline.
+                unsafe { table.setOutlineTableColumn(Some(&column)) };
+            }
         }
         table.setColumnAutoresizingStyle(NSTableViewColumnAutoresizingStyle::LastColumnOnlyAutoresizingStyle);
         table.setStyle(NSTableViewStyle::Inset);
@@ -215,10 +292,17 @@ impl Page {
         self.footer.setTextColor(Some(&color(style)));
     }
 
-    /// The last row the table shows, or 0.
-    pub(super) fn last_visible(&self) -> usize {
+    /// The last root actor currently in the viewport, regardless of how many children are open.
+    pub(super) fn last_visible_root(&self) -> Option<ActorPath> {
         let visible = self.table.rowsInRect(self.table.visibleRect());
-        (visible.location + visible.length).saturating_sub(1)
+        let end = visible.location.saturating_add(visible.length).min(self.table.numberOfRows() as usize);
+        (visible.location..end).rev().find_map(|row| {
+            let item = self.table.itemAtRow(row as NSInteger)?;
+            match Item::id(&item)? {
+                ItemId::Actor(path) if path.is_root() => Some(path.clone()),
+                _ => None,
+            }
+        })
     }
 
     /// Fills the pane from `pane`; `state_shown` is the state the text view holds, which is set again only when it
@@ -323,62 +407,116 @@ impl Page {
             self.table.setDataSource(None);
             self.table.setDelegate(None);
         }
+        // Clear the outline's rows before the controller releases the item objects.
+        self.table.reloadData();
     }
 }
 
-/// A cell of the table: the text of `column` for an actor; for the status row, which spans the columns, its text
-/// with a Retry button after a failed page.
-pub(super) fn cell(
-    mtm: MainThreadMarker,
-    list: &ListView,
-    row: TableRow<'_>,
-    column: Option<&str>,
-    target: &AnyObject,
-    retry: Sel,
-) -> Retained<NSView> {
-    match row {
-        TableRow::Actor(actor) => {
-            let text = match column.unwrap_or("address") {
-                "address" => actor.address.to_string(),
-                "type" => actor.type_name.clone(),
-                "version" => actor.version.to_string(),
-                "created" => created(actor.created_at),
-                _ => list.status(actor).text().to_owned(),
-            };
-            let field = label(mtm, &text, NSFont::systemFontOfSize(13.0), Style::Plain);
-            if column == Some("address") {
-                field.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
-                field.setToolTip(Some(&NSString::from_str(&text)));
-            }
-            if column == Some("version") {
-                field.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(13.0, 0.0)));
-            }
-            Retained::into_super(Retained::into_super(field))
-        }
-        TableRow::Status(status) => {
-            let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(600.0, 22.0)));
-            let (text, style) = match &status {
-                StatusRow::Loading => ("Loading…".to_owned(), Style::Secondary),
-                StatusRow::Failed(error) => (format!("The next page failed: {error}"), Style::Error),
-                StatusRow::Empty if list.prefix.is_empty() => ("No actors.".to_owned(), Style::Secondary),
-                StatusRow::Empty => (format!("No actors under “{}”.", list.prefix), Style::Secondary),
-            };
-            let mut x = 8.0;
-            if let StatusRow::Failed(_) = status {
-                // SAFETY: The target implements `retry` with the button as the sender, and outlives the table.
-                let button = unsafe {
-                    NSButton::buttonWithTitle_target_action(ns_string!("Retry"), Some(target), Some(retry), mtm)
+/// The content of a native cell, copied out of the snapshot before constructing AppKit views.
+pub(super) enum CellContent {
+    Actor(String),
+    Status { text: String, style: Style, button: Option<Button> },
+}
+
+pub(super) enum Button {
+    Retry,
+    More { loading: bool },
+}
+
+impl CellContent {
+    pub(super) fn of(list: &ListView, item: &ItemId, column: Option<&str>) -> Option<Self> {
+        let column = column.unwrap_or("address");
+        let (status, is_root) = match item {
+            ItemId::Actor(path) => {
+                let address = path.address();
+                let text = if !path.is_root() {
+                    match column {
+                        "address" => address.to_string(),
+                        "type" => address.type_name().to_string(),
+                        "status" => list.child_status(address).to_owned(),
+                        _ => String::new(),
+                    }
+                } else {
+                    let actor = &list.rows[list.root_index(address)?];
+                    match column {
+                        "address" => address.to_string(),
+                        "type" => actor.type_name.clone(),
+                        "version" => actor.version.to_string(),
+                        "created" => created(actor.created_at),
+                        _ => list.status(actor).text().to_owned(),
+                    }
                 };
-                button.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(72.0, 22.0)));
-                view.addSubview(&button);
-                x += 80.0;
+                return Some(Self::Actor(text));
             }
-            let field = label(mtm, &text, NSFont::systemFontOfSize(12.0), style);
-            field.setToolTip(Some(&NSString::from_str(&text)));
-            field.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(600.0 - x, 16.0)));
-            field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-            view.addSubview(&field);
-            view
+            ItemId::Status(None) => (root_status_row(list)?, true),
+            ItemId::Status(Some(parent)) if column == "address" => (child_status_row(list, parent)?, false),
+            ItemId::Status(Some(_)) => return None,
+        };
+        let (text, style, button) = match status {
+            StatusRow::Loading => ("Loading…".into(), Style::Secondary, None),
+            StatusRow::Failed(error) => {
+                let text = if is_root {
+                    format!("The next page failed: {error}")
+                } else {
+                    format!("Child page failed ({error}).")
+                };
+                (text, Style::Error, Some(Button::Retry))
+            }
+            StatusRow::NoActors if list.prefix.is_empty() => ("No actors.".into(), Style::Secondary, None),
+            StatusRow::NoActors => (format!("No actors under “{}”.", list.prefix), Style::Secondary, None),
+            StatusRow::NoChildren => ("No children.".into(), Style::Secondary, None),
+            StatusRow::NotFound => ("Not found.".into(), Style::Error, None),
+            StatusRow::More { loading } => (String::new(), Style::Secondary, Some(Button::More { loading })),
+        };
+        Some(Self::Status { text, style, button })
+    }
+
+    pub(super) fn view(
+        self,
+        mtm: MainThreadMarker,
+        column: Option<&str>,
+        target: &AnyObject,
+        retry: Sel,
+        more: Sel,
+    ) -> Retained<NSView> {
+        match self {
+            Self::Actor(text) => {
+                let field = label(mtm, &text, NSFont::systemFontOfSize(13.0), Style::Plain);
+                if column == Some("address") {
+                    field.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+                    field.setToolTip(Some(&NSString::from_str(&text)));
+                }
+                if column == Some("version") {
+                    field.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(13.0, 0.0)));
+                }
+                Retained::into_super(Retained::into_super(field))
+            }
+            Self::Status { text, style, button } => {
+                let view =
+                    NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(600.0, 22.0)));
+                let mut x = 0.0;
+                if let Some(button) = button {
+                    let (title, action, enabled) = match button {
+                        Button::Retry => (ns_string!("Retry"), retry, true),
+                        Button::More { loading } => (ns_string!("more…"), more, !loading),
+                    };
+                    // SAFETY: The target implements both actions with the button as sender, and outlives the outline.
+                    let button =
+                        unsafe { NSButton::buttonWithTitle_target_action(title, Some(target), Some(action), mtm) };
+                    button.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(72.0, 22.0)));
+                    button.setEnabled(enabled);
+                    view.addSubview(&button);
+                    x += 76.0;
+                }
+                if !text.is_empty() {
+                    let field = label(mtm, &text, NSFont::systemFontOfSize(12.0), style);
+                    field.setToolTip(Some(&NSString::from_str(&text)));
+                    field.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(600.0 - x, 16.0)));
+                    field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+                    view.addSubview(&field);
+                }
+                view
+            }
         }
     }
 }
