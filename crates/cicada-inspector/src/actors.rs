@@ -19,13 +19,11 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, TIMED_OUT, within};
+pub use crate::pager::Paging;
+use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager};
 
-/// The rows of one page of the list.
-pub const PAGE: usize = 100;
 /// The running turns read once per reload of the list to mark rows running.
 pub const SAMPLE: usize = 200;
-/// The view asks for the next page when the last visible row is this close to the end.
-pub const NEAR_END: usize = 20;
 /// The mailbox rows the pane reads.
 pub const MAILBOX_ROWS: usize = 50;
 /// The watches of each kind the pane reads.
@@ -89,18 +87,6 @@ impl ActorPath {
     pub fn parent(&self) -> Option<Self> {
         (!self.is_root()).then(|| Self(self.0[..self.0.len() - 1].to_vec()))
     }
-}
-
-/// The state of the list's paging.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Paging {
-    /// No page is asked for.
-    #[default]
-    Idle,
-    /// A page is asked for, or the first root page waits for the search field to settle.
-    Loading,
-    /// The last page failed and can be asked again with Retry.
-    Failed(String),
 }
 
 /// The loaded children and paging state of one occurrence of a parent.
@@ -340,18 +326,6 @@ impl PaneView {
     }
 }
 
-/// Where the next page starts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum Cursor {
-    /// The first page is not read yet.
-    #[default]
-    Start,
-    /// The server's cursor of the next page, passed back unchanged.
-    Next(String),
-    /// The last page is read.
-    End,
-}
-
 #[derive(Default)]
 struct ChildRead {
     cursor: Cursor,
@@ -376,14 +350,10 @@ struct State {
     client: Option<ActorClient>,
     /// True once the list was read for this client; [`Actors::show`] reads it only the first time.
     loaded: bool,
-    list_generation: u64,
+    /// The root list's paging; its generation is the list's.
+    pager: Pager,
     prefix: String,
-    cursor: Cursor,
-    /// The page asked for: the generation and cursor it was asked under.
-    page: Option<(u64, Option<String>)>,
-    page_task: Option<JoinHandle<()>>,
     sample_task: Option<JoinHandle<()>>,
-    debounce_task: Option<JoinHandle<()>>,
     /// A parent's cursor and request marker. The whole map is dropped with the list's generation.
     child_reads: BTreeMap<ActorPath, ChildRead>,
     /// The prefix last read, which owns the open paths kept across reloads.
@@ -405,11 +375,14 @@ impl State {
         }
     }
 
-    /// Drops every read of the list: a new generation, no page asked for, no pending search.
+    fn list_generation(&self) -> u64 {
+        self.pager.generation()
+    }
+
+    /// Drops every read of the list: a new generation from the first page, no page asked for, no pending search.
     fn supersede_list(&mut self) {
-        self.list_generation += 1;
-        self.page = None;
-        for task in [self.page_task.take(), self.sample_task.take(), self.debounce_task.take()] {
+        let [page, debounce] = self.pager.restart();
+        for task in [page, self.sample_task.take(), debounce] {
             self.abort(task);
         }
         for (_, read) in std::mem::take(&mut self.child_reads) {
@@ -430,13 +403,9 @@ impl Actors {
         let state = State {
             client: None,
             loaded: false,
-            list_generation: 0,
+            pager: Pager::default(),
             prefix: String::new(),
-            cursor: Cursor::Start,
-            page: None,
-            page_task: None,
             sample_task: None,
-            debounce_task: None,
             child_reads: BTreeMap::new(),
             fold_prefix: String::new(),
             pane_generation: 0,
@@ -473,9 +442,8 @@ impl Actors {
         state.supersede_pane();
         state.client = client;
         state.loaded = false;
-        state.cursor = Cursor::Start;
         state.selected = None;
-        let (generation, prefix) = (state.list_generation, state.prefix.clone());
+        let (generation, prefix) = (state.list_generation(), state.prefix.clone());
         self.shared.list.send_replace(ListView { prefix, generation, ..ListView::default() });
         self.shared.pane.send_replace(PaneView { generation: state.pane_generation, ..PaneView::default() });
     }
@@ -533,7 +501,7 @@ impl Actors {
     /// Opens a loaded row and asks for its children the first time it opens in `generation`.
     pub fn open(&self, generation: u64, path: &ActorPath) {
         let mut state = self.shared.lock();
-        if state.list_generation != generation {
+        if state.list_generation() != generation {
             return;
         }
         let mut first = false;
@@ -552,7 +520,7 @@ impl Actors {
     /// Closes a row without discarding its children or the fold state within them.
     pub fn close(&self, generation: u64, path: &ActorPath) {
         let state = self.shared.lock();
-        if state.list_generation == generation {
+        if state.list_generation() == generation {
             self.shared.list.send_if_modified(|list| list.open.remove(path));
         }
     }
@@ -570,7 +538,7 @@ impl Actors {
     fn page_children(&self, generation: u64, parent: &ActorPath, can_page: impl FnOnce(&Children) -> bool) -> bool {
         let mut state = self.shared.lock();
         let list = self.shared.list.borrow();
-        let ready = state.list_generation == generation
+        let ready = state.list_generation() == generation
             && list.open.contains(parent)
             && list.children.get(parent).is_some_and(can_page);
         drop(list);
@@ -612,17 +580,28 @@ impl Drop for Actors {
     }
 }
 
-impl Shared {
+impl Paged for Shared {
+    type State = State;
+
+    fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("inspector actors")
     }
 
+    fn pager(state: &mut State) -> &mut Pager {
+        &mut state.pager
+    }
+}
+
+impl Shared {
     /// Replaces the rows under a new generation and reads the first page and the sample: now, or after the debounce.
     fn reload(self: &Arc<Self>, state: &mut State, debounce: bool) {
         state.supersede_list();
         state.loaded = true;
-        state.cursor = Cursor::Start;
-        let (generation, prefix) = (state.list_generation, state.prefix.clone());
+        let (generation, prefix) = (state.list_generation(), state.prefix.clone());
         self.list.send_modify(|list| {
             *list = ListView {
                 prefix,
@@ -634,17 +613,10 @@ impl Shared {
             };
         });
         if debounce {
-            let shared = self.clone();
-            let wait = self.limits.debounce;
-            state.debounce_task = Some(self.handle.spawn(async move {
-                tokio::time::sleep(wait).await;
-                let mut state = shared.lock();
-                if state.list_generation == generation {
-                    state.debounce_task = None;
-                    shared.request_page(&mut state);
-                    shared.request_sample(&mut state);
-                }
-            }));
+            Pager::debounce(self, state, self.limits, |shared, state| {
+                shared.request_page(state);
+                shared.request_sample(state);
+            });
         } else {
             self.request_page(state);
             self.request_sample(state);
@@ -654,61 +626,50 @@ impl Shared {
     /// Asks for the page at the cursor under the current generation: at most one at a time, never one already out.
     fn request_page(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let cursor = match &state.cursor {
-            Cursor::Start => None,
-            Cursor::Next(cursor) => Some(cursor.clone()),
-            Cursor::End => return,
-        };
-        if state.page.is_some() {
+        if !state.pager.can_ask() {
             return;
         }
         if state.fold_prefix != state.prefix {
             state.fold_prefix.clone_from(&state.prefix);
             self.list.send_modify(|list| list.open.clear());
         }
-        let generation = state.list_generation;
-        state.page = Some((generation, cursor.clone()));
-        self.list.send_modify(|list| list.paging = Paging::Loading);
-        let (shared, prefix) = (self.clone(), state.prefix.clone());
-        state.page_task = Some(self.handle.spawn(async move {
-            let deadline = Instant::now() + shared.limits.deadline;
-            let read = client.list_actors_with_state(&prefix, cursor.as_deref(), Some(PAGE));
-            let page = within(deadline, read).await;
-            let mut state = shared.lock();
-            if state.list_generation != generation || state.page != Some((generation, cursor)) {
-                return;
-            }
-            state.page = None;
-            state.page_task = None;
-            match page {
-                Part::Ready(page) => {
-                    state.cursor = page.next.map_or(Cursor::End, Cursor::Next);
-                    let more = state.cursor != Cursor::End;
-                    let mut reopen = Vec::new();
-                    shared.list.send_modify(|list| {
-                        let first_new = list.rows.len();
-                        list.rows.extend(page.items.into_iter().map(ActorRow::from));
-                        list.paging = Paging::Idle;
-                        list.more = more;
-                        retain_open(&mut list.open, &[], list.rows.last().map(|row| &row.address), more, |address| {
-                            list.rows.binary_search_by(|row| row.address.cmp(address)).is_ok()
-                        });
-                        reopen.extend(list.rows[first_new..].iter().filter_map(|row| {
-                            let path = ActorPath::root(row.address.clone());
-                            list.open.contains(&path).then_some(path)
-                        }));
-                    });
-                    for parent in reopen {
-                        shared.request_children(&mut state, parent);
-                    }
-                }
-                Part::Failed(error) => shared.list.send_modify(|list| list.paging = Paging::Failed(error)),
-            }
-        }));
+        let prefix = state.prefix.clone();
+        let read = move |cursor: Option<String>| async move {
+            client.list_actors_with_state(&prefix, cursor.as_deref(), Some(PAGE)).await
+        };
+        if Pager::request(self, state, self.limits, read, Self::land_page) {
+            self.list.send_modify(|list| list.paging = Paging::Loading);
+        }
+    }
+
+    /// Appends a root page that answered, reopening its rows that were open; or shows why it failed.
+    fn land_page(self: &Arc<Self>, state: &mut State, landed: Landed<ActorView>) {
+        let (items, more) = match landed.page {
+            Part::Ready(page) => page,
+            Part::Failed(error) => return self.list.send_modify(|list| list.paging = Paging::Failed(error)),
+        };
+        let mut reopen = Vec::new();
+        self.list.send_modify(|list| {
+            let first_new = list.rows.len();
+            list.rows.extend(items.into_iter().map(ActorRow::from));
+            list.paging = Paging::Idle;
+            list.more = more;
+            retain_open(&mut list.open, &[], list.rows.last().map(|row| &row.address), more, |address| {
+                list.rows.binary_search_by(|row| row.address.cmp(address)).is_ok()
+            });
+            reopen.extend(list.rows[first_new..].iter().filter_map(|row| {
+                let path = ActorPath::root(row.address.clone());
+                list.open.contains(&path).then_some(path)
+            }));
+        });
+        for parent in reopen {
+            self.request_children(state, parent);
+        }
     }
 
     fn request_children(self: &Arc<Self>, state: &mut State, parent: ActorPath) {
         let Some(client) = state.client.clone() else { return };
+        let generation = state.list_generation();
         let read = state.child_reads.entry(parent.clone()).or_default();
         if read.task.is_some() || read.cursor == Cursor::End {
             return;
@@ -716,7 +677,6 @@ impl Shared {
         self.list.send_modify(|list| {
             list.children.entry(parent.clone()).or_default().paging = Paging::Loading;
         });
-        let generation = state.list_generation;
         let (shared, path, asked) = (self.clone(), parent, read.cursor.clone());
         read.task = Some(self.handle.spawn(async move {
             let cursor = match &asked {
@@ -735,7 +695,7 @@ impl Shared {
                 Err(_) => Part::Failed(TIMED_OUT.into()),
             };
             let mut state = shared.lock();
-            if state.list_generation != generation {
+            if state.list_generation() != generation {
                 return;
             }
             let Some(read) = state.child_reads.get_mut(&path) else { return };
@@ -792,7 +752,7 @@ impl Shared {
     /// Reads the first [`SAMPLE`] running turns under the prefix, once per reload.
     fn request_sample(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let (shared, prefix, generation) = (self.clone(), state.prefix.clone(), state.list_generation);
+        let (shared, prefix, generation) = (self.clone(), state.prefix.clone(), state.list_generation());
         state.sample_task = Some(self.handle.spawn(async move {
             let deadline = Instant::now() + shared.limits.deadline;
             let sample = within(deadline, client.turns(None, &prefix, None, Some(SAMPLE))).await;
@@ -804,7 +764,7 @@ impl Shared {
                 Part::Failed(error) => Running::Unknown(error),
             };
             let mut state = shared.lock();
-            if state.list_generation == generation {
+            if state.list_generation() == generation {
                 state.sample_task = None;
                 shared.list.send_modify(|list| list.running = running);
             }

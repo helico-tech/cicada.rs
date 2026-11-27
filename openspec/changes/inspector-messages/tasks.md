@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-children` (it 
 onto it when it landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design reviews are
 `.reviews/inspector-messages.design.*` (round 1 under the old name `inspector-tables`). No ADR.
 
-- [ ] 1. **The root pager.** `pager.rs`: the Actors list's root paging factored out, with its generation, debounce,
+- [x] 1. **The root pager.** `pager.rs`: the Actors list's root paging factored out, with its generation, debounce,
   Retry and cancellation; Actors (with its children) on top of it (decision 1). Verify: every Actors test passes
   unchanged.
 - [ ] 2. **The Messages model.** `messages.rs`: `list_pending` under the prefix through the pager, the first row per id
