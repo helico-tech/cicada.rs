@@ -79,6 +79,7 @@ pub(crate) struct Pager {
     cursor: Cursor,
     /// The cursor of the page out under the current generation.
     asked: Option<Option<String>>,
+    page_ticket: u64,
     task: Option<JoinHandle<()>>,
     debounce: Option<JoinHandle<()>>,
     /// Soft refreshes own a separate generation.
@@ -132,6 +133,13 @@ impl Pager {
         self.cursor != Cursor::End && self.asked.is_none()
     }
 
+    /// Fences the page in flight, leaving its cursor available for a fresh request.
+    pub fn interrupt_page(&mut self) -> Option<JoinHandle<()>> {
+        self.page_ticket += 1;
+        self.asked = None;
+        self.task.take()
+    }
+
     /// Reads the page at the cursor within `limits.deadline`, unless [`Self::can_ask`] is false; `land` gets it with
     /// the state locked, only while its generation and cursor are still the pager's, after the cursor moved on. A
     /// failed page keeps the cursor, so asking again is Retry. Returns true when the read started.
@@ -156,6 +164,7 @@ impl Pager {
             Cursor::Start | Cursor::End => None,
         };
         let (generation, first) = (pager.generation, pager.cursor == Cursor::Start);
+        let ticket = pager.page_ticket;
         pager.asked = Some(cursor.clone());
         let call = read(cursor.clone());
         let owner_task = owner.clone();
@@ -164,7 +173,7 @@ impl Pager {
             let owner = owner_task;
             let mut state = owner.lock();
             let pager = O::pager(&mut state);
-            if pager.generation != generation || pager.asked.as_ref() != Some(&cursor) {
+            if pager.generation != generation || pager.page_ticket != ticket || pager.asked.as_ref() != Some(&cursor) {
                 return;
             }
             pager.asked = None;

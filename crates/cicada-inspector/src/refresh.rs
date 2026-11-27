@@ -158,11 +158,16 @@ impl Refresh {
     /// Cancels this refresh and the request waiting for it.
     pub fn cancel(&mut self) {
         self.generation += 1;
-        self.pending = false;
-        self.waiters.clear();
+        self.cancel_pending();
         if let Some(task) = self.task.take() {
             task.abort();
         }
+    }
+
+    /// Drops the remembered request while letting the current refresh finish.
+    pub fn cancel_pending(&mut self) {
+        self.pending = false;
+        self.waiters.clear();
     }
 }
 
@@ -187,6 +192,9 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
 
     /// Lets ordinary paging continue after giving the refresh its slot back.
     fn after(self: &Arc<Self>, _state: &mut Self::State) {}
+
+    /// Lets a page reconcile a request that cannot start immediately.
+    fn blocked(self: &Arc<Self>, _state: &mut Self::State, _waiting: bool) {}
 
     /// Requests a refresh, remembering it once if a read is already in progress.
     fn request(self: &Arc<Self>) -> Done {
@@ -217,8 +225,9 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
             Readiness::Skip => {
                 refresh.pending = false;
                 refresh.waiters.clear();
+                self.blocked(state, false);
             }
-            Readiness::Wait => {}
+            Readiness::Wait => self.blocked(state, true),
             Readiness::Ready => {
                 refresh.pending = false;
                 refresh.generation += 1;

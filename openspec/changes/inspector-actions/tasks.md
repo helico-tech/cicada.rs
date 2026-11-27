@@ -14,7 +14,7 @@ reviews are `.reviews/inspector-actions.design.*`.
   read"); Cancel Turn's sheet and its true and false answers; 404s mapped to local text; any other error as an alert
   with the problem's title and detail or "HTTP <status>", control characters and credentials removed, each part cut at
   500 characters; the success notices (decisions 3–5). Verify: the text, mapping and alert tests.
-- [ ] 3. **The fresh read after a write.** A soft refresh queued behind one running and never merged, also with Live
+- [x] 3. **The fresh read after a write.** A soft refresh queued behind one running and never merged, also with Live
   paused; the paging fallback reading the pane only after the answer; Delete pruning every cached occurrence of the
   actor and its known descendants at once and fencing root and children pages read before the answer; a Delete that
   answers after another actor was selected leaving that pane and showing no notice (decision 6). Verify: the refresh,

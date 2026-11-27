@@ -49,6 +49,7 @@ pub struct ActorRow {
     pub created_at: Timestamp,
     /// True while its mailbox is paused.
     pub paused: bool,
+    parent: Option<ActorAddress>,
 }
 
 impl From<ActorView> for ActorRow {
@@ -59,6 +60,7 @@ impl From<ActorView> for ActorRow {
             version: view.version,
             created_at: view.created_at,
             paused: view.paused,
+            parent: view.parent,
         }
     }
 }
@@ -489,7 +491,15 @@ enum ChildPage {
 #[derive(Clone, Copy)]
 struct PaneRead {
     generation: u64,
+    revision: u64,
     refresh: Option<u64>,
+    keep: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PostWrite {
+    /// The pane to read, if it still shows the same selection.
+    pane: Option<u64>,
 }
 
 /// The Actors page's reads, publishing a [`ListView`] and a [`PaneView`]. Owned by the session, which hands it the
@@ -517,6 +527,9 @@ struct State {
     child_ticket: u64,
     pending_viewport: OutlineViewport,
     refresh_viewport: OutlineViewport,
+    pending_write: Option<PostWrite>,
+    refresh_write: Option<PostWrite>,
+    outline_revision: u64,
     /// The viewport the view last reported, for live refreshes.
     reported_viewport: OutlineViewport,
     /// True while the running soft refresh has not landed the root rows.
@@ -533,6 +546,7 @@ struct State {
     /// The prefix last read, which owns the open paths kept across reloads.
     fold_prefix: String,
     pane_generation: u64,
+    pane_revision: u64,
     selected: Option<ActorPath>,
     pane_task: Option<JoinHandle<()>>,
     actions: actions::State,
@@ -561,6 +575,8 @@ impl State {
         self.root_covered = None;
         self.pending_viewport = OutlineViewport::default();
         self.refresh_viewport = OutlineViewport::default();
+        self.pending_write = None;
+        self.refresh_write = None;
         self.refresh_roots = false;
         self.refresh_parents.clear();
         self.deferred_children.clear();
@@ -574,8 +590,27 @@ impl State {
 
     fn supersede_pane(&mut self) {
         self.pane_generation += 1;
+        self.invalidate_pane_read();
+    }
+
+    fn invalidate_pane_read(&mut self) {
+        self.pane_revision += 1;
         let task = self.pane_task.take();
         self.abort(task);
+    }
+
+    fn pane_read(&self, refresh: Option<u64>, keep: bool) -> PaneRead {
+        PaneRead { generation: self.pane_generation, revision: self.pane_revision, refresh, keep }
+    }
+
+    fn current_pane(&self, read: PaneRead) -> bool {
+        self.pane_generation == read.generation
+            && self.pane_revision == read.revision
+            && read.refresh.is_none_or(|ticket| self.pager.refresh.current(ticket))
+    }
+
+    fn current_outline(&self, (ticket, revision): (u64, u64)) -> bool {
+        self.outline_revision == revision && self.pager.refresh.current(ticket)
     }
 }
 
@@ -590,6 +625,9 @@ impl Actors {
             child_ticket: 0,
             pending_viewport: OutlineViewport::default(),
             refresh_viewport: OutlineViewport::default(),
+            pending_write: None,
+            refresh_write: None,
+            outline_revision: 0,
             reported_viewport: OutlineViewport::default(),
             refresh_roots: false,
             refresh_parents: BTreeSet::new(),
@@ -601,6 +639,7 @@ impl Actors {
             child_reads: BTreeMap::new(),
             fold_prefix: String::new(),
             pane_generation: 0,
+            pane_revision: 0,
             selected: None,
             pane_task: None,
             actions: actions::State::default(),
@@ -719,14 +758,21 @@ impl Actors {
         self.shared.lock().selected.as_ref().map(|path| path.address().clone())
     }
 
-    /// Cancels the soft refresh when leaving the page.
+    /// Cancels automatic refresh, preserving work requested by an acknowledged action.
     pub fn cancel_soft_refresh(&self) {
         let mut state = self.shared.lock();
+        if state.refresh_write.is_some() {
+            if state.pending_write.is_none() {
+                state.pager.refresh.cancel_pending();
+            }
+            return;
+        }
         let page = self.shared.cancel_refresh(&mut state);
         if page {
             self.shared.request_page(&mut state);
         }
         self.shared.flush_children(&mut state);
+        self.shared.resume_write(&mut state);
     }
 
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
@@ -807,13 +853,14 @@ impl Actors {
                 if retry { matches!(page.paging, Paging::Failed(_)) } else { page.more && page.paging == Paging::Idle }
             });
         drop(list);
-        if ready && retry {
+        if ready && retry && state.refresh_write.is_none() {
             let page = self.shared.cancel_refresh(&mut state);
             self.shared.request_children(&mut state, parent.clone());
             if page {
                 self.shared.request_page(&mut state);
             }
             self.shared.flush_children(&mut state);
+            self.shared.resume_write(&mut state);
         } else if ready {
             self.shared.request_children(&mut state, parent.clone());
         }
@@ -938,10 +985,22 @@ impl RefreshPage for Shared {
 
     fn starting(&self, state: &mut State) {
         state.refresh_viewport = std::mem::take(&mut state.pending_viewport);
+        state.refresh_write = state.pending_write.take();
+    }
+
+    fn blocked(self: &Arc<Self>, state: &mut State, waiting: bool) {
+        if let Some(write) = &mut state.pending_write
+            && write.pane.take() == Some(state.pane_generation)
+        {
+            self.start_pane_read(state, true);
+        }
+        if !waiting {
+            state.pending_write = None;
+        }
     }
 
     async fn run(self: &Arc<Self>, ticket: u64, budget: Budget) {
-        let (client, prefix, last, parents, sample, pane) = {
+        let (client, prefix, last, parents, sample, pane, outline_revision) = {
             let mut state = self.lock();
             if !state.pager.refresh.current(ticket) {
                 return;
@@ -963,16 +1022,23 @@ impl RefreshPage for Shared {
             state.sample_ticket += 1;
             state.refresh_roots = true;
             state.refresh_parents = parents.iter().cloned().collect();
-            let pane = state.selected.as_ref().filter(|_| state.pane_task.is_none()).map(|path| {
-                (path.address().clone(), PaneRead { generation: state.pane_generation, refresh: Some(ticket) })
-            });
-            (client, state.prefix.clone(), last, parents, state.sample_ticket, pane)
+            let wants_pane = match state.refresh_write {
+                Some(write) => write.pane == Some(state.pane_generation),
+                None => state.pane_task.is_none(),
+            };
+            let pane = state
+                .selected
+                .as_ref()
+                .filter(|_| wants_pane)
+                .map(|path| (path.address().clone(), state.pane_read(Some(ticket), true)));
+            (client, state.prefix.clone(), last, parents, state.sample_ticket, pane, state.outline_revision)
         };
-        let outline = self.refresh_outline(ticket, &budget, &client, &prefix, last.as_ref(), &parents);
+        let outline =
+            self.refresh_outline((ticket, outline_revision), &budget, &client, &prefix, last.as_ref(), &parents);
         let sample = async {
             let result = budget.read(client.turns(None, &prefix, None, Some(SAMPLE))).await;
             let mut state = self.lock();
-            if state.pager.refresh.current(ticket) {
+            if state.pager.refresh.current(ticket) && state.outline_revision == outline_revision {
                 self.land_sample(&mut state, sample, result, true);
             }
         };
@@ -990,6 +1056,7 @@ impl RefreshPage for Shared {
     }
 
     fn after(self: &Arc<Self>, state: &mut State) {
+        state.refresh_write = None;
         if state.pager.take_deferred_page() {
             self.request_page(state);
         }
@@ -998,6 +1065,13 @@ impl RefreshPage for Shared {
 }
 
 impl Shared {
+    fn resume_write(self: &Arc<Self>, state: &mut State) {
+        if state.pending_write.is_some() {
+            state.pending_viewport = state.reported_viewport.clone();
+            drop(self.request_locked(state));
+        }
+    }
+
     /// Drops the refresh while preserving the user's queued paging requests for its caller. A running refresh marks
     /// the root rows and the chosen parents whose reads it drops "not refreshed".
     fn cancel_refresh(&self, state: &mut State) -> bool {
@@ -1028,7 +1102,7 @@ impl Shared {
 
     async fn refresh_outline(
         self: &Arc<Self>,
-        ticket: u64,
+        fence: (u64, u64),
         budget: &Budget,
         client: &ActorClient,
         prefix: &str,
@@ -1044,7 +1118,7 @@ impl Shared {
         .await;
         {
             let mut state = self.lock();
-            if !state.pager.refresh.current(ticket) {
+            if !state.current_outline(fence) {
                 return;
             }
             state.refresh_roots = false;
@@ -1063,7 +1137,7 @@ impl Shared {
             });
             self.list.send_modify(|list| list.stale = stale);
         }
-        self.refresh_children(ticket, budget, client, parents).await;
+        self.refresh_children(fence, budget, client, parents).await;
     }
 
     fn flush_children(self: &Arc<Self>, state: &mut State) {
@@ -1083,7 +1157,7 @@ impl Shared {
 
     async fn refresh_children(
         self: &Arc<Self>,
-        ticket: u64,
+        fence: (u64, u64),
         budget: &Budget,
         client: &ActorClient,
         parents: &[ActorPath],
@@ -1093,7 +1167,7 @@ impl Shared {
             join_all(depth.iter().map(|path| async move {
                 {
                     let mut state = self.lock();
-                    if !state.pager.refresh.current(ticket) {
+                    if !state.current_outline(fence) {
                         return;
                     }
                     let can_refresh = self.list.borrow().can_refresh_children(path);
@@ -1107,7 +1181,7 @@ impl Shared {
                 }
                 let page = budget.read(client.children(path.address(), None, Some(PAGE))).await;
                 let mut state = self.lock();
-                if state.pager.refresh.current(ticket) {
+                if state.current_outline(fence) {
                     state.refresh_parents.remove(path);
                     self.land_children(&mut state, path, page, ChildPage::Refresh);
                 }
@@ -1118,6 +1192,7 @@ impl Shared {
 
     /// Replaces the rows under a new generation and reads the first page and the sample: now, or after the debounce.
     fn reload(self: &Arc<Self>, state: &mut State, debounce: bool) {
+        let write_pane = state.pending_write.or(state.refresh_write).and_then(|write| write.pane);
         state.supersede_list();
         state.loaded = true;
         let (generation, prefix) = (state.list_generation(), state.prefix.clone());
@@ -1139,6 +1214,9 @@ impl Shared {
         } else {
             self.request_page(state);
             self.request_sample(state);
+        }
+        if write_pane == Some(state.pane_generation) {
+            self.start_pane_read(state, true);
         }
     }
 
@@ -1389,20 +1467,26 @@ impl Shared {
             },
             _ => PaneView { generation, address: address.clone(), ..PaneView::default() },
         });
-        let (Some(address), Some(client)) = (address, state.client.clone()) else { return };
+        self.start_pane_read(state, false);
+    }
+
+    fn start_pane_read(self: &Arc<Self>, state: &mut State, keep: bool) {
+        let (Some(path), Some(client)) = (&state.selected, state.client.clone()) else { return };
+        let address = path.address().clone();
+        let read = state.pane_read(None, keep);
         let shared = self.clone();
         state.pane_task = Some(self.handle.spawn(async move {
             let budget = Budget::with_slots(shared.limits.deadline, 5);
-            shared.read_pane(&client, address, PaneRead { generation, refresh: None }, &budget).await;
+            shared.read_pane(&client, address, read, &budget).await;
             let mut state = shared.lock();
-            if state.pane_generation == generation {
+            if state.current_pane(read) {
                 state.pane_task = None;
             }
         }));
     }
 
     async fn read_pane(&self, client: &ActorClient, address: ActorAddress, read: PaneRead, budget: &Budget) {
-        let keep = read.refresh.is_some();
+        let keep = read.keep;
         // One actor-missing answer empties the entire pane, even if other replies arrive afterward.
         let missing = AtomicBool::new(false);
         let actor = async {
@@ -1475,10 +1559,7 @@ impl Shared {
 
     fn apply_pane(&self, read: PaneRead, missing: &AtomicBool, change: impl FnOnce(&mut PaneView)) {
         let state = self.lock();
-        if state.pane_generation == read.generation
-            && read.refresh.is_none_or(|ticket| state.pager.refresh.current(ticket))
-            && !missing.load(Ordering::Relaxed)
-        {
+        if state.current_pane(read) && !missing.load(Ordering::Relaxed) {
             self.pane.send_modify(change);
         }
     }
@@ -1598,6 +1679,7 @@ mod refresh_tests {
                     version: 0,
                     created_at: chrono::Utc::now(),
                     paused: false,
+                    parent: None,
                 })
                 .collect(),
             open: paths.iter().cloned().collect(),

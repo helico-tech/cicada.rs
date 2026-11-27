@@ -1,6 +1,7 @@
 //! The actor pane's writes, bound to the pane that offered them.
 
 mod alerts;
+mod reconcile;
 
 use std::sync::Arc;
 
@@ -253,11 +254,16 @@ impl Shared {
             let answer = timeout(shared.limits.deadline, action.call(&client, &address)).await;
             let mut state = shared.lock();
             let Some(pending) = state.actions.pending.as_ref().filter(|pending| pending.id == id) else { return };
-            let feedback = pending.target.matches(&state).then(|| match answer {
+            let selected = pending.target.matches(&state);
+            let wrote = matches!(answer, Ok(Ok(Some(_))));
+            let feedback = selected.then(|| match answer {
                 Ok(Ok(count)) => Feedback::Notice(action.notice(count)),
                 Ok(Err(error)) => Feedback::Alert(state.actions.redactions.alert(error)),
                 Err(_) => Feedback::Alert(Alert { title: TIMED_OUT.into(), detail: None }),
             });
+            if wrote {
+                shared.write_acknowledged(&mut state, action, address, selected);
+            }
             shared.finish_action(&mut state, feedback);
         }));
     }

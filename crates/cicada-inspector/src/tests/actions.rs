@@ -1,5 +1,7 @@
 //! The actor actions through the in-process HTTP server, on virtual time.
 
+mod reconcile;
+
 use std::sync::Arc;
 use std::time::Duration;
 
