@@ -1,3 +1,41 @@
+## MODIFIED Requirements
+
+### Requirement: Quit waits for the worker
+
+Quitting SHALL disconnect the worker and end the app only once the tray holds no connection (`Offline` or `Failed`),
+without blocking the main thread, whether it comes from the Quit item, Ctrl-C or a system terminate. On macOS before
+14.0 `run` SHALL refuse with an error; before 14.4 the running turns SHALL show their details in the title.
+
+#### Scenario: Quit while a turn runs
+
+- **WHEN** a turn is running and the user picks Quit
+- **THEN** the tray goes `Stopping`, the menu stays responsive, and the app ends once the tray is `Offline`
+
+#### Scenario: A system terminate
+
+- **WHEN** the system asks the app to terminate while the worker is online
+- **THEN** the app answers that it terminates later, and confirms once the tray is `Offline`
+
+#### Scenario: A stop that fails
+
+- **WHEN** the user quits and the worker's stop ends with an error, so the tray is `Failed`
+- **THEN** the app ends as for `Offline`
+
+#### Scenario: An old macOS
+
+- **WHEN** `run` starts on macOS 13
+- **THEN** it returns exit code 1 with an error that the menu needs macOS 14
+
+#### Scenario: A running turn before macOS 14.4
+
+- **WHEN** a turn runs and the app runs on macOS 14.2
+- **THEN** the turn's item shows the actor, message type and attempt in its title, with no subtitle
+
+#### Scenario: A context pick after a failure
+
+- **WHEN** the tray is `Failed` and the user picks a context
+- **THEN** the context becomes the selected one, the tray does not connect, and Connect or the switch connects to it
+
 ## ADDED Requirements
 
 ### Requirement: The menu follows the mockup's boards
