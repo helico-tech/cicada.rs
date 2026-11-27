@@ -296,12 +296,14 @@ pub type Context = ContextEntry;
 impl Config {
     /// Reads the file at `path`; a missing file is an empty config. A parse error names the line but not the text, as
     /// the diagnostic of the parser can quote a token or server from the file. A path, or a link target on the way,
-    /// that ends in `/` or `/.` is refused, also when nothing is there, as the system refuses it for a file.
+    /// that ends in `/` or `/.` is refused, also when nothing is there, as the system refuses it for a file; the file
+    /// read is the link target that was checked.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        refuse_folder_form(path)
+        // Read the target that was checked, so a link retargeted after the check cannot change what is read.
+        let target = refuse_folder_form(path)
             .and_then(|()| link_target(path))
             .with_context(|| format!("cannot read {}", path.display()))?;
-        match std::fs::read_to_string(path) {
+        match std::fs::read_to_string(&target) {
             Ok(text) => toml::from_str(&text).map_err(|error| {
                 let before = |at: usize| text.get(..at).map_or(0, |text| text.matches('\n').count());
                 let line = error.span().map(|span| before(span.start) + 1);
