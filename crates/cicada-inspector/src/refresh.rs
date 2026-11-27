@@ -144,6 +144,9 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
     fn runtime(&self) -> (&Handle, Duration);
     /// Whether the ordinary list read allows this refresh.
     fn readiness(&self, state: &Self::State) -> Readiness;
+    /// Takes the request's inputs under the lock before a later request can replace them.
+    fn starting(&self, _state: &mut Self::State) {}
+
     /// Re-reads the page, checking the ticket under the lock before applying anything.
     fn run(self: &Arc<Self>, ticket: u64, budget: Budget) -> impl Future<Output = ()> + Send;
 
@@ -177,10 +180,11 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
                 refresh.pending = false;
                 refresh.generation += 1;
                 let ticket = refresh.generation;
+                self.starting(state);
                 let (handle, deadline) = self.runtime();
                 let budget = Budget::new(deadline);
                 let page = self.clone();
-                refresh.task = Some(handle.spawn(async move {
+                Self::refresh(state).task = Some(handle.spawn(async move {
                     page.run(ticket, budget).await;
                     let mut state = page.lock_refresh();
                     if Self::refresh(&mut state).current(ticket) {

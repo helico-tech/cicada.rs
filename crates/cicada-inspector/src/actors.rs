@@ -190,6 +190,7 @@ pub struct ListView {
     pub more: bool,
     /// The running turns' sample.
     pub running: Running,
+    sample_error: Option<String>,
     /// Children read at each parent row, including rows since closed.
     pub children: BTreeMap<ActorPath, Children>,
     /// Open rows to restore as they are loaded, including those still awaiting their page.
@@ -275,14 +276,18 @@ impl ListView {
             Running::Unknown(error) => Some(format!("The running status is unknown: {error}")),
             Running::Loading | Running::Sample { partial: false, .. } => None,
         };
-        let stale = self.stale.as_ref().map(|mark| match &mark.error {
-            Some(error) => format!("{} ({error})", mark.text()),
-            None => mark.text(),
-        });
-        match (running, stale) {
-            (Some(running), Some(stale)) => Some(format!("{running} · {stale}")),
-            (running, stale) => running.or(stale),
+        let mut notes: Vec<_> = running.into_iter().collect();
+        if let Some(error) = &self.sample_error {
+            notes.push(format!("The running status was not refreshed ({error})."));
         }
+        if let Some(mark) = &self.stale {
+            let mut text = mark.text();
+            if let Some(error) = &mark.error {
+                text.push_str(&format!(" ({error})"));
+            }
+            notes.push(text);
+        }
+        (!notes.is_empty()).then(|| notes.join(" · "))
     }
 
     /// True when the view should ask for the next page with `last` the last visible root index: it is within
@@ -420,6 +425,20 @@ struct ChildRead {
     task: Option<(u64, JoinHandle<()>)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChildPage {
+    First,
+    More,
+    Refresh,
+}
+
+/// The pane selection and, for a soft re-read, the refresh that owns the request.
+#[derive(Clone, Copy)]
+struct PaneRead {
+    generation: u64,
+    refresh: Option<u64>,
+}
+
 /// The Actors page's reads, publishing a [`ListView`] and a [`PaneView`]. Owned by the session, which hands it the
 /// client of the context in use.
 pub struct Actors {
@@ -442,10 +461,13 @@ struct State {
     pager: Pager,
     root_covered: Option<ActorAddress>,
     child_ticket: u64,
-    viewport: OutlineViewport,
+    pending_viewport: OutlineViewport,
+    refresh_viewport: OutlineViewport,
     deferred_children: BTreeMap<ActorPath, Cursor>,
     prefix: String,
     sample_task: Option<JoinHandle<()>>,
+    sample_ticket: u64,
+    sample_applied: u64,
     /// A parent's cursor and request marker. The whole map is dropped with the list's generation.
     child_reads: BTreeMap<ActorPath, ChildRead>,
     /// The prefix last read, which owns the open paths kept across reloads.
@@ -476,7 +498,8 @@ impl State {
     fn supersede_list(&mut self) {
         let [page, debounce] = self.pager.restart();
         self.root_covered = None;
-        self.viewport = OutlineViewport::default();
+        self.pending_viewport = OutlineViewport::default();
+        self.refresh_viewport = OutlineViewport::default();
         self.deferred_children.clear();
         for task in [page, self.sample_task.take(), debounce] {
             self.abort(task);
@@ -484,6 +507,15 @@ impl State {
         for (_, read) in std::mem::take(&mut self.child_reads) {
             self.abort(read.task.map(|(_, task)| task));
         }
+    }
+
+    /// Drops the refresh while preserving the user's queued paging requests for its caller.
+    fn cancel_refresh(&mut self) -> bool {
+        let page = self.pager.take_deferred_page();
+        self.pager.cancel_refresh();
+        self.pending_viewport = OutlineViewport::default();
+        self.refresh_viewport = OutlineViewport::default();
+        page
     }
 
     fn supersede_pane(&mut self) {
@@ -502,10 +534,13 @@ impl Actors {
             pager: Pager::default(),
             root_covered: None,
             child_ticket: 0,
-            viewport: OutlineViewport::default(),
+            pending_viewport: OutlineViewport::default(),
+            refresh_viewport: OutlineViewport::default(),
             deferred_children: BTreeMap::new(),
             prefix: String::new(),
             sample_task: None,
+            sample_ticket: 0,
+            sample_applied: 0,
             child_reads: BTreeMap::new(),
             fold_prefix: String::new(),
             pane_generation: 0,
@@ -573,16 +608,18 @@ impl Actors {
     /// Re-reads the loaded range of the Actors page without replacing its generation.
     pub fn soft_refresh(&self, viewport: OutlineViewport) {
         let mut state = self.shared.lock();
-        state.viewport = viewport;
+        state.pending_viewport = viewport;
         self.shared.request_locked(&mut state);
     }
 
     /// Cancels the soft refresh when leaving the page.
     pub fn cancel_soft_refresh(&self) {
         let mut state = self.shared.lock();
-        state.pager.cancel_refresh();
-        state.viewport = OutlineViewport::default();
-        self.shared.after(&mut state);
+        let page = state.cancel_refresh();
+        if page {
+            self.shared.request_page(&mut state);
+        }
+        self.shared.flush_children(&mut state);
     }
 
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
@@ -644,24 +681,33 @@ impl Actors {
         }
     }
 
-    /// Asks for the next page of a parent's children. Returns true if the read started.
+    /// Requests the next page of a parent's children. Returns true if the read starts or is queued.
     pub fn more_children(&self, generation: u64, parent: &ActorPath) -> bool {
-        self.page_children(generation, parent, |page| page.more && page.paging == Paging::Idle)
+        self.page_children(generation, parent, false)
     }
 
     /// Asks again for a parent's failed page, from the cursor it kept. Returns true if the read started.
     pub fn retry_children(&self, generation: u64, parent: &ActorPath) -> bool {
-        self.page_children(generation, parent, |page| matches!(page.paging, Paging::Failed(_)))
+        self.page_children(generation, parent, true)
     }
 
-    fn page_children(&self, generation: u64, parent: &ActorPath, can_page: impl FnOnce(&Children) -> bool) -> bool {
+    fn page_children(&self, generation: u64, parent: &ActorPath, retry: bool) -> bool {
         let mut state = self.shared.lock();
         let list = self.shared.list.borrow();
         let ready = state.list_generation() == generation
             && list.open.contains(parent)
-            && list.children.get(parent).is_some_and(can_page);
+            && list.children.get(parent).is_some_and(|page| {
+                if retry { matches!(page.paging, Paging::Failed(_)) } else { page.more && page.paging == Paging::Idle }
+            });
         drop(list);
-        if ready {
+        if ready && retry {
+            let page = state.cancel_refresh();
+            self.shared.request_children(&mut state, parent.clone());
+            if page {
+                self.shared.request_page(&mut state);
+            }
+            self.shared.flush_children(&mut state);
+        } else if ready {
             self.shared.request_children(&mut state, parent.clone());
         }
         ready
@@ -714,6 +760,12 @@ impl Actors {
     /// The selected row's path.
     pub fn selected(&self) -> Option<ActorPath> {
         self.shared.lock().selected.clone()
+    }
+
+    /// The initial sample, for tests that need to await a late answer.
+    #[cfg(test)]
+    pub fn take_sample(&self) -> Option<JoinHandle<()>> {
+        self.shared.lock().sample_task.take()
     }
 
     /// The tasks aborted so far; each ends once it has stopped.
@@ -769,8 +821,12 @@ impl RefreshPage for Shared {
         }
     }
 
+    fn starting(&self, state: &mut State) {
+        state.refresh_viewport = std::mem::take(&mut state.pending_viewport);
+    }
+
     async fn run(self: &Arc<Self>, ticket: u64, budget: Budget) {
-        let (client, prefix, last, parents) = {
+        let (client, prefix, last, parents, sample, pane) = {
             let mut state = self.lock();
             if !state.pager.refresh.current(ticket) {
                 return;
@@ -778,7 +834,7 @@ impl RefreshPage for Shared {
             let Some(client) = state.client.clone() else { return };
             let list = self.list.borrow();
             let last = list.rows.last().map(|row| row.address.clone());
-            let parents = std::mem::take(&mut state.viewport).parents(&list);
+            let parents = std::mem::take(&mut state.refresh_viewport).parents(&list);
             drop(list);
             self.list.send_if_modified(|list| {
                 for page in list.children.values_mut() {
@@ -786,15 +842,50 @@ impl RefreshPage for Shared {
                 }
                 !list.children.is_empty()
             });
-            (client, state.prefix.clone(), last, parents)
+            state.sample_ticket += 1;
+            let pane = state.selected.as_ref().filter(|_| state.pane_task.is_none()).map(|path| {
+                (path.address().clone(), PaneRead { generation: state.pane_generation, refresh: Some(ticket) })
+            });
+            (client, state.prefix.clone(), last, parents, state.sample_ticket, pane)
         };
+        let outline = self.refresh_outline(ticket, &budget, &client, &prefix, last.as_ref(), &parents);
+        let sample = async {
+            let result = budget.read(client.turns(None, &prefix, None, Some(SAMPLE))).await;
+            let mut state = self.lock();
+            if state.pager.refresh.current(ticket) {
+                self.land_sample(&mut state, sample, result, true);
+            }
+        };
+        let pane = async {
+            if let Some((address, read)) = pane {
+                self.read_pane(&client, address, read, &budget).await;
+            }
+        };
+        tokio::join!(outline, sample, pane);
+    }
+
+    fn after(self: &Arc<Self>, state: &mut State) {
+        if state.pager.take_deferred_page() {
+            self.request_page(state);
+        }
+        self.flush_children(state);
+    }
+}
+
+impl Shared {
+    async fn refresh_outline(
+        self: &Arc<Self>,
+        ticket: u64,
+        budget: &Budget,
+        client: &ActorClient,
+        prefix: &str,
+        last: Option<&ActorAddress>,
+        parents: &[ActorPath],
+    ) {
         let range = read_range(
-            &budget,
-            |cursor| {
-                let (client, prefix) = (&client, &prefix);
-                async move { client.list_actors_with_state(prefix, cursor.as_deref(), Some(PAGE)).await }
-            },
-            last.as_ref(),
+            budget,
+            |cursor| async move { client.list_actors_with_state(prefix, cursor.as_deref(), Some(PAGE)).await },
+            last,
             |row| row.address.clone(),
         )
         .await;
@@ -818,13 +909,10 @@ impl RefreshPage for Shared {
             });
             self.list.send_modify(|list| list.stale = stale);
         }
-        self.refresh_children(ticket, &budget, &client, &parents).await;
+        self.refresh_children(ticket, budget, client, parents).await;
     }
 
-    fn after(self: &Arc<Self>, state: &mut State) {
-        if state.pager.take_deferred_page() {
-            self.request_page(state);
-        }
+    fn flush_children(self: &Arc<Self>, state: &mut State) {
         for (path, asked) in std::mem::take(&mut state.deferred_children) {
             let open = {
                 let list = self.list.borrow();
@@ -838,9 +926,7 @@ impl RefreshPage for Shared {
             }
         }
     }
-}
 
-impl Shared {
     async fn refresh_children(
         self: &Arc<Self>,
         ticket: u64,
@@ -860,7 +946,7 @@ impl Shared {
                 let page = budget.read(client.children(path.address(), None, Some(PAGE))).await;
                 let mut state = self.lock();
                 if state.pager.refresh.current(ticket) {
-                    self.land_children(&mut state, path, page, true, true);
+                    self.land_children(&mut state, path, page, ChildPage::Refresh);
                 }
             }))
             .await;
@@ -1013,7 +1099,8 @@ impl Shared {
                 return;
             }
             read.task = None;
-            shared.land_children(&mut state, &path, page, asked == Cursor::Start, false);
+            let kind = if asked == Cursor::Start { ChildPage::First } else { ChildPage::More };
+            shared.land_children(&mut state, &path, page, kind);
             shared.resume(&mut state);
         });
         read.task = Some((ticket, task));
@@ -1024,8 +1111,7 @@ impl Shared {
         state: &mut State,
         parent: &ActorPath,
         page: Part<Option<PageView<ActorAddress>>>,
-        first: bool,
-        refreshing: bool,
+        kind: ChildPage,
     ) {
         let mut reopen = Vec::new();
         let mut clear = false;
@@ -1034,12 +1120,12 @@ impl Shared {
             let read = state.child_reads.entry(parent.clone()).or_default();
             match page {
                 Part::Ready(Some(page)) => {
-                    if first {
+                    if kind != ChildPage::More {
                         read.covered = None;
                     }
                     children.more = page.next.is_some();
                     let kept = merge_page(&mut children.rows, page.items, &mut read.covered, children.more, |row| row);
-                    if first || children.stale == Some(ChildStale::Tail) {
+                    if kind != ChildPage::More || children.stale == Some(ChildStale::Tail) {
                         children.stale = kept.then_some(ChildStale::Tail);
                         children.refresh_error = None;
                     }
@@ -1054,7 +1140,7 @@ impl Shared {
                     children.refresh_error = None;
                     read.cursor = Cursor::End;
                 }
-                Part::Failed(error) if refreshing => {
+                Part::Failed(error) if kind == ChildPage::Refresh => {
                     children.stale = Some(ChildStale::FirstPage);
                     children.refresh_error = Some(error);
                     return;
@@ -1084,22 +1170,35 @@ impl Shared {
     fn request_sample(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
         let (shared, prefix, generation) = (self.clone(), state.prefix.clone(), state.list_generation());
+        state.sample_ticket += 1;
+        let ticket = state.sample_ticket;
         state.sample_task = Some(self.handle.spawn(async move {
             let deadline = Instant::now() + shared.limits.deadline;
             let sample = within(deadline, client.turns(None, &prefix, None, Some(SAMPLE))).await;
-            let running = match sample {
-                Part::Ready(page) => Running::Sample {
-                    partial: page.next.is_some(),
-                    actors: page.items.into_iter().map(|turn| turn.actor).collect(),
-                },
-                Part::Failed(error) => Running::Unknown(error),
-            };
             let mut state = shared.lock();
             if state.list_generation() == generation {
                 state.sample_task = None;
-                shared.list.send_modify(|list| list.running = running);
+                shared.land_sample(&mut state, ticket, sample, false);
             }
         }));
+    }
+
+    fn land_sample(&self, state: &mut State, ticket: u64, sample: Part<PageView<RunningTurnView>>, refreshing: bool) {
+        if ticket < state.sample_applied {
+            return;
+        }
+        state.sample_applied = ticket;
+        self.list.send_modify(|list| match sample {
+            Part::Ready(page) => {
+                list.running = Running::Sample {
+                    partial: page.next.is_some(),
+                    actors: page.items.into_iter().map(|turn| turn.actor).collect(),
+                };
+                list.sample_error = None;
+            }
+            Part::Failed(error) if refreshing => list.sample_error = Some(error),
+            Part::Failed(error) => list.running = Running::Unknown(error),
+        });
     }
 
     /// Selects a row under a new pane generation and starts its actor's reads, each published as it answers.
@@ -1123,19 +1222,27 @@ impl Shared {
         });
         let (Some(address), Some(client)) = (address, state.client.clone()) else { return };
         let shared = self.clone();
-        state.pane_task = Some(self.handle.spawn(async move { shared.read_pane(client, address, generation).await }));
+        state.pane_task = Some(self.handle.spawn(async move {
+            let budget = Budget::with_slots(shared.limits.deadline, 5);
+            shared.read_pane(&client, address, PaneRead { generation, refresh: None }, &budget).await;
+            let mut state = shared.lock();
+            if state.pane_generation == generation {
+                state.pane_task = None;
+            }
+        }));
     }
 
-    async fn read_pane(&self, client: ActorClient, address: ActorAddress, generation: u64) {
-        let deadline = Instant::now() + self.limits.deadline;
+    async fn read_pane(&self, client: &ActorClient, address: ActorAddress, read: PaneRead, budget: &Budget) {
         let apply = |change: &dyn Fn(&mut PaneView)| {
             let state = self.lock();
-            if state.pane_generation == generation {
+            if state.pane_generation == read.generation
+                && read.refresh.is_none_or(|ticket| state.pager.refresh.current(ticket))
+            {
                 self.pane.send_modify(change);
             }
         };
         let actor = async {
-            let read: Read<_> = within(deadline, client.get_actor(&address)).await.into();
+            let read: Read<_> = budget.read(client.get_actor(&address)).await.into();
             let read = match read {
                 Read::Ready(view) => Read::Ready(view.map(details)),
                 Read::Failed(error) => Read::Failed(error),
@@ -1144,11 +1251,11 @@ impl Shared {
             apply(&|pane| pane.actor = read.clone());
         };
         let turn = async {
-            let read: Read<_> = within(deadline, client.turn(&address)).await.into();
+            let read: Read<_> = budget.read(client.turn(&address)).await.into();
             apply(&|pane| pane.turn = read.clone());
         };
         let mailbox = async {
-            let read = within(deadline, client.mailbox(&address, None, Some(MAILBOX_ROWS))).await;
+            let read = budget.read(client.mailbox(&address, None, Some(MAILBOX_ROWS))).await;
             let read: Read<Mailbox> = match read {
                 Part::Ready(Some(page)) => Read::Ready(Mailbox {
                     more: page.next.is_some(),
@@ -1171,13 +1278,13 @@ impl Shared {
             apply(&|pane| pane.mailbox = read.clone());
         };
         let watching = async {
-            let read = within(deadline, client.watches(Some(&address), None, None, Some(WATCH_ROWS))).await;
+            let read = budget.read(client.watches(Some(&address), None, None, Some(WATCH_ROWS))).await;
             let read: Read<_> = read.map(|page| Watches { more: page.next.is_some(), items: page.items }).into();
             apply(&|pane| pane.watching = read.clone());
         };
         let watched_by = async {
             let target = WatchTarget::Actor(address.clone());
-            let read = within(deadline, client.watches(None, Some(&target), None, Some(WATCH_ROWS))).await;
+            let read = budget.read(client.watches(None, Some(&target), None, Some(WATCH_ROWS))).await;
             let read: Read<_> = read.map(|page| Watches { more: page.next.is_some(), items: page.items }).into();
             apply(&|pane| pane.watched_by = read.clone());
         };
@@ -1228,7 +1335,7 @@ fn prune_paths(
                 }
         })
     };
-    let clear = state.selected.as_ref().is_some_and(&gone);
+    let clear = state.selected.as_ref().is_some_and(gone);
     // Collect before mutating the caches used to determine which paths are still present.
     let removed: BTreeSet<_> = list
         .open
@@ -1320,38 +1427,39 @@ mod refresh_tests {
     #[tokio::test(start_paused = true)]
     async fn children_merge_the_new_range_and_prune_an_exhausted_tail() {
         let actors = Actors::new(Handle::current(), Limits::DEFAULT);
-        let shared = &actors.shared;
-        let mut state = shared.lock();
-        let parent = ActorPath::root(address("parent"));
-        shared.land_children(&mut state, &parent, page(&["a", "b", "c", "d", "e"], None), true, false);
-        let removed = parent.child(address("b"));
-        let retained = parent.child(address("c"));
-        let grandchild = removed.child(address("grandchild"));
-        shared.land_children(&mut state, &removed, page(&["grandchild"], None), true, false);
-        shared.land_children(&mut state, &grandchild, Part::Failed("HTTP 500".into()), true, false);
-        shared.list.send_modify(|list| list.open.extend([parent.clone(), removed.clone(), grandchild.clone()]));
-        shared.select(&mut state, Some(grandchild.clone()));
-        let read = Handle::current().spawn(std::future::pending());
-        state.child_reads.get_mut(&grandchild).unwrap().task = Some((99, read));
+        let [aborted] = {
+            let shared = &actors.shared;
+            let mut state = shared.lock();
+            let parent = ActorPath::root(address("parent"));
+            shared.land_children(&mut state, &parent, page(&["a", "b", "c", "d", "e"], None), ChildPage::First);
+            let removed = parent.child(address("b"));
+            let retained = parent.child(address("c"));
+            let grandchild = removed.child(address("grandchild"));
+            shared.land_children(&mut state, &removed, page(&["grandchild"], None), ChildPage::First);
+            shared.land_children(&mut state, &grandchild, Part::Failed("HTTP 500".into()), ChildPage::First);
+            shared.list.send_modify(|list| list.open.extend([parent.clone(), removed.clone(), grandchild.clone()]));
+            shared.select(&mut state, Some(grandchild.clone()));
+            let read = Handle::current().spawn(std::future::pending());
+            state.child_reads.get_mut(&grandchild).unwrap().task = Some((99, read));
 
-        shared.land_children(&mut state, &parent, page(&["a", "bb"], Some("new")), true, true);
-        let list = shared.list.borrow();
-        assert_eq!(list.children[&parent].rows, ["a", "bb", "c", "d", "e"].map(address));
-        assert_eq!(list.open, BTreeSet::from([parent.clone()]));
-        assert!(!list.children.contains_key(&removed) && !list.children.contains_key(&grandchild));
-        assert!(!state.child_reads.contains_key(&removed) && !state.child_reads.contains_key(&grandchild));
-        assert!(state.selected.is_none() && shared.pane.borrow().address.is_none());
-        assert_eq!(state.child_reads[&parent].cursor, Cursor::Next("new".into()));
-        drop(list);
+            shared.land_children(&mut state, &parent, page(&["a", "bb"], Some("new")), ChildPage::Refresh);
+            let list = shared.list.borrow();
+            assert_eq!(list.children[&parent].rows, ["a", "bb", "c", "d", "e"].map(address));
+            assert_eq!(list.open, BTreeSet::from([parent.clone()]));
+            assert!(!list.children.contains_key(&removed) && !list.children.contains_key(&grandchild));
+            assert!(!state.child_reads.contains_key(&removed) && !state.child_reads.contains_key(&grandchild));
+            assert!(state.selected.is_none() && shared.pane.borrow().address.is_none());
+            assert_eq!(state.child_reads[&parent].cursor, Cursor::Next("new".into()));
+            drop(list);
 
-        shared.land_children(&mut state, &parent, page(&["c", "f"], None), false, false);
-        assert_eq!(
-            shared.list.borrow().children[&parent].rows,
-            [address("a"), address("bb"), retained.address().clone(), address("f")]
-        );
-        assert_eq!(state.child_reads[&parent].cursor, Cursor::End);
-        let [aborted] = std::mem::take(&mut state.aborted).try_into().ok().unwrap();
-        drop(state);
+            shared.land_children(&mut state, &parent, page(&["c", "f"], None), ChildPage::More);
+            assert_eq!(
+                shared.list.borrow().children[&parent].rows,
+                [address("a"), address("bb"), retained.address().clone(), address("f")]
+            );
+            assert_eq!(state.child_reads[&parent].cursor, Cursor::End);
+            std::mem::take(&mut state.aborted).try_into().ok().unwrap()
+        };
         assert!(aborted.await.unwrap_err().is_cancelled());
     }
 }

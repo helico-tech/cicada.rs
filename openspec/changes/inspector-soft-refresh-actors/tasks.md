@@ -13,7 +13,7 @@ landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the de
   row; at most 20 parents, re-read depth by depth with the visible-first ranking within a depth, each path checked
   against its parent's new children first; marks shown and cleared (decision 3). Verify: the ranking, depth and mark
   tests.
-- [ ] 3. **Coordination and one budget.** Waiting for a root page or parent read in flight, one remembered request, a
+- [x] 3. **Coordination and one budget.** Waiting for a root page or parent read in flight, one remembered request, a
   "more…" during it waiting, a Retry cancelling it, a failed parent not re-read and not counted, a failed or late
   re-read keeping its children marked; the turns sample with its sequence number; the shared 4-at-a-time limit and 10 s
   deadline across root, turns, children and pane (decisions 4 and 5). Verify: those tests on virtual time.
