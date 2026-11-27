@@ -30,8 +30,8 @@ and the Live pill.
    and the page runs one soft refresh. Pause lasts until resumed or the window closes; a manual Refresh (⌘R) works in
    every state and resets the timer.
 6. **Where it lives.** The live model in `live.rs` (the stream's lifecycle, backoff, batching, the timer, pause) on the
-   pages' `soft_refresh`, with tests on virtual time against a fake change source (a trait the model uses, implemented by
-   `ActorClient::changes` in the app and by a channel in tests); the pill in the `appkit` module.
+   pages' `soft_refresh`, with tests on virtual time against a fake change source (a trait the model uses, implemented
+   by `ActorClient::changes` in the app and by a channel in tests); the pill in the `appkit` module.
 
 ## Tests
 
@@ -39,9 +39,9 @@ On virtual time with a fake change source: one stream per page and prefix, close
 and on close; the backoff and its reset after 60 s open; a new stream and a reconnect each causing one soft refresh;
 fifty hints in 200 ms causing one refresh; hints during a refresh causing exactly one more; a batch outside the prefix
 starting none on a paged page; the pane re-read for its actor; the 30 s timer, also during reconnects; pause closing the
-stream, dropping hints and discarding a refresh in flight, resume causing one refresh; ⌘R resetting the timer. Against an
-in-process server: a real change reaching the Actors page's pane within a second. The pill gets a manual check list in
-the tasks.
+stream, dropping hints and discarding a refresh in flight, resume causing one refresh; ⌘R resetting the timer. Against
+an in-process server: a real change reaching the Actors page's pane within a second. The pill gets a manual check list
+in the tasks.
 
 ## Docs
 
