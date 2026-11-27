@@ -10,8 +10,8 @@ after the read-only screens (2026-11-26).
 - Actor pane: Pause and Resume, Cancel Turn, Purge Mailbox… and Delete… (with its descendants).
 - Send Message… moved to `inspector-send-message`, and the message pane's and Outcomes' actions to
   `inspector-message-actions` (design, 2026-11-27: all of it did not fit five tasks).
-- Destructive actions (Purge, Delete) ask first in a sheet that names what goes. The API's refusals
-  (409, 404, a schema mismatch) show as alerts with the server's message.
+- Cancel Turn, Purge and Delete ask first in a sheet that names what goes. An absent actor shows local text;
+  other refusals show as alerts with the server's message.
 - The actions use the same routes as `cicada`, through `cicada-client`, so the server's middleware and tokens apply.
 
 ## Out of scope
