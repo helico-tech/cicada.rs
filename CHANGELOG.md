@@ -22,10 +22,10 @@ the value.
 ### Added
 
 - `cicada`: `Worker::end_grace()` ends the grace period of a stop that has begun, as if it had run out: the running
-  turns are cancelled at once, those whose handler had not ended give their leases back, and the stop returns within
-  the cancel timeout (a wait for the polling loop ends too). Before a stop begins or after it ended it does nothing and
-  is not remembered, so it never shortens a later stop. Covered by
-  `end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout`,
+  turns are cancelled at once and try to release their leases (a failed release, or work that ignores cancellation,
+  leaves the lease to expire), and the stop returns within the cancel timeout (a wait for the polling loop ends too).
+  Before a stop begins or after it ended it does nothing and is not remembered, so it never shortens a later stop.
+  Covered by `end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout`,
   `end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it` and
   `end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period`.
 - `cicada-app`: `StopNow`, a cloneable handle in `WorkerReady::stop_now`. `StopNow::now()` ends the grace period of
@@ -35,10 +35,10 @@ the value.
   `crates/cicada-app/src/node.rs`.
 - `cicada-tray`: `Tray::stop_now()`, and a Stop Now row in the menu while the tray stops a worker that was ready. It
   ends the grace period, so the running turns are cancelled, and moves the countdown's `until` to now plus the cancel
-  timeout when that is earlier; the tray is offline within the cancel timeout. A cancelled turn whose handler had not
-  ended is listed as abandoned once its lease is given back; one whose handler had ended may still commit; one whose
-  release is still in flight stays listed as running until it ends. It does nothing in any other state. Covered by
-  the `stop_now_…` tests in `crates/cicada-tray/tests/control.rs`.
+  timeout when that is earlier; the tray is offline within the cancel timeout. A turn that ends without an acknowledged
+  commit, also after a failed release, is listed as abandoned; one whose handler had ended may still commit; one whose
+  release is still in flight stays listed as running until it ends. It does nothing in any other state. Covered by the
+  `stop_now_…` tests in `crates/cicada-tray/tests/control.rs`.
 
 ## 0.25.0 — 2026-11-27
 

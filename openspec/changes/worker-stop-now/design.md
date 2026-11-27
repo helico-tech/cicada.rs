@@ -7,7 +7,7 @@ that grace period early.
 
 ```rust
 tray.disconnect();   // Stopping { until: stop + grace + cancel timeout }
-tray.stop_now();     // the grace period ends now: running turns are cancelled and give their leases back
+tray.stop_now();     // the grace period ends now: running turns are cancelled and try to release their leases
 ```
 
 ## Decisions

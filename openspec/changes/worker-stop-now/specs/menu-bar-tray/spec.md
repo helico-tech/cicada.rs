@@ -18,9 +18,9 @@ returns, within the cancel timeout. In any other state `stop_now` SHALL do nothi
 
 ### Requirement: Turns after Stop Now
 
-After Stop Now, a cancelled turn whose handler had not ended SHALL be listed as abandoned once its lease is given back,
-and a turn whose handler had ended MAY still commit. A turn the worker leaves behind SHALL stay listed as running until
-it ends; `Offline` SHALL NOT wait for it.
+After Stop Now, a turn that ends without an acknowledged commit SHALL be listed as abandoned, whether its lease was
+released or left to expire, and a turn whose handler had ended MAY still commit. A turn the worker leaves behind SHALL
+stay listed as running until it ends; `Offline` SHALL NOT wait for it.
 
 #### Scenario: A cancelled turn gives its lease back
 

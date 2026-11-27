@@ -213,12 +213,12 @@ impl Tray {
     }
 
     /// Stop Now: while [`TrayState::Stopping`] a worker that was ready, ends its grace period, so its running turns are
-    /// cancelled at once, and moves `until` to now plus the cancel timeout when that is earlier. A cancelled turn whose
-    /// handler had not ended is listed as abandoned once its lease is given back; one whose handler had ended may still
-    /// commit. The state stays `Stopping` until the command returns, within the cancel timeout, and then becomes
-    /// [`TrayState::Offline`]: a turn the worker left behind, such as one whose release is still in flight, stays
-    /// listed as running until it ends. In any other state, or while stopping a worker that was never ready, it does
-    /// nothing. Release a borrow of [`Self::state`] first.
+    /// cancelled at once, and moves `until` to now plus the cancel timeout when that is earlier. A turn that ends
+    /// without an acknowledged commit, also after a failed lease release, is listed as abandoned; one whose handler had
+    /// ended may still commit. The state stays `Stopping` until the command returns, within the cancel timeout, and
+    /// then becomes [`TrayState::Offline`]: a turn the worker left behind, such as one whose release is still in
+    /// flight, stays listed as running until it ends. In any other state, or while stopping a worker that was never
+    /// ready, it does nothing. Release a borrow of [`Self::state`] first.
     pub fn stop_now(&self) {
         let connection = self.control.connection.lock().expect("tray connection");
         let Some(connection) = connection.as_ref() else { return };

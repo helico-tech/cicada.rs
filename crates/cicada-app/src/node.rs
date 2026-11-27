@@ -169,9 +169,10 @@ impl Stopping {
 }
 
 /// Stop Now for a worker over HTTP, from [`WorkerReady`](crate::WorkerReady): [`Self::now`] ends the grace period of
-/// the worker's stop, so its running turns are cancelled at once and the stop ends within the cancel timeout. A turn
-/// whose handler had not ended gives its lease back once its work stopped; one whose handler had ended still
-/// completes. Cheap to clone; it holds no reference to the worker.
+/// the worker's stop, so its running turns are cancelled at once and the stop ends within the cancel timeout. A
+/// cancelled turn's lease release is an attempt: when the release fails, or the work ignores cancellation past the
+/// cancel timeout, the lease expires instead. A turn whose handler had ended may still complete, or be abandoned while
+/// its result is checked. Cheap to clone; it holds no reference to the worker.
 #[derive(Debug, Clone)]
 pub struct StopNow(CancellationToken);
 
