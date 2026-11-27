@@ -54,6 +54,7 @@ const BACK: &str = "inspector.back";
 const FORWARD: &str = "inspector.forward";
 const CONTEXT: &str = "inspector.context";
 const REFRESH: &str = "inspector.refresh";
+const REFRESH_KEY: &str = "r";
 
 /// A main-thread inspector in an existing macOS 14 or later AppKit application.
 ///
@@ -158,6 +159,51 @@ struct Controller {
     syncing: Cell<bool>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     finished: Cell<bool>,
+}
+
+define_class!(
+    // SAFETY: NSWindow may be subclassed, and the subclass adds no ivars or Drop.
+    #[unsafe(super(NSWindow, objc2_app_kit::NSResponder, NSObject))]
+    #[name = "CicadaInspectorWindow"]
+    #[thread_kind = MainThreadOnly]
+    struct InspectorWindow;
+
+    impl InspectorWindow {
+        // SAFETY: The signature is NSResponder's performKeyEquivalent:.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            // SAFETY: Forwards the event unchanged to NSWindow.
+            self.handle_key(event) || unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+    }
+);
+
+impl InspectorWindow {
+    fn handle_key(&self, event: &NSEvent) -> bool {
+        let modifiers = NSEventModifierFlags::Command
+            | NSEventModifierFlags::Shift
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Control;
+        if !self.isKeyWindow()
+            || event.r#type() != NSEventType::KeyDown
+            || event.modifierFlags() & modifiers != NSEventModifierFlags::Command
+        {
+            return false;
+        }
+        let Some(key) = event.charactersIgnoringModifiers() else { return false };
+        let Some(delegate) = self.delegate() else { return false };
+        let Some(target) = AsRef::<AnyObject>::as_ref(&*delegate).downcast_ref::<Target>() else { return false };
+
+        match key.to_string().to_ascii_lowercase().as_str() {
+            "w" => self.performClose(None),
+            REFRESH_KEY => target.refresh_view(),
+            "[" => target.change_history(Navigation::back),
+            "]" => target.change_history(Navigation::forward),
+            _ => return false,
+        }
+        // A handled key must not reach the toolbar's overflow or the standalone app's menu again.
+        true
+    }
 }
 
 define_class!(
@@ -286,26 +332,19 @@ define_class!(
         // SAFETY: The Back toolbar item and menu item send this action with themselves as the sender.
         #[unsafe(method(inspectorBack:))]
         fn back(&self, _: Option<&AnyObject>) {
-            if self.ivars().navigation.borrow_mut().back() {
-                self.render();
-            }
+            self.change_history(Navigation::back);
         }
 
         // SAFETY: The Forward toolbar item and menu item send this action with themselves as the sender.
         #[unsafe(method(inspectorForward:))]
         fn forward(&self, _: Option<&AnyObject>) {
-            if self.ivars().navigation.borrow_mut().forward() {
-                self.render();
-            }
+            self.change_history(Navigation::forward);
         }
 
         // SAFETY: The Refresh toolbar item and menu item send this action with themselves as the sender.
         #[unsafe(method(inspectorRefresh:))]
         fn refresh(&self, _: Option<&AnyObject>) {
-            if !self.ivars().finished.get() {
-                self.ivars().session.refresh();
-                self.render();
-            }
+            self.refresh_view();
         }
 
         // SAFETY: Only the context NSPopUpButton is wired to this action.
@@ -392,7 +431,21 @@ impl Target {
     }
 
     fn can_refresh(&self) -> bool {
-        self.ivars().view.borrow().borrow().target_error.is_none()
+        let c = self.ivars();
+        !c.finished.get() && c.view.borrow().borrow().target_error.is_none()
+    }
+
+    fn refresh_view(&self) {
+        if self.can_refresh() {
+            self.ivars().session.refresh();
+            self.render();
+        }
+    }
+
+    fn change_history(&self, change: fn(&mut Navigation) -> bool) {
+        if change(&mut self.ivars().navigation.borrow_mut()) {
+            self.render();
+        }
     }
 
     /// Shows the latest view: the title, the toolbar, the sidebar's selection and the content.
@@ -498,6 +551,10 @@ impl Target {
             }
             REFRESH => {
                 button("arrow.clockwise", "Refresh", sel!(inspectorRefresh:));
+                let overflow = menu_item(mtm, "Refresh", Some(sel!(inspectorRefresh:)), REFRESH_KEY);
+                // SAFETY: This is the same action and target as the toolbar item.
+                unsafe { overflow.setTarget(Some(self)) };
+                item.setMenuFormRepresentation(Some(&overflow));
                 c.refresh.replace(Some(item.clone()));
             }
             CONTEXT => {
@@ -578,14 +635,14 @@ impl Window {
             | NSWindowStyleMask::FullSizeContentView;
         let rect = NSRect::new(NSPoint::ZERO, NSSize::new(980.0, 640.0));
         // SAFETY: NSWindow's designated initializer, with a valid style mask and backing store.
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                rect,
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
+        let window: Retained<InspectorWindow> = unsafe {
+            msg_send![
+                InspectorWindow::alloc(mtm),
+                initWithContentRect: rect,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false
+            ]
         };
         // SAFETY: The controller holds the window in a Retained, so closing must not release it.
         unsafe { window.setReleasedWhenClosed(false) };
@@ -658,7 +715,7 @@ impl Window {
         toolbar.setDelegate(Some(ProtocolObject::from_ref(target)));
         window.setDelegate(Some(ProtocolObject::from_ref(target)));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-        Self { window, sidebar, content, document, contexts, toolbar, _split: split }
+        Self { window: Retained::into_super(window), sidebar, content, document, contexts, toolbar, _split: split }
     }
 }
 
@@ -741,7 +798,7 @@ fn main_menu(mtm: MainThreadMarker, target: &Target) -> Retained<NSMenu> {
     file.addItem(&menu_item(mtm, "Close", Some(sel!(performClose:)), "w"));
     let view = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("View"));
     for (title, action, key) in [
-        ("Refresh", sel!(inspectorRefresh:), "r"),
+        ("Refresh", sel!(inspectorRefresh:), REFRESH_KEY),
         ("Back", sel!(inspectorBack:), "["),
         ("Forward", sel!(inspectorForward:), "]"),
     ] {

@@ -7,7 +7,7 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
 - [x] 1. **The shared teardown and `Embedded`.** One teardown for the embedded and standalone window (timer, generation,
   aborted refreshes on the given handle); `Embedded::new`, `show`, `close` and its drop; the lifecycle as a plain state
   machine (decision 1). Verify: the lifecycle tests; `cargo test -p cicada-inspector`.
-- [ ] 2. **Focus and keys.** `show` activates and makes the window key and front; ⌘R, ⌘W, ⌘[ and ⌘] through the
+- [x] 2. **Focus and keys.** `show` activates and makes the window key and front; ⌘R, ⌘W, ⌘[ and ⌘] through the
   window's own key handling (decision 2). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector
   --all-targets`.
 - [ ] 3. **The tray's feature.** `inspector = ["dep:cicada-inspector"]`, the menu item (⌘I) and its disabled state while
