@@ -2,6 +2,7 @@
 
 mod alerts;
 mod reconcile;
+mod send;
 
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use super::{Actors, Children, Paging, PaneView, Read, Shared, State as ActorStat
 use crate::model::TIMED_OUT;
 use crate::pager::Paged;
 pub(crate) use alerts::{Alert, Redactions};
+pub(crate) use send::{Choices, SendView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Action {
@@ -162,7 +164,15 @@ struct Pending {
 pub(super) struct State {
     serial: u64,
     pending: Option<Pending>,
+    /// The open Send Message sheet, which holds the slot of [`Self::pending`] until it closes.
+    sheet: Option<send::Sheet>,
     pub(super) redactions: Redactions,
+}
+
+impl State {
+    fn taken(&self) -> bool {
+        self.pending.is_some() || self.sheet.is_some()
+    }
 }
 
 #[derive(Debug)]
@@ -180,7 +190,7 @@ impl Actors {
     /// Presses a button from the rendered pane. A destructive action reserves the slot until the sheet ends.
     pub(crate) fn press_action(&self, pane: &PaneView, action: Action) -> Option<Confirmation> {
         let mut state = self.shared.lock();
-        if state.actions.pending.is_some() || state.client.is_none() {
+        if state.actions.taken() || state.client.is_none() {
             return None;
         }
         let address = pane.address.clone()?;
@@ -231,6 +241,7 @@ impl Shared {
     pub(super) fn clear_actions(&self, state: &mut ActorState) {
         let task = state.actions.pending.take().and_then(|pending| pending.task);
         state.abort(task);
+        self.drop_sheet(state);
         state.actions.redactions = Redactions::default();
         self.actions.send_replace(View::default());
     }

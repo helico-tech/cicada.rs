@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-actions` (its 
 checks, alert text and fresh read; rebase onto it when it landed first). Follow `design.md`; the spec is
 `specs/inspector/spec.md`; the design reviews are `.reviews/inspector-send-message.design.*`.
 
-- [ ] 1. **The types for the pop-up.** The message types of the actor's type from the Types cache or one `/types` read;
+- [x] 1. **The types for the pop-up.** The message types of the actor's type from the Types cache or one `/types` read;
   a failed read with Retry; "type not registered"; "this type takes no messages" with no Send (decisions 1 and 5).
   Verify: the in-process server tests of each case.
 - [ ] 2. **The local check.** The schema compiled once per chosen type with the server's settings (draft 2020-12

@@ -514,6 +514,7 @@ struct Shared {
     list: watch::Sender<ListView>,
     pane: watch::Sender<PaneView>,
     actions: watch::Sender<actions::View>,
+    send: watch::Sender<Option<actions::SendView>>,
     state: Mutex<State>,
 }
 
@@ -653,6 +654,7 @@ impl Actors {
             list: watch::channel(ListView::default()).0,
             pane: watch::channel(PaneView::default()).0,
             actions: watch::channel(actions::View::default()).0,
+            send: watch::channel(None).0,
             state: Mutex::new(state),
         };
         Self { shared: Arc::new(shared) }

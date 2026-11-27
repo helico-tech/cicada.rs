@@ -21,19 +21,19 @@ fn path(key: &str) -> ActorPath {
     ActorPath::root(ActorAddress::parse(&format!("counter/{key}")).unwrap())
 }
 
-async fn create(actors: &TestActors, id: &str) -> Counter {
+pub(super) async fn create(actors: &TestActors, id: &str) -> Counter {
     let actor = Counter { id: id.into() };
     actors.create(&actor, &json!({})).await;
     actor
 }
 
-fn model(server: &Server) -> Actors {
+pub(super) fn model(server: &Server) -> Actors {
     let model = Actors::new(Handle::current(), Limits::DEFAULT);
     model.use_client(Some(server.client.clone()));
     model
 }
 
-async fn select(model: &Actors, key: &str) -> PaneView {
+pub(super) async fn select(model: &Actors, key: &str) -> PaneView {
     model.select(Some(path(key)));
     model.pane().wait_for(|pane| !matches!(pane.actor, Read::Loading)).await.unwrap().clone()
 }

@@ -205,6 +205,11 @@ impl Types {
         }
     }
 
+    /// The type `name` from the list read for this context, if the list is read and holds it.
+    pub fn cached(&self, name: &str) -> Option<Arc<TypeView>> {
+        self.shared.state.lock().expect("types").rows.iter().find(|row| row.name == name).cloned()
+    }
+
     /// Starts any pending formatting when the pane is shown.
     pub fn set_pane_visible(&self, visible: bool) {
         let mut state = self.shared.state.lock().expect("types");
