@@ -14,7 +14,8 @@ a bounded refresh that keeps the view is a change of its own.
 - A change the user makes while it runs (a selection, a scroll, a fold, a Show Actor jump, a Retry) wins over the
   refresh's result.
 
-To decide in the design: the limits (pages, open children, concurrency, time), and how each page restores its view.
+Decided in the design: 300 root rows, 20 open rows' children, 4 requests at a time, 10 s; a snapshot of the view so
+the user's changes win; one soft refresh at a time per page.
 
 ## Order
 
