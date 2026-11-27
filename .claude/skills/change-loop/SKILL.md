@@ -62,7 +62,7 @@ A landed change that must reach consumers at once (a security fix, a bug a consu
 3. **Write** the rest of `design.md` (the decisions, each with its reason and the options not taken in a line) and the
    spec deltas in `specs/<capability>/spec.md`. Name the doc blocks, links, guarantee rows and skill routes the change
    breaks: the builder cannot fix them, as the docs session owns that prose (AGENTS.md, Documentation ownership).
-   `openspec validate <change> --strict` passes. No `tasks.md` yet.
+   `openspec validate <change> --strict` passes. No `tasks.md` yet. A GUI change follows GUI changes below.
 4. **Design review.** `python3 scripts/review.py request design <change>` prints the id. Start a reviewer for it
    (Review). One round; a second only when the design changed much.
 5. **Bring the findings to the owner**, each with your own view. Decide together, and update the design and the spec.
@@ -74,6 +74,24 @@ A landed change that must reach consumers at once (a security fix, a bug a consu
    `.openspec.yaml` with `skip_specs: true` (next to `schema: spec-driven` and `created:`). No `design.md`, no spec
    deltas, no design review. Ask the owner only what the proposal leaves open.
 2. **Tasks**: go to Tasks.
+
+### GUI changes
+
+A change that adds or changes a screen (the tray menu in a state, the Settings window, an inspector page, a sheet) is
+built and reviewed against the owner's mockup boards ([MOCK-RULE]):
+
+- **Screens.** Its design names each such screen with its board, or "no board". A screen without a board is built only
+  when the owner has one drawn first, or agrees in the design to build it in a named board's style.
+- **Copies.** You copy each board (the artboard's `.dc.html`, read with the Artifact tool) into
+  `openspec/changes/<change>/mockup/`, with `mockup/SOURCE.md` naming the artifact's URL, its version and the date of
+  the copy (as in `tray-menu-mockup`). Builders have no Artifact tool; they read the files. Only the board's HTML
+  counts; a board without dark colours is named so in `SOURCE.md`, and the system's dark colours are then no departure.
+- **Departures.** The design has a section `Departures from the board`: each place where a screen will differ from its
+  board or add what the board does not show (a native control that cannot look the same, data the API lacks, an extra
+  control, section or state), with its reason, for the owner to agree. Nothing else departs. Sample data and the
+  board's desktop background are not departures.
+- **Tasks.** The task that builds a screen says "match board X". The manual check list starts with "next to board X,
+  light and dark"; builders never drive the GUI.
 
 ### Tasks
 
@@ -114,6 +132,8 @@ owner says otherwise. Keep a note of who builds what: the review needs it.
    > Read `<main checkout>/.claude/skills/change-loop/builder.md` and follow it. Change: `<change>`. Version: `X.Y.Z`.
    > Main checkout: `<main checkout>`.
 
+   For a GUI change add: `Boards: openspec/changes/<change>/mockup/` and the board of each screen.
+
    - **Claude:** the Agent tool in the background: `subagent_type: "general-purpose"`, `model: "opus"`,
      `effort: "high"`, `isolation: "worktree"`, `run_in_background: true`.
    - **GPT:** in T3 Code, `delegate_task` with `isolation: "worktree"` and
@@ -126,7 +146,7 @@ owner says otherwise. Keep a note of who builds what: the review needs it.
 
    Keep its id, tell the owner in one line, and go on with Describe. The two builders share the gate's lock: each
    retries while the other's run holds it (builder.md, Gate evidence).
-4. **When the builder reports.** A question about the design goes to the owner; send the answer with SendMessage.
+4. **When the builder reports.** A question about the design, or a departure from a board, goes to the owner; send the answer with SendMessage.
    `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the builder's report to a file in your
    scratchpad, and ask for a review:
 
@@ -217,6 +237,9 @@ through that change's own `Order`, so the open changes stay one line.
    builder renumbers the ADR, its row and the references to it, in the branch. A branch with owner fixes integrated is
    checked again after any rebase, also a clean one: you check the paths, and the builder runs the affected checks in
    its worktree on the rebased branch (Blocked on docs, step 3). Merge only when they pass.
+   A GUI change: read each board's live version with the Artifact tool and compare it with the copy in `mockup/`. If
+   one changed, the standing yes does not cover it: the owner accepts the copied version, or the builder takes the new
+   copy (sent as a file from your scratchpad), updates the screen, and a new code review round checks it.
 2. `git merge --ff-only feat/<change>` on `main`.
 3. Move the change's reviews into its folder, so that they are archived with it:
    `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.
@@ -240,8 +263,9 @@ through that change's own `Order`, so the open changes stay one line.
 
 The `release:` line of `python3 scripts/status.py` says when: at once when a landed change's proposal says
 `Release: now`; otherwise when no change is ready or in build and the batch holds a change outside the fast lane. A
-batch of fast-lane changes alone waits for the next behaviour change, or for the owner to ask. Ask the owner before a
-release unless they gave a standing yes.
+batch of fast-lane changes alone waits for the next behaviour change, or for the owner to ask. A batch with a GUI
+change waits until the owner has seen each screen next to its board, light and dark. Ask the owner before a release
+unless they gave a standing yes.
 
 1. `git fetch origin`; `main` equals `origin/main`.
 2. As in `docs/how-to/releasing.md`: the README tag lines and the changelog date (the `unreleased` heading of the batch

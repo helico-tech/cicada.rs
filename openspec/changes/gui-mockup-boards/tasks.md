@@ -2,7 +2,7 @@
 
 Normal lane, no version bump (process only). Follow `design.md`; the spec is `specs/change-loop/spec.md`.
 
-- [ ] 1. **The change-loop skill.** Describe: a GUI change names each screen with its board or "no board", copies its
+- [x] 1. **The change-loop skill.** Describe: a GUI change names each screen with its board or "no board", copies its
   boards into `mockup/` with `SOURCE.md`, has "Departures from the board" (additions included), names the board in its
   building task, and starts its manual list with "next to board X, light and dark"; the builder's prompt names the
   boards; Land reads the live boards again and waits on a changed one (decisions 1, 2 and 4).
