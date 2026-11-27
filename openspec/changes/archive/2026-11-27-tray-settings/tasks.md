@@ -19,7 +19,8 @@ is `specs/menu-bar-tray/spec.md`. No ADR.
   action (decisions 5 and 6). Verify: the form and `apply` tests of the design.
 - [x] 4. **The window.** The `appkit` window of decision 7 and the enabled Settings… item; every `unsafe` with its
   reason. Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray --all-targets`, and the manual check list
-  below, each item noted as done or not done in the report.
+  below, each item noted as done or not done in the report. Built and reported: a temporary hook drove the window code
+  without errors; no item of the list was seen on screen. The owner runs it before 0.26.0 is released.
 - [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names `ContextFile`, the window and
   `tray.toml`; `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`,
