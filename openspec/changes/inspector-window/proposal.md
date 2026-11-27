@@ -35,7 +35,7 @@ After `stats-failed-count`, before `inspector-actors`.
 
 ## Impact
 
-Crates: cicada-inspector, cicada-tray.
+Crates: cicada-inspector, cicada-tray, cicada-app.
 
 New crate `crates/cicada-inspector`; `crates/cicada-tray` (feature and menu item); the new ADR, its row, and
 ADR 0011's status line; the workspace manifest. As in the tray: the mapping from API answers to what the window shows
