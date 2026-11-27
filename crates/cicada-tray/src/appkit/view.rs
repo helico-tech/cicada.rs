@@ -13,6 +13,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
+use super::icons::{self, Icons};
 use crate::menu::{ContextRow, Header, Icon, InspectorItem, MenuModel, RecentRow, RunningRow, TypeRow, row_text};
 
 pub(super) struct MenuView {
@@ -35,6 +36,11 @@ pub(super) struct MenuView {
     recent_rows: RefCell<Rows<RecentRow>>,
     contexts_enabled: Cell<bool>,
     failures: RefCell<Option<String>>,
+    icons: Icons,
+    /// The status item's images: not connected, connected.
+    status_images: [Retained<NSImage>; 2],
+    connected: Cell<bool>,
+    dark: Cell<bool>,
 }
 
 impl MenuView {
@@ -50,14 +56,8 @@ impl MenuView {
             return None;
         };
         let title = NSString::from_str(title);
-        if let Some(image) =
-            NSImage::imageWithSystemSymbolName_accessibilityDescription(ns_string!("bolt.fill"), Some(&title))
-        {
-            image.setTemplate(true);
-            button.setImage(Some(&image));
-        } else {
-            button.setTitle(&title);
-        }
+        let status_images = [false, true].map(|connected| icons::status_image(connected, &title));
+        button.setImage(Some(&status_images[0]));
         button.setAccessibilityLabel(Some(&title));
 
         let root = native_menu(mtm, &title);
@@ -115,6 +115,10 @@ impl MenuView {
             recent_rows: RefCell::default(),
             contexts_enabled: Cell::new(true),
             failures: RefCell::default(),
+            icons: Icons::default(),
+            status_images,
+            connected: Cell::new(false),
+            dark: Cell::new(icons::dark(mtm)),
         };
         Some((status, view))
     }
@@ -144,9 +148,15 @@ impl MenuView {
         if self.stop_now.isHidden() == model.stop_now {
             self.stop_now.setHidden(!model.stop_now);
         }
-        if self.button.appearsDisabled() == model.connected {
-            self.button.setAppearsDisabled(!model.connected);
+        if self.connected.replace(model.connected) != model.connected {
+            self.button.setImage(Some(&self.status_images[usize::from(model.connected)]));
         }
+        let dark = icons::dark(mtm);
+        let swap = self.dark.replace(dark) != dark;
+        let picture = |item: &NSMenuItem, icon: Icon| {
+            item.setImage(Some(&self.icons.image(icon, dark)));
+            icons::show_image(item);
+        };
 
         let start = self.root.indexOfItem(&self.running_section) + 1;
         self.running_rows.borrow_mut().sync(
@@ -157,6 +167,7 @@ impl MenuView {
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
             |item, row| {
                 let (title, subtitle) = row_text(&row.row, self.subtitles);
+                picture(item, row.row.icon);
                 item.setTitle(&NSString::from_str(&title));
                 if let Some(subtitle) = subtitle {
                     item.setSubtitle(Some(&NSString::from_str(&subtitle)));
@@ -178,8 +189,16 @@ impl MenuView {
                 item.setEnabled(model.contexts_enabled);
                 item
             },
-            |item, row| item.setState(mark(row.row.icon == Icon::Context { selected: true })),
+            |item, row| picture(item, row.row.icon),
         );
+        if swap {
+            for (row, item) in &self.running_rows.borrow().items {
+                picture(item, row.row.icon);
+            }
+            for (row, item) in &rows.items {
+                picture(item, row.row.icon);
+            }
+        }
         if self.contexts_enabled.replace(model.contexts_enabled) != model.contexts_enabled {
             for (_, item) in &rows.items {
                 item.setEnabled(model.contexts_enabled);
@@ -208,7 +227,7 @@ impl MenuView {
                 let (title, _) = row_text(&row.row, false);
                 item(mtm, &NSString::from_str(&title), None, ns_string!(""))
             },
-            |_, _| {},
+            |item, row| picture(item, row.row.icon),
         );
         if *self.failures.borrow() != failures {
             let badge = failures

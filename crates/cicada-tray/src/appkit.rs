@@ -1,6 +1,7 @@
 //! Main-thread AppKit lifecycle and actions.
 #![allow(unsafe_code)]
 
+mod icons;
 mod settings;
 mod view;
 

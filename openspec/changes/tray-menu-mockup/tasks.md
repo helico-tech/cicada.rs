@@ -14,7 +14,7 @@ departure you find necessary is a question for the owner: stop and report it.
   decisions 2–5 say, the recent rows per outcome, the bar's fraction and text, "no contexts" (decisions 2–5 and 8).
   Verify: the model tests on every platform, one per state and per recent outcome, the pick without connecting, the
   bar with zero grace and after Stop Now.
-- [ ] 3. **Icons.** The tinted circle images per kind and appearance, made once and swapped on an appearance change;
+- [x] 3. **Icons.** The tinted circle images per kind and appearance, made once and swapped on an appearance change;
   the status item's hexagon, filled when connected and hollow and dimmed otherwise; images shown where the system hides
   them by default (decisions 1 and 7). Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray
   --all-targets`.
