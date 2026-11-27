@@ -292,7 +292,8 @@ registration, and start the new hosts, which create the pools again.
 In Rust, add `hostname: None` to `NodeConfig` literals that do not end with `..NodeConfig::default()`, `host: None` to
 `PlacementConflict` literals, `resource: None` to `PlacementMsg::Offer`, `PlacementNode` and `Capacity` literals
 (prefer `Capacity::new`), `contested: vec![]` to `PlacementState` literals, and a `Duplicate` and a `Configure` arm to
-exhaustive matches of `PlacementMsg`. Drop a `NodeIdentity`
+exhaustive matches of `PlacementMsg`. `PlacementNoticeKind` is now `#[non_exhaustive]`, with the new kind `full`: a
+`match` on it needs a wildcard arm. Drop a `NodeIdentity`
 before loading its folder again: it now locks the folder, and a process that shares an identity folder with another on
 the same machine fails with `IdentityErrorKind::Locked` until the other stops.
 

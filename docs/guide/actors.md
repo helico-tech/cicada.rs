@@ -691,9 +691,12 @@ slow pool marks a node late, never early. A `Configure` with another silence re-
 at once when that has passed.
 
 **Alerts.** The target's family takes a variant such as `Placement(PlacementNotice)`, with the kind `silent` once per
-silence, `back` when a silent node offers again, and `conflict` once while a node's conflict mark lasts and once per
-contest of a resource key (read `contested` for the key); match all three if you match the kinds exhaustively. Each notice goes out in a turn of the pool's own (`Alert`), so a
-target that is gone or does not take the message fails only that alert; the node stays silent.
+silence, `back` when a silent node offers again, `conflict` once while a node's conflict mark lasts and once per
+contest of a resource key (read `contested` for the key), and `full` once per full period of the pool (see **A full
+pool**). `PlacementNoticeKind` is `#[non_exhaustive]` from 0.25.0, so a `match` on it needs a wildcard arm. Each notice
+goes out in a turn of the pool's own (`Alert`), so a target that is gone or does not take the message fails only that
+alert; the node stays silent. During a rolling upgrade, a target on an older node that does not know a new kind fails
+that alert for good, and nothing else.
 
 **Asks.** `holder` names this attempt (1 through 200 characters, no NUL) and is unique among the pool's holders and
 waiting asks: use a fresh one per attempt. Up to 32 needs of 1 through 100 characters are kept sorted and once. The
@@ -782,15 +785,28 @@ release; a silent node keeps its holders too.
 **Changing the settings.** Send `PlacementMsg::Configure { silence, max_nodes, max_waiting, max_holders }` with the
 fields to change as `Some` and the rest `None` (from 0.25.0); it takes the create's bounds and comes from anyone. A
 message with no field set, or a value out of bounds, is refused for good and changes nothing. A lower limit removes
-nothing: the nodes, holders, waiting asks and contests stay, and new ones are refused (a new node, a new contest, an ask
-that must wait while the line is full) or queued (an ask while the pool holds `maxHolders` or more) until the count is
-below the new limit. A higher `maxHolders` grants waiting asks at once; a higher `maxNodes` admits a new node at its
-next offer. A new silence re-arms the check: a shorter one marks the quiet nodes silent in the next turn, a longer one
-moves the check later, and conflict marks and contests end one new silence time after their last offer or report.
+nothing: the nodes, holders, waiting asks and contests stay. Until the count is below the new limit, a new node is
+ignored with the `full` notice, a new contest and an ask that must wait while the line is full are refused, and an ask
+while the pool holds `maxHolders` or more is queued. A higher `maxHolders` grants waiting asks at once; a higher
+`maxNodes` admits a new node at its next offer, which ends the full mark. A new silence re-arms the check: a shorter one
+marks the quiet nodes silent in the next turn, a longer one moves the check later, and conflict marks, contests and the
+full mark end one new silence time after their last offer or report.
 
 - Keep the silence above the members' offer interval (15 s by default), or nodes flip between silent and back.
 - A `Configure` that also raises `maxHolders` may grant a place on a node that the next turn marks silent.
 - Unknown fields are ignored, so a misspelled field next to a valid one changes nothing: read the state afterwards.
+
+**A full pool.** When the pool knows `maxNodes` nodes or more, an offer from a node it does not know is ignored (from
+0.25.0, [ADR 0075](../adr/0075-a-full-pool-says-so-once.md)): the turn succeeds, the node is not added and no node entry
+changes. The pool marks itself full in the state's `full` (`{node, at}`: the last ignored node and when) and tells the
+alert target once with the kind `full`, naming the first ignored node; further ignored offers, from any new node, only
+move the mark. The mark ends one silence time after the last ignored offer, or as soon as an offer adds a node, so a
+pool that fills up again is told again. To let the node in, raise `maxNodes` with `Configure`
+(`cicada send cicada.placement/runners --type Configure --payload '{"maxNodes": 20}'`) or declare silent nodes `Gone`;
+the node is added at its next offer. A new node offering a resource key another live node holds is a contest first,
+with its `conflict` alert. A known node renews as before, also in a full pool. There is one mark per pool, not per
+node: the notice names only the first ignored node of the period, the state the latest, and the pool cannot say how
+many nodes were turned away.
 
 **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
 replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
@@ -798,8 +814,9 @@ replaces the armed check at the old time, at once when that passed, so repeated 
 are a `Notify` and a `TellGone`.
 
 The pool answers no query: read its state like any actor's, with `ActorSystem::get_actor`, the operator commands or
-the terminal UI. A message out of bounds, and an offer from a new node when the pool knows `maxNodes` nodes, is refused
-for good with the state unchanged; a known node can always renew. Mind these limits:
+the terminal UI. A message out of bounds is refused for good with the state unchanged; an offer from a new node to a
+full pool is ignored with one `full` notice (see **A full pool**), and a known node's offer is handled as before. Mind
+these limits:
 
 - Do not host the pool only on its member nodes: when they all go quiet, nobody runs the check, so nobody is told.
 - Keep pools small and intervals gentle. At the bounds (1,000 nodes with 32 long labels each) the state is about
