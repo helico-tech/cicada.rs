@@ -14,7 +14,7 @@ window today, compares every element and lists the departures for the owner to a
 
 ## Order
 
-After `tray-menu-mockup`. Before `inspector-overview-mockup`.
+After `source-error-kinds`. Before `inspector-overview-mockup`.
 
 ## Impact
 
