@@ -3,6 +3,8 @@
 
 mod actors;
 mod content;
+mod json_text;
+mod messages;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::process::ExitCode;
@@ -22,8 +24,8 @@ use objc2_app_kit::{
     NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
     NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
     NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSView, NSViewController, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification,
+    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -34,9 +36,11 @@ use tokio::{runtime::Handle, sync::watch};
 use crate::actors::{ListView, PaneView};
 use crate::json::Json;
 use crate::lifecycle::WindowSlot;
+use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
 use actors::{CellContent, Item, ItemId, Items, Page};
 use content::FlippedView;
+use messages::MessagesPage;
 
 /// The rows of the sidebar: the Overview, then the items under Browse.
 #[derive(Clone, Copy)]
@@ -63,6 +67,17 @@ const REFRESH: &str = "inspector.refresh";
 const REFRESH_KEY: &str = "r";
 const SEARCH: &str = "inspector.search";
 const PANE: &str = "inspector.pane";
+/// The identifier of the Messages table, which shares the sidebar's data source and delegate.
+const MESSAGES_TABLE: &str = "inspector.messages";
+
+/// True for the pages with a table, the search field and the pane.
+fn paged(section: Section) -> bool {
+    matches!(section, Section::Actors | Section::Messages)
+}
+
+fn is_messages(table: &NSTableView) -> bool {
+    table.identifier().is_some_and(|identifier| identifier.to_string() == MESSAGES_TABLE)
+}
 
 /// A main-thread inspector in an existing macOS 14 or later AppKit application.
 ///
@@ -170,11 +185,16 @@ struct Controller {
     list_shown: RefCell<ListView>,
     /// One retained AppKit item per identity in the snapshot.
     items: RefCell<Items>,
-    /// The prefix last searched, so that a field that sends the same text again reads nothing.
-    searched: RefCell<String>,
     /// The state the pane's text view holds.
     state_shown: RefCell<Option<Arc<Json>>>,
-    /// Whether the pane shows on the Actors page; outside it the pane is collapsed.
+    /// The Messages page's rows and pane.
+    messages_list: RefCell<watch::Receiver<MessagesView>>,
+    messages_pane: RefCell<watch::Receiver<MessagePane>>,
+    /// The messages the table shows; the data source reads them.
+    messages_shown: RefCell<MessagesView>,
+    /// The payload the Messages pane's text view holds.
+    payload_shown: RefCell<Option<Arc<Json>>>,
+    /// Whether the pane shows on the Actors and Messages pages; elsewhere the pane is collapsed.
     pane_shown: Cell<bool>,
     /// The section last rendered, to place the pane only when the page changes.
     rendered: Cell<Option<Section>>,
@@ -280,6 +300,10 @@ define_class!(
                 if section == Section::Actors {
                     self.render_pane();
                     self.check_more();
+                } else if section == Section::Messages {
+                    window.messages.show_footer(&c.messages_shown.borrow(), view.target_error.as_deref());
+                    self.render_message_pane();
+                    self.check_more_messages();
                 }
             }
         }
@@ -291,31 +315,42 @@ define_class!(
     // SAFETY: The callback has the signature required by NSTableViewDataSource.
     unsafe impl NSTableViewDataSource for Target {
         #[unsafe(method(numberOfRowsInTableView:))]
-        fn number_of_rows(&self, _: &NSTableView) -> NSInteger {
-            ROWS as NSInteger
+        fn number_of_rows(&self, table: &NSTableView) -> NSInteger {
+            if is_messages(table) {
+                self.ivars().messages_shown.borrow().rows.len() as NSInteger
+            } else {
+                ROWS as NSInteger
+            }
         }
     }
 
-    // SAFETY: These callbacks have the signatures required by NSTableViewDelegate and are used by the sidebar.
+    // SAFETY: These callbacks have the signatures required by NSTableViewDelegate and are used by the sidebar and the
+    // Messages table, told apart by the table's identifier.
     unsafe impl NSTableViewDelegate for Target {
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn view_for_row(
             &self,
-            _: &NSTableView,
-            _: Option<&NSTableColumn>,
+            table: &NSTableView,
+            column: Option<&NSTableColumn>,
             row: NSInteger,
         ) -> Option<Retained<NSView>> {
-            row_at(row).map(|row| sidebar_cell(self.mtm(), row))
+            if is_messages(table) {
+                let column = column.map(|column| column.identifier().to_string()).unwrap_or_default();
+                let text = messages::cell_text(&self.ivars().messages_shown.borrow(), row, &column);
+                text.map(|text| messages::cell(self.mtm(), &text, &column))
+            } else {
+                row_at(row).map(|row| sidebar_cell(self.mtm(), row))
+            }
         }
 
         #[unsafe(method(tableView:isGroupRow:))]
-        fn is_group_row(&self, _: &NSTableView, row: NSInteger) -> bool {
-            matches!(row_at(row), Some(Row::Group(_)))
+        fn is_group_row(&self, table: &NSTableView, row: NSInteger) -> bool {
+            !is_messages(table) && matches!(row_at(row), Some(Row::Group(_)))
         }
 
         #[unsafe(method(tableView:shouldSelectRow:))]
-        fn should_select_row(&self, _: &NSTableView, row: NSInteger) -> bool {
-            matches!(row_at(row), Some(Row::Item(_)))
+        fn should_select_row(&self, table: &NSTableView, row: NSInteger) -> bool {
+            is_messages(table) || matches!(row_at(row), Some(Row::Item(_)))
         }
 
         #[unsafe(method(tableViewSelectionDidChange:))]
@@ -324,13 +359,21 @@ define_class!(
             if c.syncing.get() || c.finished.get() {
                 return;
             }
-            let sidebar = &self.window().sidebar;
-            let sender: &AnyObject = sidebar.as_ref();
-            if notification.object().is_some_and(|object| std::ptr::eq(&*object, sender))
-                && let Some(Row::Item(section)) = row_at(sidebar.selectedRow())
-            {
-                c.navigation.borrow_mut().select(section);
-                self.render();
+            let window = self.window();
+            let is = |view: &AnyObject| notification.object().is_some_and(|object| std::ptr::eq(&*object, view));
+            if is(window.sidebar.as_ref()) {
+                if let Some(Row::Item(section)) = row_at(window.sidebar.selectedRow()) {
+                    self.navigate(|navigation| {
+                        let before = navigation.current();
+                        navigation.select(section);
+                        navigation.current() != before
+                    });
+                }
+            } else if is(window.messages.table.as_ref()) {
+                let row = usize::try_from(window.messages.table.selectedRow()).ok();
+                let id = row.and_then(|row| c.messages_shown.borrow().rows.get(row).map(|message| message.id.clone()));
+                c.session.messages().select(id.as_ref());
+                self.render_message_pane();
             }
         }
     }
@@ -444,7 +487,8 @@ define_class!(
             if c.view.borrow().has_changed().unwrap_or(false) {
                 self.render();
             }
-            if c.navigation.borrow().current() == Section::Actors {
+            let section = c.navigation.borrow().current();
+            if section == Section::Actors {
                 if c.list.borrow().has_changed().unwrap_or(false) {
                     self.render_list();
                 }
@@ -452,6 +496,14 @@ define_class!(
                     self.render_pane();
                 }
                 self.check_more();
+            } else if section == Section::Messages {
+                if c.messages_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_messages();
+                }
+                if c.messages_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_message_pane();
+                }
+                self.check_more_messages();
             }
         }
 
@@ -462,14 +514,44 @@ define_class!(
             if c.finished.get() {
                 return;
             }
+            // A field that sends the same text again reads nothing.
             let prefix = sender.stringValue().to_string();
-            if *c.searched.borrow() == prefix {
+            match c.navigation.borrow().current() {
+                Section::Actors if c.list.borrow().borrow().prefix != prefix => {
+                    c.session.actors().search(&prefix);
+                    self.render_list();
+                    self.render_pane();
+                }
+                Section::Messages if c.messages_list.borrow().borrow().prefix != prefix => {
+                    c.session.messages().search(&prefix);
+                    self.render_messages();
+                    self.render_message_pane();
+                }
+                _ => {}
+            }
+        }
+
+        // SAFETY: The Retry button of the Messages footer sends this action with itself as the sender.
+        #[unsafe(method(inspectorMessagesRetry:))]
+        fn messages_retry(&self, _: &NSButton) {
+            if !self.ivars().finished.get() {
+                self.ivars().session.messages().retry();
+            }
+        }
+
+        // SAFETY: The Show Actor button of the Messages pane sends this action with itself as the sender.
+        #[unsafe(method(inspectorShowActor:))]
+        fn show_actor(&self, _: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
                 return;
             }
-            c.searched.replace(prefix.clone());
-            c.session.actors().search(&prefix);
-            self.render_list();
-            self.render_pane();
+            let to = c.messages_pane.borrow().borrow().message.as_ref().map(|message| message.to.clone());
+            if let Some(to) = to {
+                c.session.show_actor(&mut c.navigation.borrow_mut(), to);
+                self.sync_search();
+                self.render();
+            }
         }
 
         // SAFETY: The Retry buttons of outline status rows send this action with themselves as the sender.
@@ -510,7 +592,7 @@ define_class!(
         #[unsafe(method(inspectorTogglePane:))]
         fn toggle_pane(&self, _: Option<&AnyObject>) {
             let c = self.ivars();
-            if c.finished.get() || c.navigation.borrow().current() != Section::Actors {
+            if c.finished.get() || !paged(c.navigation.borrow().current()) {
                 return;
             }
             // From the pane's own state: the user may also have dragged it shut.
@@ -563,7 +645,7 @@ define_class!(
                 Some(action) if action == sel!(inspectorTogglePane:) => {
                     let collapsed = self.window().pane_item.isCollapsed();
                     item.setTitle(if collapsed { ns_string!("Show Pane") } else { ns_string!("Hide Pane") });
-                    navigation.current() == Section::Actors
+                    paged(navigation.current())
                 }
                 _ => true,
             }
@@ -575,6 +657,7 @@ impl Target {
     fn new(mtm: MainThreadMarker, session: Session, owner: Option<Weak<Windows>>) -> Retained<Self> {
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
+        let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
             session,
             owner,
@@ -589,8 +672,11 @@ impl Target {
             pane: RefCell::new(pane),
             list_shown: RefCell::default(),
             items: RefCell::new(Items::from([(ItemId::Status(None), Item::new(mtm, ItemId::Status(None)))])),
-            searched: RefCell::default(),
             state_shown: RefCell::default(),
+            messages_list: RefCell::new(messages_list),
+            messages_pane: RefCell::new(messages_pane),
+            messages_shown: RefCell::default(),
+            payload_shown: RefCell::default(),
             pane_shown: Cell::new(true),
             rendered: Cell::new(None),
             contexts_shown: RefCell::default(),
@@ -645,14 +731,16 @@ impl Target {
         !c.finished.get() && c.view.borrow().borrow().target_error.is_none()
     }
 
-    /// ⌘R: the Actors page reloads its list from the top and its pane; another page refreshes the Overview.
+    /// ⌘R: the Actors page reloads its list from the top and its pane, the Messages page its list; another page
+    /// refreshes the Overview.
     fn refresh_view(&self) {
         if self.can_refresh() {
             let c = self.ivars();
-            if c.navigation.borrow().current() == Section::Actors {
-                c.session.actors().refresh();
-            } else {
-                c.session.refresh();
+            let section = c.navigation.borrow().current();
+            match section {
+                Section::Actors => c.session.actors().refresh(),
+                Section::Messages => c.session.messages().refresh(),
+                _ => c.session.refresh(),
             }
             self.render();
         }
@@ -770,9 +858,88 @@ impl Target {
     }
 
     fn change_history(&self, change: fn(&mut Navigation) -> bool) {
-        if change(&mut self.ivars().navigation.borrow_mut()) {
+        self.navigate(change);
+    }
+
+    /// Moves in the history through the session, which starts or cancels a Show Actor; then the search field shows
+    /// the page's prefix and the window the new place.
+    fn navigate(&self, change: impl FnOnce(&mut Navigation) -> bool) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let changed = c.session.navigate(&mut c.navigation.borrow_mut(), change);
+        if changed {
+            self.sync_search();
             self.render();
         }
+    }
+
+    /// The search field shows the prefix of the page it searches, and says what it searches.
+    fn sync_search(&self) {
+        let c = self.ivars();
+        let (prefix, tip) = match c.navigation.borrow().current() {
+            Section::Actors => (c.list.borrow().borrow().prefix.clone(), "Search actors by address prefix"),
+            Section::Messages => (
+                c.messages_list.borrow().borrow().prefix.clone(),
+                "Search pending messages by their actor's address prefix",
+            ),
+            _ => return,
+        };
+        let search = &self.window().search;
+        if search.stringValue().to_string() != prefix {
+            search.setStringValue(&NSString::from_str(&prefix));
+        }
+        search.setToolTip(Some(&NSString::from_str(tip)));
+        search.setAccessibilityLabel(Some(&NSString::from_str(tip)));
+    }
+
+    /// Reloads the Messages table and restores the selection by message id.
+    fn render_messages(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let Some(window) = c.window.get() else { return };
+        let list = c.messages_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        window.messages.show_footer(&list, target_error.as_deref());
+        let selected = c.session.messages().selected().and_then(|id| list.index(&id));
+        c.messages_shown.replace(list);
+        let table = &window.messages.table;
+        c.syncing.set(true);
+        table.reloadData();
+        match selected {
+            Some(row) => table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false),
+            // SAFETY: A nil sender is allowed; the syncing guard ignores the selection callback.
+            None => unsafe { table.deselectAll(None) },
+        }
+        c.syncing.set(false);
+        self.check_more_messages();
+    }
+
+    /// Asks for a page of messages when the last visible row is near the end, including after scrolling.
+    fn check_more_messages(&self) {
+        let c = self.ivars();
+        let Some(window) = c.window.get() else { return };
+        let last = window.messages.last_visible_row().unwrap_or(0);
+        let wants = c.messages_shown.borrow().wants_more(last);
+        if wants {
+            c.session.messages().more();
+        }
+    }
+
+    /// Shows the selected message.
+    fn render_message_pane(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let Some(window) = c.window.get() else { return };
+        let pane = c.messages_pane.borrow_mut().borrow_and_update().clone();
+        let shown = c.payload_shown.borrow().clone();
+        let shown = window.messages.show_pane(&pane, shown.as_ref());
+        c.payload_shown.replace(shown);
     }
 
     /// Shows the latest view: the title, the toolbar, the sidebar's selection and the content.
@@ -789,12 +956,12 @@ impl Target {
         };
         window.window.setTitle(&NSString::from_str(section.title()));
         window.window.setSubtitle(&NSString::from_str(&subtitle(&view)));
-        let actors = section == Section::Actors;
+        let (actors, messages, has_pane) = (section == Section::Actors, section == Section::Messages, paged(section));
         for (item, enabled) in [
             (&c.back, can_back),
             (&c.forward, can_forward),
             (&c.refresh, view.target_error.is_none()),
-            (&c.pane_toggle, actors),
+            (&c.pane_toggle, has_pane),
         ] {
             let item = item.borrow().clone();
             if let Some(item) = item {
@@ -810,21 +977,28 @@ impl Target {
             window.sidebar.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
             c.syncing.set(false);
         }
-        window.search.setEnabled(actors);
-        window.content.setHidden(actors);
+        window.search.setEnabled(has_pane);
+        window.content.setHidden(has_pane);
         window.page.root.setHidden(!actors);
+        window.page.pane.setHidden(!actors);
+        window.messages.root.setHidden(!messages);
+        window.messages.pane.setHidden(!messages);
         let before = c.rendered.replace(Some(section));
         if before != Some(section) {
-            if before == Some(Section::Actors) {
+            if before.is_some_and(paged) {
                 c.pane_shown.set(!window.pane_item.isCollapsed());
             }
-            self.collapse_pane(!(actors && c.pane_shown.get()));
+            self.collapse_pane(!(has_pane && c.pane_shown.get()));
         }
         content::render(&window.document, &window.content, section, &view);
         if actors {
             c.session.actors().show();
             self.render_list();
             self.render_pane();
+        } else if messages {
+            c.session.messages().show();
+            self.render_messages();
+            self.render_message_pane();
         }
     }
 
@@ -910,7 +1084,7 @@ impl Target {
             }
             SEARCH => {
                 item.setLabel(ns_string!("Search"));
-                item.setToolTip(Some(ns_string!("Actors whose address starts with this text")));
+                item.setToolTip(Some(ns_string!("Search by address prefix")));
                 item.setView(Some(&self.window().search));
             }
             PANE => {
@@ -949,6 +1123,7 @@ impl Target {
             NSControl::setTarget(&window.search, None);
         }
         window.page.clear_actions();
+        window.messages.clear_actions();
         true
     }
 }
@@ -979,6 +1154,8 @@ struct Window {
     search: Retained<NSSearchField>,
     /// The Actors page, next to the Overview's scroll view in the content.
     page: Page,
+    /// The Messages page, next to them.
+    messages: MessagesPage,
     /// The inspector pane's split item, collapsed outside the Actors page and by the pane toggle.
     pane_item: Retained<NSSplitViewItem>,
     /// Attached once the target holds the window, as its items need the pop-up.
@@ -1052,23 +1229,37 @@ impl Window {
         let container =
             NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(760.0, 600.0)));
         let page = Page::new(mtm);
-        for view in [&**content, &*page.root] {
+        let messages =
+            MessagesPage::new(mtm, target.as_ref(), sel!(inspectorMessagesRetry:), sel!(inspectorShowActor:));
+        for view in [&**content, &*page.root, &*messages.root] {
             view.setFrame(container.bounds());
             view.setAutoresizingMask(fill);
             container.addSubview(view);
         }
         page.root.setHidden(true);
+        messages.root.setHidden(true);
+        messages.table.setIdentifier(Some(&NSString::from_str(MESSAGES_TABLE)));
         // SAFETY: The target implements both protocols and clears them during teardown.
         unsafe {
             page.table.setDataSource(Some(ProtocolObject::from_ref(target)));
             page.table.setDelegate(Some(ProtocolObject::from_ref(target)));
+            messages.table.setDataSource(Some(ProtocolObject::from_ref(target)));
+            messages.table.setDelegate(Some(ProtocolObject::from_ref(target)));
         }
         let content_controller = NSViewController::new(mtm);
         content_controller.setView(&container);
         let content_item = NSSplitViewItem::splitViewItemWithViewController(&content_controller);
         content_item.setMinimumThickness(420.0);
+        // The pane holds the Actors page's pane and the Messages page's; the page shown shows its own.
+        let panes = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(320.0, 600.0)));
+        for view in [&**page.pane, &**messages.pane] {
+            view.setFrame(panes.bounds());
+            view.setAutoresizingMask(fill);
+            panes.addSubview(view);
+        }
+        messages.pane.setHidden(true);
         let pane_controller = NSViewController::new(mtm);
-        pane_controller.setView(&page.pane);
+        pane_controller.setView(&panes);
         let pane_item = NSSplitViewItem::inspectorWithViewController(&pane_controller);
         pane_item.setMinimumThickness(280.0);
         pane_item.setCanCollapse(true);
@@ -1100,7 +1291,7 @@ impl Window {
         );
         search.setPlaceholderString(Some(ns_string!("Address prefix")));
         search.setSendsSearchStringImmediately(true);
-        search.setAccessibilityLabel(Some(ns_string!("Search actors by address prefix")));
+        search.setAccessibilityLabel(Some(ns_string!("Search by address prefix")));
         // SAFETY: The target implements inspectorSearch: with the field as the sender, and clears it during teardown.
         unsafe {
             NSControl::setTarget(&search, Some(target));
@@ -1121,6 +1312,7 @@ impl Window {
             contexts,
             search,
             page,
+            messages,
             pane_item,
             toolbar,
             _split: split,

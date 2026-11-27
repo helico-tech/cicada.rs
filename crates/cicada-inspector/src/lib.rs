@@ -12,8 +12,11 @@
 //! Actors lists the actors under the searched address prefix, 100 at a time as the table scrolls, with their type,
 //! version, created time and status (running from one sample of the first 200 running turns, paused from the actor);
 //! the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB), mailbox and
-//! watches, read only. The other items say "Coming soon". The server comes from the contexts of `cicada config`,
-//! resolved as `cicada` resolves them. Refresh is by hand.
+//! watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at a time,
+//! each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's envelope
+//! and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and forward.
+//! The other items say "Coming soon". The server comes from the contexts of `cicada config`, resolved as `cicada`
+//! resolves them. Refresh is by hand.
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod actors;

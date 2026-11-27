@@ -8,16 +8,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSOutlineView, NSScrollView, NSTabView, NSTabViewItem,
-    NSTableColumn, NSTableColumnResizingOptions, NSTableViewColumnAutoresizingStyle, NSTableViewStyle, NSTextField,
-    NSTextView, NSView,
+    NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSFont, NSLineBreakMode, NSOutlineView, NSScrollView,
+    NSTabView, NSTabViewItem, NSTableColumn, NSTableColumnResizingOptions, NSTableViewColumnAutoresizingStyle,
+    NSTableViewStyle, NSTextField, NSView,
 };
-use objc2_foundation::{NSInteger, NSObject, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::content::{FlippedView, Layout, Style, color, label};
+use super::json_text::JsonText;
 use crate::actors::{ActorPath, ListView, MAILBOX_ROWS, Paging, PaneView, Read, WATCH_ROWS};
-use crate::json::{Json, Token, utf16_ranges};
+use crate::json::Json;
 use crate::model::age;
 
 /// The table's columns: identifier, title and width.
@@ -148,16 +148,11 @@ pub(super) struct Page {
     pub pane: Retained<FlippedView>,
     header: Retained<FlippedView>,
     tabs: Retained<NSTabView>,
-    state: Retained<NSView>,
-    state_notice: Retained<NSTextField>,
-    state_scroll: Retained<NSScrollView>,
-    state_text: Retained<NSTextView>,
+    state: JsonText,
     mailbox: Retained<FlippedView>,
     mailbox_scroll: Retained<NSScrollView>,
     watches: Retained<FlippedView>,
     watches_scroll: Retained<NSScrollView>,
-    /// The colours of the tokens, made once.
-    colors: [Retained<NSColor>; 5],
 }
 
 impl Page {
@@ -219,66 +214,16 @@ impl Page {
         );
         pane.addSubview(&tabs);
 
-        // State: the cut notice over the text.
-        let state = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, pane_size));
-        let state_scroll = NSTextView::scrollableTextView(mtm);
-        state_scroll.setFrame(NSRect::new(NSPoint::ZERO, pane_size));
-        state_scroll.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        let state_text = state_scroll
-            .documentView()
-            .and_then(|view| view.downcast::<NSTextView>().ok())
-            .expect("a scrollable text view holds a text view");
-        state_text.setEditable(false);
-        state_text.setSelectable(true);
-        state_text.setRichText(false);
-        state_text.setUsesFontPanel(false);
-        state_text.setTextContainerInset(NSSize::new(6.0, 8.0));
-        state_text.setFont(Some(&mono()));
-        state_text.setAccessibilityLabel(Some(ns_string!("State")));
-        state.addSubview(&state_scroll);
-        let state_notice = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
-        state_notice.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        state_notice.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        state_notice.setHidden(true);
-        state_notice.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
-        );
-        state.addSubview(&state_notice);
-
+        let state = JsonText::new(mtm, pane_size, "State", "state");
         let (mailbox_scroll, mailbox) = scrolled(mtm, pane_size, "Mailbox");
         let (watches_scroll, watches) = scrolled(mtm, pane_size, "Watches");
-        for (title, view) in [("State", &*state), ("Mailbox", &**mailbox_scroll), ("Watches", &**watches_scroll)] {
+        for (title, view) in [("State", &*state.root), ("Mailbox", &**mailbox_scroll), ("Watches", &**watches_scroll)] {
             let item = NSTabViewItem::new();
             item.setLabel(&NSString::from_str(title));
             item.setView(Some(view));
             tabs.addTabViewItem(&item);
         }
-        let colors = [
-            NSColor::controlAccentColor(),
-            NSColor::systemGreenColor(),
-            NSColor::systemOrangeColor(),
-            NSColor::systemPurpleColor(),
-            NSColor::secondaryLabelColor(),
-        ];
-        Self {
-            root,
-            table,
-            footer,
-            pane,
-            header,
-            tabs,
-            state,
-            state_notice,
-            state_scroll,
-            state_text,
-            mailbox,
-            mailbox_scroll,
-            watches,
-            watches_scroll,
-            colors,
-        }
+        Self { root, table, footer, pane, header, tabs, state, mailbox, mailbox_scroll, watches, watches_scroll }
     }
 
     /// The footer: why there is no server, or what the running status covers when that is not every running turn.
@@ -336,7 +281,7 @@ impl Page {
                 if state_shown.is_some_and(|shown| std::sync::Arc::ptr_eq(shown, &details.state)) {
                     return Some(details.state.clone());
                 }
-                self.show_state(&details.state);
+                self.state.show(&details.state);
                 Some(details.state.clone())
             }
             Read::Ready(None) => self.show_plain("", None),
@@ -346,59 +291,8 @@ impl Page {
     }
 
     fn show_plain(&self, text: &str, style: Option<Style>) -> Option<std::sync::Arc<Json>> {
-        self.state_notice.setHidden(true);
-        self.layout_state(0.0);
-        self.state_text.setString(&NSString::from_str(text));
-        self.state_text.setTextColor(Some(&color(style.unwrap_or(Style::Secondary))));
+        self.state.show_plain(text, style);
         None
-    }
-
-    /// The state with its runs applied as UTF-16 ranges, in one batch of the text storage.
-    fn show_state(&self, json: &Json) {
-        let notice = json.cut.then(|| {
-            format!(
-                "The state is longer than {} KiB; this shows its first {} KiB.",
-                crate::json::CUT / 1024,
-                crate::json::CUT / 1024
-            )
-        });
-        self.state_notice.setHidden(notice.is_none());
-        self.state_notice.setStringValue(&NSString::from_str(notice.as_deref().unwrap_or("")));
-        self.layout_state(if notice.is_some() { 34.0 } else { 0.0 });
-        // SAFETY: A text view made by `scrollableTextView` has a text storage.
-        let Some(storage) = (unsafe { self.state_text.textStorage() }) else { return };
-        let ranges = utf16_ranges(&json.text, &json.runs);
-        let font = mono();
-        let label = NSColor::labelColor();
-        storage.beginEditing();
-        storage.replaceCharactersInRange_withString(NSRange::new(0, storage.length()), &NSString::from_str(&json.text));
-        let all = NSRange::new(0, storage.length());
-        // SAFETY: The attribute names are AppKit's constants, the values a font and colours, and every range lies
-        // within the text just set: the runs are on character boundaries of that text.
-        unsafe {
-            storage.addAttribute_value_range(NSFontAttributeName, as_object(&*font), all);
-            storage.addAttribute_value_range(NSForegroundColorAttributeName, as_object(&*label), all);
-            for (location, length, token) in ranges {
-                let color = &self.colors[token_index(token)];
-                storage.addAttribute_value_range(
-                    NSForegroundColorAttributeName,
-                    as_object(&**color),
-                    NSRange::new(location, length),
-                );
-            }
-        }
-        storage.endEditing();
-    }
-
-    /// Places the state's text under a notice `notice` high.
-    fn layout_state(&self, notice: f64) {
-        let size = self.state.frame().size;
-        let notice_frame = NSRect::new(
-            NSPoint::new(8.0, size.height - notice + 4.0),
-            NSSize::new(size.width - 16.0, (notice - 8.0).max(0.0)),
-        );
-        self.state_notice.setFrame(notice_frame);
-        self.state_scroll.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, size.height - notice)));
     }
 
     pub(super) fn clear_actions(&self) {
@@ -655,24 +549,6 @@ fn scrolled(mtm: MainThreadMarker, size: NSSize, name: &str) -> (Retained<NSScro
     (scroll, document)
 }
 
-fn mono() -> Retained<NSFont> {
-    NSFont::monospacedSystemFontOfSize_weight(12.0, 0.0)
-}
-
-fn token_index(token: Token) -> usize {
-    match token {
-        Token::Key => 0,
-        Token::String => 1,
-        Token::Number => 2,
-        Token::Literal => 3,
-        Token::Punctuation => 4,
-    }
-}
-
-fn as_object<T: AsRef<AnyObject>>(value: &T) -> &AnyObject {
-    value.as_ref()
-}
-
-fn created(at: Timestamp) -> String {
+pub(super) fn created(at: Timestamp) -> String {
     at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
