@@ -18,6 +18,6 @@ change. Follow `design.md`; the spec is `specs/change-feed-http/spec.md`; the de
 - [x] 4. **Changelog and docs handoff.** The 0.26.0 section names `ActorClient::changes` under Added; `docs-handoff.md`
   carries the design's Docs section, including the line of `docs/architecture.md` to replace. No edit to `README.md`,
   `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace
+- [x] 5. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace
   --all-targets`, `cargo test --workspace`, `cargo deny check advisories`, `openspec validate client-change-stream
   --strict`, commit. The change loop runs the gate at landing.
