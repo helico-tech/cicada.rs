@@ -21,4 +21,5 @@ After `inspector-nodes`, before `inspector-soft-refresh`.
 Crates: cicada-client.
 
 `crates/cicada-client` (the stream and its parser). Tests against an in-process server and with crafted byte streams.
-Docs handoff: the HTTP guide. Additive.
+ADR 0077, partly superseding ADR 0035's "no client streaming API". Docs handoff: the HTTP guide and the
+limits paragraph of `docs/architecture.md`. Additive.
