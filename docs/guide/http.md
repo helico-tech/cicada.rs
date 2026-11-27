@@ -67,6 +67,37 @@ Use `ActorClient::with_client` with a configured `reqwest::Client` for authentic
 Expected alternatives are values: missing actors are `None`, duplicate sends set `receipt.duplicate`.
 Other HTTP problems return `ClientError::Api`.
 
+From 0.26.0, `ActorClient::changes(prefix)` opens a stream of best-effort change hints
+([ADR 0077](../adr/0077-a-client-for-the-change-stream.md)) for a literal address prefix, or an empty prefix for every
+actor, through the same configured client with its authentication headers and TLS settings:
+
+<!-- doctest
+@@3
+# async fn follow(client: &ActorClient) -> Result<(), Box<dyn std::error::Error>> {
+@@8
+# Ok(())
+# }
+-->
+```rust,no_run
+use cicada_client::{ActorClient, Change};
+use futures::StreamExt;
+
+let mut changes = client.changes("counter/").await?;
+while let Some(change) = changes.next().await {
+    match change? {
+        Change::Changed(address) => { let _ = address; /* reread this address and update the view */ }
+        Change::Resync => { /* relist the prefix, across all pages */ }
+        _ => {}
+    }
+}
+```
+
+The call returns `ClientError::Api` for a non-200 status, and `ClientError::Body` when the headers take more than 10
+seconds or a `200` has another media type. The stream ends cleanly when the store closes, and yields a last
+`ChangeStreamError` on a failed read, invalid data, a line or event over 64 KiB, 45 seconds without body bytes, or its
+24-hour lifetime. Reconnecting is yours: a new call is a fresh subscription that starts with a resync, so reread the
+prefix. The [coverage and reconciliation rules](#follow-changes-over-http) are those of a browser client.
+
 To choose placement at creation, use the same options as the core:
 
 ```rust,no_run
@@ -263,7 +294,7 @@ after the read, and replace your view on every resync. The [core guide](core.md#
 
 Disable proxy buffering/compression for this route and allow timeouts longer than 15 s. Browser `EventSource` cannot
 set an Authorization header: use the host’s session cookies and appropriate credentialed CORS.
-`ActorClient` has no SSE method. A node stop leaves streams open; store close ends them. A request after store close
+From Rust, read it with [`ActorClient::changes`](#the-client). A node stop leaves streams open; store close ends them. A request after store close
 is the special case of an empty 200 response.
 
 ### The schema check

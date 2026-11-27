@@ -643,4 +643,5 @@ as a matter of routine (a deploy that sends SIGKILL) loses the claims of its tur
 at-least-once (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's
 own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`); change hints
 are best effort, with no history or replay (also over HTTP), and do not cover a separately opened SQLite file, older
-PostgreSQL nodes or SQL by hand; `cicada-client` has no method for the stream of `GET /changes`.
+PostgreSQL nodes or SQL by hand. The Rust client reads `GET /changes` with `ActorClient::changes` and leaves
+reconnection to the caller.
