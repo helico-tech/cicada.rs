@@ -7,17 +7,20 @@ mod check;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cicada::api::TypeView;
+use cicada::api::{TypeView, problem_types};
+use cicada::store::MessageId;
+use cicada::turn::SendOptions;
+use cicada_client::ClientError;
 use serde_json::Value;
-use tokio::{sync::watch, task::JoinHandle, time::Instant};
+use tokio::{sync::watch, task::JoinHandle, time::Instant, time::timeout};
 
 use crate::json::Json;
 use check::{Checker, Job, Land, Landed};
 pub(crate) use check::{MAX_TEXT, Verdict};
 
-use super::{Feedback, Target, View};
+use super::{Alert, Feedback, Target, View};
 use crate::actors::{Actors, PaneView, Read, Shared, State as ActorState};
-use crate::model::{Part, within};
+use crate::model::{Part, TIMED_OUT, within};
 use crate::pager::Paged;
 use crate::types::Types;
 
@@ -68,12 +71,38 @@ pub(crate) struct SendView {
     pub compiles: bool,
     /// The local check of the payload in the editor.
     pub verdict: Verdict,
+    /// The id Send uses: the same until the message type or the parsed payload changes, so that a second Send after
+    /// a lost answer is not delivered twice.
+    pub message_id: MessageId,
+    /// True while a send is out.
+    pub sending: bool,
+    /// The last send's refusal shown in the sheet: the server's 400 or 422 text, an absent actor or a timeout.
+    pub refusal: Option<Alert>,
+    /// The last send's refusal shown as an alert over the sheet, such as a 413.
+    pub alert: Option<Alert>,
+    /// Grows at every Send, so the view shows each alert once.
+    pub sends: u64,
 }
 
 impl SendView {
     /// The note under the schema when the server does not check this type's payloads.
     pub fn schema_note(&self) -> Option<&'static str> {
         (!self.compiles).then_some(Verdict::UNCHECKED)
+    }
+
+    /// True when Send is enabled: a message type is chosen, the payload passed the local check (or its schema cannot
+    /// be compiled) and no send is out.
+    pub fn can_send(&self) -> bool {
+        !self.sending
+            && matches!(self.choices, Choices::Ready(_))
+            && matches!(self.verdict, Verdict::Passes | Verdict::Unchecked)
+    }
+
+    fn message_type(&self) -> Option<&str> {
+        match &self.choices {
+            Choices::Ready(names) => names.get(self.chosen).map(String::as_str),
+            _ => None,
+        }
     }
 }
 
@@ -99,6 +128,9 @@ pub(super) struct Sheet {
     delay: Option<JoinHandle<()>>,
     /// The parsed payload the verdict let through, sent as is.
     checked: Option<Arc<Value>>,
+    /// The message type and parsed payload that [`SendView::message_id`] was last used for.
+    identified: Option<(String, Arc<Value>)>,
+    send_task: Option<JoinHandle<()>>,
 }
 
 impl Actors {
@@ -133,6 +165,11 @@ impl Actors {
             schema: None,
             compiles: true,
             verdict: Verdict::Checking,
+            message_id: MessageId::random(),
+            sending: false,
+            refusal: None,
+            alert: None,
+            sends: 0,
         };
         let checker = Checker::start(Arc::downgrade(&self.shared));
         if checker.is_none() {
@@ -150,6 +187,8 @@ impl Actors {
             text: START.into(),
             delay: None,
             checked: None,
+            identified: None,
+            send_task: None,
         });
         self.shared.actions.send_replace(View { busy: true, serial: id, feedback: None });
         match cached {
@@ -206,6 +245,46 @@ impl Actors {
         self.shared.publish_sheet(&state);
     }
 
+    /// Send: sends the checked payload with the sheet's message id. A success closes the sheet with a notice and reads
+    /// the pane again; a refusal keeps the sheet and the payload.
+    pub(crate) fn send_message(&self, id: u64) {
+        let mut state = self.shared.lock();
+        let Some(sheet) = state.actions.sheet.as_ref().filter(|sheet| sheet.view.id == id) else { return };
+        let (Some(value), Some(message_type)) = (sheet.checked.clone(), sheet.view.message_type()) else { return };
+        if !sheet.view.can_send() {
+            return;
+        }
+        if !sheet.target.matches(&state) {
+            let feedback = Feedback::selection_changed(state.pane_generation);
+            self.shared.drop_sheet(&mut state);
+            self.shared.finish_action(&mut state, Some(feedback));
+            return;
+        }
+        let Some(client) = state.client.clone() else { return };
+        let (message_type, address) = (message_type.to_owned(), sheet.target.address.clone());
+        let options = SendOptions { id: Some(sheet.view.message_id.clone()), ..SendOptions::default() };
+        let sheet = state.actions.sheet.as_mut().expect("the sheet is open");
+        sheet.view.sending = true;
+        sheet.view.refusal = None;
+        sheet.view.alert = None;
+        sheet.view.sends += 1;
+        let sends = sheet.view.sends;
+        let shared = self.shared.clone();
+        let deadline = self.shared.limits.deadline;
+        let task = self.shared.handle.spawn(async move {
+            let payload = Value::clone(&value);
+            let answer = timeout(deadline, client.send_message(&address, &message_type, payload, options)).await;
+            let mut state = shared.lock();
+            if !state.actions.sheet.as_ref().is_some_and(|sheet| sheet.view.id == id && sheet.view.sends == sends) {
+                return;
+            }
+            shared.land_send(&mut state, answer.ok());
+        });
+        let old = state.actions.sheet.as_mut().and_then(|sheet| sheet.send_task.replace(task));
+        state.abort(old);
+        self.shared.publish_sheet(&state);
+    }
+
     /// Cancel: closes the sheet and drops what it was doing.
     pub(crate) fn cancel_send(&self, id: u64) {
         let mut state = self.shared.lock();
@@ -222,6 +301,7 @@ impl Shared {
         if let Some(sheet) = state.actions.sheet.take() {
             state.abort(sheet.types_task);
             state.abort(sheet.delay);
+            state.abort(sheet.send_task);
             self.send.send_replace(None);
         }
     }
@@ -258,6 +338,50 @@ impl Shared {
         self.publish_sheet(state);
     }
 
+    /// Lands the answer to the sheet's current send; `None` when it timed out.
+    fn land_send(
+        self: &Arc<Self>,
+        state: &mut ActorState,
+        answer: Option<cicada_client::ClientResult<cicada_client::SendReceipt>>,
+    ) {
+        let selected = state.actions.sheet.as_ref().is_some_and(|sheet| sheet.target.matches(state));
+        let sheet = state.actions.sheet.as_mut().expect("the caller checked the sheet");
+        sheet.send_task = None;
+        sheet.view.sending = false;
+        match answer {
+            Some(Ok(receipt)) => {
+                let text = format!("{}sent {}", if receipt.duplicate { "already " } else { "" }, receipt.id);
+                self.drop_sheet(state);
+                self.refresh_after_write(state);
+                let feedback = selected.then(|| Feedback::Notice { generation: state.pane_generation, text });
+                self.finish_action(state, feedback);
+                return;
+            }
+            Some(Err(ClientError::Api(problem))) if problem.problem_type == problem_types::NO_SUCH_INSTANCE => {
+                sheet.view.refusal = Some(Alert { title: "actor not found".into(), detail: None });
+            }
+            Some(Err(error)) => {
+                let in_sheet = matches!(error.status(), Some(400 | 422));
+                let alert = state.actions.redactions.alert(error);
+                let sheet = state.actions.sheet.as_mut().expect("the sheet is open");
+                if in_sheet {
+                    sheet.view.refusal = Some(alert);
+                } else {
+                    sheet.view.alert = Some(alert);
+                }
+            }
+            None => {
+                sheet.view.refusal = Some(Alert {
+                    title: TIMED_OUT.into(),
+                    detail: Some("The server may have the message. Send again sends the same message id.".into()),
+                });
+                // The message may have reached the server: read the pane again, as after an action that timed out.
+                self.refresh_after_write(state);
+            }
+        }
+        self.publish_sheet(state);
+    }
+
     fn land_row(&self, state: &mut ActorState, row: Option<Arc<TypeView>>) {
         let Some(sheet) = state.actions.sheet.as_mut() else { return };
         sheet.view.choices = match &row {
@@ -279,6 +403,8 @@ impl Sheet {
     fn changed(&mut self) {
         self.edit += 1;
         self.checked = None;
+        self.view.refusal = None;
+        self.view.alert = None;
         if self.checker.is_some() {
             self.view.verdict = Verdict::Checking;
         }
@@ -320,6 +446,14 @@ impl Land for Shared {
                 if id == sheet.view.id && choice == sheet.choice && edit == sheet.edit =>
             {
                 sheet.view.verdict = verdict;
+                if let (Some(value), Some(name)) = (&value, sheet.view.message_type().map(str::to_owned)) {
+                    match &sheet.identified {
+                        Some((used, payload)) if *used == name && payload == value => {}
+                        Some(_) => sheet.view.message_id = MessageId::random(),
+                        None => {}
+                    }
+                    sheet.identified = Some((name, value.clone()));
+                }
                 sheet.checked = value;
             }
             _ => return,

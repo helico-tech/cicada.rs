@@ -7,15 +7,15 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use cicada::prelude::*;
 use serde_json::json;
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, sync::Notify};
 
-use super::actions::{create, model, select};
+use super::actions::{create, model, notice, select};
 use super::soft_refresh::with_clock;
 use super::types::registered;
 use super::{Fake, Rule, Server, actors, no_rule, problem, serve};
-use crate::actors::actions::{CHECK_DELAY, Choices, MAX_TEXT, SendView, Verdict};
+use crate::actors::actions::{Action, Alert, CHECK_DELAY, Choices, Feedback, MAX_TEXT, SendView, Verdict};
 use crate::actors::{ActorPath, Actors, Read};
-use crate::model::Limits;
+use crate::model::{Limits, TIMED_OUT};
 use crate::pager::Paging;
 use crate::types::Types;
 
@@ -275,6 +275,233 @@ async fn one_check_runs_at_a_time_and_a_result_for_an_older_payload_is_dropped()
         assert_eq!(model.send_sheet().borrow().as_ref().unwrap().verdict, Verdict::Checking, "the mismatch is dropped");
         release_second.send(()).unwrap();
         assert_eq!(sheet_until(&model, |view| view.verdict != Verdict::Checking).await.verdict, Verdict::Passes);
+    })
+    .await;
+}
+
+const FORM_SEND: &str = "/actors/form/a/messages";
+
+/// Types `text` as a `Required` payload and waits for it to pass.
+async fn passing(model: &Actors, id: u64, text: &str) -> SendView {
+    let view = verdict(model, id, REQUIRED, text).await;
+    assert_eq!(view.verdict, Verdict::Passes, "{text}");
+    assert!(view.can_send());
+    view
+}
+
+/// Presses Send and waits for its answer: the sheet's view, or `None` once it closed.
+async fn send(model: &Actors, id: u64) -> Option<SendView> {
+    model.send_message(id);
+    assert!(model.send_sheet().borrow().as_ref().is_some_and(|view| view.sending && !view.can_send()));
+    model.send_sheet().wait_for(|view| view.as_ref().is_none_or(|view| !view.sending)).await.unwrap().clone()
+}
+
+fn feedback(model: &Actors) -> Option<Feedback> {
+    model.actions().borrow().feedback.clone()
+}
+
+/// Holds the response to the first send to `form/a`, after the server handled it; later sends go through.
+fn first_send_held() -> (Rule, Arc<Notify>, Arc<Notify>) {
+    let (ready, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let held = Fake::HoldResponse { ready: ready.clone(), release: release.clone() };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let rule: Rule = Arc::new(move |target| {
+        (target == FORM_SEND && calls.fetch_add(1, Ordering::SeqCst) == 0).then(|| held.clone())
+    });
+    (rule, ready, release)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sent_message_closes_the_sheet_with_its_id_and_reads_the_pane_again() {
+    with_clock(async {
+        let actors = actors().await;
+        let server = serve(&actors, no_rule(), Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let view = passing(&model, id, r#"{"n": 1}"#).await;
+        let generation = model.pane().borrow().generation;
+        assert_eq!(send(&model, id).await, None);
+        assert_eq!(feedback(&model), Some(notice(generation, &format!("sent {}", view.message_id))));
+        assert!(!model.actions().borrow().busy);
+        let pane = model
+            .pane()
+            .wait_for(|pane| matches!(&pane.mailbox, Read::Ready(mailbox) if !mailbox.rows.is_empty()))
+            .await
+            .unwrap()
+            .clone();
+        let Read::Ready(mailbox) = &pane.mailbox else { unreachable!() };
+        assert_eq!((&mailbox.rows[0].id, mailbox.rows[0].message_type.as_str()), (&view.message_id, "Required"));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn send_after_a_timeout_reuses_the_id_and_shows_already_sent() {
+    with_clock(async {
+        let actors = actors().await;
+        let (rule, ready, release) = first_send_held();
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let first = passing(&model, id, r#"{"n": 1}"#).await;
+        model.send_message(id);
+        ready.notified().await;
+        tokio::time::advance(Limits::DEFAULT.deadline).await;
+        let view = sheet_until(&model, |view| !view.sending).await;
+        assert_eq!(view.refusal.as_ref().unwrap().title, TIMED_OUT);
+        assert_eq!(view.message_id, first.message_id);
+        assert!(view.can_send(), "the payload is kept and Send is on");
+        release.notify_one();
+
+        model.edit_send_payload(id, r#"{ "n" : 1 }"#);
+        tokio::time::advance(CHECK_DELAY).await;
+        let same = sheet_until(&model, |view| view.verdict == Verdict::Passes).await;
+        assert_eq!(same.message_id, first.message_id, "an equal parsed payload keeps the id");
+        let generation = model.pane().borrow().generation;
+        assert_eq!(send(&model, id).await, None);
+        assert_eq!(feedback(&model), Some(notice(generation, &format!("already sent {}", first.message_id))));
+        let mailbox = server.client.mailbox(&ActorAddress::parse("form/a").unwrap(), None, None).await.unwrap();
+        assert_eq!(mailbox.unwrap().items.len(), 1, "delivered once");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_edited_payload_after_a_lost_answer_goes_with_a_new_id() {
+    with_clock(async {
+        let actors = actors().await;
+        let (rule, ready, release) = first_send_held();
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let first = passing(&model, id, r#"{"n": 1}"#).await;
+        model.send_message(id);
+        ready.notified().await;
+        tokio::time::advance(Limits::DEFAULT.deadline).await;
+        sheet_until(&model, |view| !view.sending).await;
+        release.notify_one();
+
+        let edited = passing(&model, id, r#"{"n": 2}"#).await;
+        assert_ne!(edited.message_id, first.message_id);
+        assert_eq!(send(&model, id).await, None);
+        let generation = model.pane().borrow().generation;
+        assert_eq!(feedback(&model), Some(notice(generation, &format!("sent {}", edited.message_id))));
+        let mailbox = server.client.mailbox(&ActorAddress::parse("form/a").unwrap(), None, None).await.unwrap();
+        let ids: Vec<_> = mailbox.unwrap().items.into_iter().map(|item| item.message.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&first.message_id) && ids.contains(&edited.message_id));
+        // Another message type with the same payload is another message too.
+        let (model, id) = open_form_again(&server).await;
+        let required = passing(&model, id, r#"{"n": 1}"#).await;
+        let any = verdict(&model, id, ANY, r#"{"n": 1}"#).await;
+        assert_eq!(any.verdict, Verdict::Passes);
+        assert_ne!(any.message_id, required.message_id);
+    })
+    .await;
+}
+
+/// Opens a second sheet on `form/a`, registered already.
+async fn open_form_again(server: &Server) -> (Actors, u64) {
+    let model = model(server);
+    model.select(Some(ActorPath::root(ActorAddress::parse("form/a").unwrap())));
+    let pane = model.pane().wait_for(|pane| matches!(pane.actor, Read::Ready(Some(_)))).await.unwrap().clone();
+    let id = model.open_send(&pane, &no_types()).expect("the sheet opens");
+    choices(&model).await;
+    (model, id)
+}
+
+#[tokio::test(start_paused = true)]
+async fn refusals_show_in_the_sheet_or_as_an_alert_and_keep_the_sheet_and_payload() {
+    with_clock(async {
+        let actors = actors().await;
+        let answers = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+            Fake::Answer(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"type": "urn:cicada:problem:invalid-payload", "status": 422,
+                    "title": "Invalid\u{0007} payload",
+                    "detail": "Payload of 'Required' does not match the registered schema; GET /types/form has it"}),
+            ),
+            Fake::Answer(
+                StatusCode::BAD_REQUEST,
+                json!({"type": "urn:cicada:problem:bad-request", "status": 400, "title": "Bad request",
+                    "detail": "The payload contains a NUL character"}),
+            ),
+            Fake::Answer(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({"type": "urn:cicada:problem:payload-too-large", "status": 413, "title": "Too large"}),
+            ),
+        ])));
+        let rule: Rule =
+            Arc::new(move |target| (target == FORM_SEND).then(|| answers.lock().unwrap().pop_front()).flatten());
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let view = passing(&model, id, r#"{"n": 1}"#).await;
+
+        let refused = send(&model, id).await.expect("the sheet stays open");
+        let refusal = refused.refusal.clone().unwrap();
+        assert_eq!(refusal.title, "Invalid payload");
+        assert_eq!(
+            refusal.detail.as_deref(),
+            Some("Payload of 'Required' does not match the registered schema; GET /types/form has it")
+        );
+        assert_eq!(
+            (refused.alert.as_ref(), &refused.verdict, &refused.message_id),
+            (None, &Verdict::Passes, &view.message_id)
+        );
+        assert!(refused.can_send() && model.actions().borrow().busy);
+
+        let refused = send(&model, id).await.expect("the sheet stays open");
+        assert_eq!(refused.refusal.unwrap().detail.as_deref(), Some("The payload contains a NUL character"));
+
+        let refused = send(&model, id).await.expect("the sheet stays open");
+        assert_eq!((&refused.refusal, refused.alert.as_ref().unwrap().title.as_str()), (&None, "Too large"));
+        assert!(refused.can_send() && model.actions().borrow().busy);
+        assert_eq!(feedback(&model), None);
+
+        server.client.delete_actor(&ActorAddress::parse("form/a").unwrap()).await.unwrap();
+        let refused = send(&model, id).await.expect("the sheet stays open");
+        assert_eq!(refused.refusal.unwrap(), Alert { title: "actor not found".into(), detail: None });
+        model.edit_send_payload(id, r#"{"n": 1}"#);
+        assert_eq!(model.send_sheet().borrow().as_ref().unwrap().refusal, None, "an edit clears the refusal");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_sheet_and_the_actions_take_turns_and_a_context_switch_or_close_drops_the_send() {
+    with_clock(async {
+        let actors = actors().await;
+        create(&actors, "a").await;
+        let server = serve(&actors, no_rule(), Duration::ZERO).await;
+        let model = model(&server);
+        let pane = select(&model, "a").await;
+        let sheet = model.press_action(&pane, Action::Purge).unwrap();
+        assert_eq!(model.open_send(&pane, &no_types()), None, "a confirmation holds the slot");
+        model.answer_action(sheet.id, false);
+        let id = model.open_send(&pane, &no_types()).unwrap();
+        assert!(model.press_action(&pane, Action::Pause).is_none(), "the sheet holds the slot");
+        assert_eq!(model.open_send(&pane, &no_types()), None);
+        model.cancel_send(id);
+        assert!(!model.actions().borrow().busy && model.send_sheet().borrow().is_none());
+
+        let ready = Arc::new(Notify::new());
+        let held = Fake::HoldResponse { ready: ready.clone(), release: Arc::new(Notify::new()) };
+        let rule: Rule = Arc::new(move |target| (target == FORM_SEND).then(|| held.clone()));
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        form(&server).await;
+        for close in [false, true] {
+            let (model, id) = open_form_again(&server).await;
+            passing(&model, id, r#"{"n": 1}"#).await;
+            model.send_message(id);
+            ready.notified().await;
+            if close {
+                model.stop();
+            } else {
+                model.use_client(Some(server.client.clone()));
+            }
+            for task in model.take_aborted() {
+                assert!(task.await.is_err_and(|e| e.is_cancelled()));
+            }
+            assert!(model.send_sheet().borrow().is_none());
+            assert_eq!(*model.actions().borrow(), Default::default());
+        }
     })
     .await;
 }

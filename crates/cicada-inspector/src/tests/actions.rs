@@ -50,7 +50,7 @@ async fn assert_notice(model: &Actors, pane: &PaneView, action: Action, expected
     assert_eq!(feedback, notice(model.pane().borrow().generation, expected));
 }
 
-fn notice(generation: u64, text: &str) -> Feedback {
+pub(super) fn notice(generation: u64, text: &str) -> Feedback {
     Feedback::Notice { generation, text: text.into() }
 }
 

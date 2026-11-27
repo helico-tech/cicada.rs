@@ -14,7 +14,7 @@ checks, alert text and fresh read; rebase onto it when it landed first). Follow 
   levels, `cicada::runtime::limits::MAX_DEPTH`, counted as the server does) before `is_valid`; "does not match the
   schema" on false (decisions 2 and 3). Verify: the parity test against an in-process server on a type no actor hosts,
   the 65-level and 1 MiB payloads, a stale result dropped.
-- [ ] 3. **The message id and the send.** One id per payload, fresh when the type or the parsed payload changes;
+- [x] 3. **The message id and the send.** One id per payload, fresh when the type or the parsed payload changes;
   `send_message` with that id; 202 "sent <id>", 200 "already sent <id>", both closing the sheet and asking for a fresh
   read; 404 "actor not found" in the sheet; 422 or 400 in the sheet with the server's text, cleaned and cut as
   `inspector-actions` does, the payload kept; 413 and other refusals as an alert with the sheet kept; a context switch
