@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.24.0" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.24.0", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.25.0" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.25.0", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1.2.3"
 ```
@@ -25,6 +25,7 @@ schemars = "1.2.3"
 | Run containers | Add `cicada-containers` from the same tag with `features = ["docker"]` for `DockerRuntime`; `features = ["testing"]` in dev dependencies for `FakeRuntime` ([guide](../guide/containers.md)) |
 | Test actors | Add `cicada-test` as a dev dependency and `tokio` with `test-util` |
 | Use the terminal UI | Enable `tui` on `cicada-app` |
+| Run a menu bar worker | Add `cicada-tray` from the same tag for the worker model and, on macOS, the menu bar app ([app guide](../guide/app.md#a-menu-bar-worker)) |
 
 No store, terminal, Docker or testing feature is enabled by default. An HTTP worker needs no store feature.
 In a workspace, place shared entries under `[workspace.dependencies]` and inherit them from each package.
@@ -104,8 +105,8 @@ For a **first install** into a project without either skill folder:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.24.0 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.24.0.tar.gz" -C "$staging"
+gh release download v0.25.0 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.25.0.tar.gz" -C "$staging"
 # Inspect both skills, the helper and the design template before copying them.
 mkdir -p .claude/skills
 cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
