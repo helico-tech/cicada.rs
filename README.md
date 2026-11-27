@@ -43,6 +43,7 @@ Use [Design with actors](docs/guide/design.md) to choose actors, ownership and p
 | An HTTP API or typed client | `cicada-axum`, `cicada-client` | [HTTP](docs/guide/http.md) |
 | A binary with serve, worker and operator commands | `cicada-app` | [App](docs/guide/app.md) |
 | An in-process HTTP worker for a menu bar | `cicada-tray` | [A menu bar worker](docs/guide/app.md#a-menu-bar-worker) |
+| A native inspector window for macOS | `cicada-inspector` | [Inspector on macOS](docs/guide/app.md#inspector-on-macos) |
 | Supervision, scheduling, flows, permit pools, job graphs and message processing | `cicada-actors` | [Ready-made actors](docs/guide/actors.md) |
 | Containers run from an application (optional) | `cicada-containers` | [Containers](docs/guide/containers.md) |
 | Traces and metrics | `cicada-otel` | [Telemetry](docs/guide/core.md#opentelemetry) |

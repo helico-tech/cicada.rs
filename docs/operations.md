@@ -143,6 +143,7 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | Process run shows `NeedsReconciliation` | Old host process, restart or another live host sharing the node id | [Check and clean up the outside process](#process-runs-needing-reconciliation), then explicitly replace the run if needed |
 | Every message fails as state | Stored shape versus decoder | Restore compatibility/defaults or migrate data |
 | `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
+| Failures under a type | `cicada stats --prefix TYPE/` for the count still visible (`-` or `null` when an older server omits it); `cicada get outcomes --status failed --prefix TYPE/` for each one | Fix the cause, then retry or redrive the failed messages; the count drops as outcomes expire |
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
 | Timer chain stopped | Cancelled/purged/exhausted timer | Scheduler: Start; debounce/batcher: Flush; flow: Continue to recover, or `FlowMsg::Cancel` to end the run |
 | Heartbeat watch stays alive without an alarm | `armed` timer missing/failed, target type/instance and outcomes | Fix the cause; send `HeartbeatWatchMsg::Rearm` at the original deadline. Retry/redrive copies are ignored; Beat claims new activity. See [heartbeat recovery](guide/actors.md#heartbeat-watch) |

@@ -321,6 +321,33 @@ context and makes it current when none is.
 - The grace period and cancel timeout can delay Quit and logout, and a second Ctrl-C does not force-quit while the
   worker drains. Stop Now appears only for a worker that was ready.
 
+### Inspector on macOS
+
+`cicada-inspector` (from 0.26.0, [ADR 0076](../adr/0076-a-native-macos-inspector.md)) opens a native window that
+inspects a running system over the HTTP API. A small binary, or a `.app`, calls `cicada_inspector::Inspector::new().run()`
+from a plain `main` that returns `std::process::ExitCode`, on the main thread; the crate's rustdoc has the example. It
+owns the app until the window closes: a regular app with a Dock icon and a main menu with Quit (⌘Q), Close (⌘W),
+Refresh (⌘R), Back (⌘[) and Forward (⌘]).
+
+The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
+only the Overview has a page so far, and the others say "Coming soon". The Overview shows tiles for actors, pending
+messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
+registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
+time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
+and a type past the 50 or not counted in time shows "not counted". A new refresh or a context switch cancels the one
+before.
+
+The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
+a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
+
+- macOS 14 or later; elsewhere `run` prints that and exits with code 1. It cannot yet open inside another app's run
+  loop, such as the menu bar app's.
+- `CICADA_SERVER` and `CICADA_TOKEN` in its environment win over the picked context, as for `cicada`, and the window
+  says so. A password in a server URL never reaches the window.
+- The failed tile counts what `GET /outcomes` still lists, so what retention keeps; the window cannot show the
+  retention itself. An older server without the count shows `—`.
+- No `.app` bundle, signing or notarising is provided.
+
 ## Command line and terminal UI
 
 Install the operator from the checkout:
@@ -381,7 +408,12 @@ Resolve each field independently:
 | Config path | `CICADA_CONFIG`, `$XDG_CONFIG_HOME/cicada/config.toml`, `~/.config/cicada/config.toml` |
 
 Context headers/token still apply when its URL is overridden. A missing file is empty; an unreadable file or unknown
-context fails. `config set-context` replaces a context; `config use-context` switches it. Writes replace the file’s
+context fails. `cicada_app::context_client(&env, Some("prod"))` (from 0.26.0) gives an `ActorClient` for a context,
+resolved exactly as the operator commands resolve their target and with their 30 s timeout, and the name of the context
+it really uses (`None` when only `CICADA_SERVER` names a server); `None` as the context picks it as `cicada` does. It
+checks the server URL first, so no error quotes it, and sends a user and password in the URL as Basic credentials,
+which win over a token; the client's URL keeps neither. `config set-context` replaces a context; `config use-context`
+switches it. Writes replace the file’s
 comments, preserve symlinks and set Unix permissions to 0600.
 
 From 0.26.0, `config set-context` and `config use-context` take a lock on `<file>.lock` next to the config file (next to

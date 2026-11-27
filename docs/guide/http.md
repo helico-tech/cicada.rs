@@ -120,6 +120,12 @@ Sends can also carry `id`, `delay` **or** `deliverAt`, `correlationId`, `headers
 Creating an existing actor leaves it untouched (200); a new create is 201. New sends return 202; duplicates return 200.
 Sending never creates an actor.
 
+`GET /stats?prefix=counter/` returns `actors`, `pending`, `oldestDue` and, from 0.26.0, `failed`: the failed outcomes
+that `GET /outcomes?status=failed&prefix=counter/` would list now, without a `since` filter. An omitted or empty prefix
+counts across all addresses. A failure stays visible as long as its message's keep policy, by default the store's
+retention, keeps it, so the count can go down. A 0.26.0 server includes `failed` also when it is zero; `ActorClient`
+reads a missing field from an older server as `None`.
+
 ### Errors and limits
 
 Errors are RFC 9457 `application/problem+json`, with `type: urn:cicada:problem:<slug>`.
