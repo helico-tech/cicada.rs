@@ -1,50 +1,55 @@
 # Design
 
 Live updates (`inspector-live`) will reload the page on screen often. Today a page's Refresh starts over: the first page
-only, the selection cleared, the open rows folded. That is right for ⌘R but would make live updates unusable. This
-change adds a soft refresh to each page's model: it re-reads what is loaded, within fixed limits, and keeps what the
-user sees. `inspector-live` calls it; ⌘R keeps today's full Refresh.
+only, the selection cleared. That is right for ⌘R but would make live updates unusable. This change adds a soft refresh
+to the paged lists (Messages, Outcomes, Watches, Running Turns) and the cached pages (Types, Nodes, the Overview), and
+keeps the table's scroll position across every reload. The Actors page, with its children, open rows and pane, follows
+in `inspector-soft-refresh-actors` (design review: all of it did not fit five tasks). `inspector-live` calls the soft
+refresh; ⌘R keeps today's full Refresh.
 
 ## Decisions
 
-1. **What a soft refresh reads, bounded.** For a paged list (Actors, Messages, Outcomes, Watches, Running Turns): its
-   root pages from the start, by cursor, as far as the rows loaded before, but at most 3 pages (300 rows). For Actors'
-   open rows (`inspector-children`): the first page of children of at most 20 open rows, those nearest the visible area
-   first. For the cached pages (Types, Nodes, the Overview): their one read. At most 4 requests at a time, and the whole
-   soft refresh has a deadline of 10 s: what has answered by then is applied, the rest left as it was.
-2. **Rows inside and outside the refreshed range.** Rows within the re-read range are replaced by the new answer, so a
-   row that is gone there disappears. Rows past it (beyond 300, or children of rows not re-read) stay as they were,
-   marked "not refreshed" (a dimmed time in the footer: "rows past 300 as of HH:MM"), and are never removed by a soft
-   refresh. A manual Refresh clears the mark.
-3. **Putting back the view.** After the answer is applied: the selection by its id or path when that row is still there
-   (else cleared, and the pane emptied, as a manual Refresh does); the scroll position by the first visible row's
-   identity, or the same offset when that row is gone; the open rows by `inspector-children`' rule. The pane is read
-   again under its own generation when its row was re-read. The search prefix, the status switch and the filter text do
-   not change.
-4. **The user wins.** A soft refresh takes a snapshot of the view's state (selection, first visible row, open rows, the
-   pane's generation) when it starts. When the user changes any of them while it runs (selects, scrolls, folds, picks
-   Show Actor, presses Retry, types), the refresh applies its rows but not the restore of what changed; a Show Actor
-   jump or a Retry in progress is left alone. A new prefix, status, page switch or context switch drops the soft refresh
-   entirely (its generation no longer matches).
-5. **One at a time.** At most one soft refresh runs per page; a request while one runs is remembered once and starts
-   when it ends. A manual Refresh cancels a running soft refresh.
-6. **Where it lives.** A `soft_refresh` on each page's model in `cicada-inspector`, with the limits in one place; the
-   view's state for the snapshot and the restore comes from the AppKit layer through the model's existing selection and
-   fold state, plus the first visible row the view reports. Tests against an in-process server, on virtual time with a
-   wall-clock bound.
+1. **Where the re-read range ends.** Cursors are opaque, so the range is defined by the old last row's key (Running
+   Turns: the actor's address; Watches: target then watcher; Messages and Outcomes: the message id, as their order is
+   the server's and the id is unique). A soft refresh reads root pages from the start, by cursor, until a page's rows
+   reach or pass the old last key, at most 3 pages (300 rows), or the server has no more.
+2. **The seam.** The new rows replace the old ones in the range. Old rows past the range are kept and marked "not
+   refreshed" (the footer: "rows past 300 as of HH:MM"), after removing any whose key or id the new range already holds;
+   the seen set of Messages and Outcomes is rebuilt from both. The cursor that survives is the new range's last one, so
+   paging on picks up after it, and a row it brings again is dropped as a duplicate. When the range ends with no next
+   cursor, the old rows past it are dropped and the list has no more. A manual Refresh clears every mark.
+3. **The list's generation stays.** A soft refresh does not bump the list's generation (whose rustdoc changes to: it
+   grows on a new list, a new prefix, status, Refresh or context), so a page in flight, a Retry, the open selection and
+   Show Actor's waiting jump are not dropped; the soft refresh has its own counter for its own reads. It waits while a
+   root page or a Retry is in flight, and is skipped while paging has failed (the Retry row is the user's to press). At
+   most one runs per page; a request while one runs is remembered once. A manual Refresh, a new prefix or status, a page
+   switch or a context switch cancels it.
+4. **No snapshot: the model's state at the time of applying.** The selection lives in the model, so a soft refresh
+   applies its rows and then keeps the selection as it is at that moment: by id when the row is still in the list, else
+   cleared with an empty pane, as a manual Refresh does. A selection the user made while it ran is simply the current
+   one. The pane is read again without resetting to "Loading": its old content stays until the new read answers, under
+   the pane's generation. On Outcomes, a pane showing a followed link re-reads that message with `status`.
+5. **The scroll position in AppKit.** Every `reloadData` of a page's table (soft refresh, paging, manual Refresh) keeps
+   the first visible row by its key, or the same offset when that row is gone; the view does this itself, so the model
+   needs no scroll state.
+6. **Cached pages.** Types, Nodes and the Overview re-read their one answer; the selection is kept by name or id. A soft
+   refresh that fails keeps the old list, marked "not refreshed" with the error in the footer's tooltip; a manual
+   Refresh that fails keeps no stale list, as `inspector-types-watches` and `inspector-nodes` say.
+7. **Bounds.** At most 4 requests at a time across a soft refresh, and a deadline of 10 s: what has answered by then is
+   applied, the rest left as it was and marked.
 
 ## Tests
 
-Per paged page: a soft refresh re-reads up to the loaded rows and at most 300; a row gone within the range disappears, a
-row past it stays marked; the selection kept, and cleared with an empty pane when its row is gone; the first visible row
-kept; at most 4 requests at a time; the 10 s deadline applying what answered. Actors: open rows' first pages re-read for
-at most 20, nearest the visible area first; fold state kept. Cached pages: one read, selection kept. The user wins: a
-selection, scroll, fold, Show Actor or Retry during a soft refresh is not undone. A new prefix or context drops it. One
-at a time, with one remembered request. A manual Refresh cancels it. The window's scroll and fold restore get a manual
-check list in the tasks.
+Per paged page: the range ends at the old last key or after 300 rows; a row gone in the range disappears; a row past it
+stays marked; a duplicate at the seam removed; the surviving cursor pages on without duplicates; a range that ends with
+no more drops the rows past it; the generation unchanged, so a page in flight and a Retry are kept; waiting while a page
+is in flight, skipped while paging failed; one at a time with one remembered request; cancelled by Refresh, prefix,
+status, page and context; the selection kept by id, cleared when gone; the pane re-read without "Loading"; Outcomes'
+followed link re-read; the 10 s deadline and a failed read. Cached pages: re-read, selection kept, a failed soft refresh
+keeping the old list marked. The scroll restore gets a manual check list in the tasks. Tests on virtual time with a
+wall-clock bound, against an in-process server.
 
 ## Docs
 
-The handoff tells the docs session that soft refresh is internal (no user-facing change by itself) and that
-`inspector-live` will describe it; the changelog's 0.26.0 section gets nothing until `inspector-live`, or a line under
-Changed if the builder finds a user-visible effect.
+The handoff says soft refresh is internal until `inspector-live` and names the scroll position kept across reloads as
+the one visible change; the changelog's 0.26.0 section gets that line under Changed.

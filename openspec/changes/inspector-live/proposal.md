@@ -24,7 +24,7 @@ them.
 
 ## Order
 
-After `inspector-soft-refresh`, before `inspector-actions`.
+After `inspector-soft-refresh-actors`, before `inspector-actions`.
 
 ## Impact
 
