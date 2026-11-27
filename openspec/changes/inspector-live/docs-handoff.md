@@ -45,9 +45,10 @@ reload has ended.
 **Caveats.** Each refresh has the limits of a soft refresh: four requests at once, ten seconds, at most 300 root rows
 and the first children page of up to 20 open parents on Actors. An Actors refresh that a pause, leaving the page or a
 Retry cancels marks the rows and the open parents it did not reach "not refreshed". Rows beyond what a refresh reads can
-be older than the page's other rows. On Types, a refresh cancelled while it formats the schema it changed puts the pane
-back as it was. The updates need a server with `GET /changes` (0.16.11 or later): an older server answers 404, and the
-pill stays on Reconnecting while the page still refreshes every 30 s.
+be older than the page's other rows. On Types, when a refresh changes the selected type, the pane keeps showing the type
+as it was, its schema menu included, until the new schema is formatted; a refresh paused before that shows nothing of
+it. The updates need a server with `GET /changes` (0.16.11 or later): an older server answers 404, and the pill stays on
+Reconnecting while the page still refreshes every 30 s.
 
 ## Blocking
 
@@ -56,10 +57,10 @@ None.
 ## Status
 
 The wording for the app guide is proposed; no protected file was edited. The changelog's 0.26.0 section names live
-updates. After code review round 1: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
-warnings` passed; `cargo test -p cicada-inspector` passed 151 tests and 1 doctest; `cicada-examples --test docs` passed
-11; `openspec validate inspector-live --strict` passed. Before the fix round, `cargo test --workspace` with PostgreSQL
-passed 4,028 tests. The manual AppKit checks of the pill are outstanding: a node following a change on the Actors page
-within about a second with the selection, scroll and open rows kept; Live, then Reconnecting when the server stops and
-Live again when it comes back; Paused stopping updates while ⌘R still reloads; one reload on resume; Offline with an
-invalid context; light and dark; VoiceOver reading the pill.
+updates. After code review round 2: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
+warnings` passed; `cargo test --workspace` with PostgreSQL passed 4,041 tests in 138 suites, none failed; `cargo test -p
+cicada-inspector` passed 156 tests and 1 doctest; `cicada-examples --test docs` passed 11; `openspec validate
+inspector-live --strict` passed. The manual AppKit checks of the pill are outstanding: a node following a change on the
+Actors page within about a second with the selection, scroll and open rows kept; Live, then Reconnecting when the server
+stops and Live again when it comes back; Paused stopping updates while ⌘R still reloads; one reload on resume; Offline
+with an invalid context; light and dark; VoiceOver reading the pill.
