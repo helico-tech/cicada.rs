@@ -12,7 +12,7 @@ change. Follow `proposal.md`; ADR 0015 and the store's code are the source for w
 - [x] 2. **The generated reference.** `CICADA_UPDATE_OPENAPI=true cargo test --workspace` regenerates
   `docs/openapi.json` where the description comes from the rustdoc; commit what it writes. Verify: `cargo test -p
   cicada-axum` (the OpenAPI drift test).
-- [ ] 3. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace
+- [x] 3. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace
   --all-targets`, `cargo test --workspace`, `openspec validate caused-by-doc`, commit. No changelog entry (rustdoc
   only) and no docs handoff unless a guide quotes the old wording (then name it in `docs-handoff.md`). The change loop
   runs the gate at landing.
