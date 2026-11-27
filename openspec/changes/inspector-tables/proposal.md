@@ -18,7 +18,7 @@ To decide in the design: what the pane shows for a type and a watch, and how muc
 
 ## Order
 
-After `inspector-actors`, before `inspector-outcomes`.
+After `inspector-children`, before `inspector-outcomes`.
 
 ## Impact
 

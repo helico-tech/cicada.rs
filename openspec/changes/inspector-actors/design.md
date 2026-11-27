@@ -1,41 +1,51 @@
 # Design
 
-The inspector shows only the Overview. Operators most often need one actor: its state, its mailbox, its running turn
-and its children (owner's proposal; mockup page Inspector, "Actors"). This change gives the Actors page and the
-inspector pane; the Messages, Types and Watches tables follow in `inspector-tables` (one change for all four did not
-fit five tasks).
+The inspector shows only the Overview. Operators most often need one actor: its state, its mailbox and its running turn
+(owner's proposal; mockup page Inspector, "Actors"). This change gives the Actors page and the inspector pane. Folding a
+row open to its children is the next change, `inspector-children`, and the Messages, Types and Watches tables follow in
+`inspector-tables` (design review: one change for all of it did not fit five tasks).
 
 ## Decisions
 
-1. **The Actors table, paged.** The model's `ActorsList` reads `GET /actors` with state
-   (`list_actors_with_state`) under a prefix, 100 at a time with the server's cursor: address, type, version, created,
-   paused. The view asks for the next page when the user scrolls within 20 rows of the end; at most one page is in
-   flight. Status: "paused" from the row, "running" when the address is among the running turns of one `/turns` read
-   per page (its first 200; past that the status says nothing, as the Overview does with "more").
-2. **Children, folded.** A row folds open to show its children (`/actors/{type}/{key}/children`, first 100 and a
-   "more…" row that loads the next 100), read when it is opened, not before; a folded row keeps what it loaded until
-   the table is reloaded.
-3. **Search by prefix.** The search field sets the prefix 300 ms after the last key; a new prefix starts a new list
-   with a new generation, and a page that arrives for an older generation is dropped, as the Overview's refresh does.
-4. **The inspector pane.** Selecting an actor reads `get_actor` (state, version, created, parent, pinned node, paused)
-   and `turn(address)` (message type, attempt, claim time, node) and shows them, with the state as JSON highlighted by
-   a small tokenizer in the model (keys, strings, numbers, literals, punctuation; colours from the system's label and
-   accent colours in light and dark). A state over 256 KB of text is cut there with a notice. Two tabs: Mailbox
-   (`mailbox`, first 50 pending messages: id, type, deliver at, attempts) and Watches (`watches` of the actor, first
-   50). A pane read for an actor no longer selected is dropped. The toolbar gains a button that shows and hides the
-   pane (the split view's collapse), and Refresh (⌘R) reloads the table from the top and the pane.
-5. **Read only.** No action buttons until `inspector-actions`. Errors show in the table's footer or the pane, with
-   credentials already removed by `context_client` (as on the Overview).
-6. **Where it lives.** Portable model code (`actors.rs`: list, children, search generations, pane reads, the JSON
-   tokenizer) with tests against an in-process server; the `appkit` module renders an `NSOutlineView` with columns, the
-   search field in the toolbar, and the pane as an `NSTabView` next to it.
+1. **The Actors table, paged.** The model's `ActorsList` reads `list_actors_with_state` under a prefix, 100 rows at a
+   time, passing the server's cursor back unchanged: address, type, version, created, paused. The view asks for the next
+   page when the visible rows reach within 20 of the end, and checks again after rows are appended or the window is
+   resized; at most one page is in flight. A page that fails keeps its cursor and shows a "Retry" row at the end.
+2. **Status from one sample of running turns.** Each reload of the list (a new prefix, Refresh, a context switch) reads
+   `turns` under the same prefix once, its first 200: a row is "running" when its address is among them, "paused" from
+   the row itself. When the sample has a next cursor, the footer says the running status covers the first 200 running
+   turns; when the read fails, the footer says the status is unknown and no row is marked running.
+3. **Generations for every read.** One counter per kind of read (list pages, pane) is bumped on every new prefix,
+   selection, Refresh and context switch; a result carries the number it was asked under and is dropped when it no
+   longer matches. So a stale page never lands in a new list, and selecting A, then B, then A again shows only the
+   last read of A.
+4. **The pane.** Selecting an actor reads, under the pane's generation:
+   - `get_actor`: state, version, created, parent, pinned node, paused;
+   - `turn(address)`: the message id, node, lease until and whether a cancel was asked; the message type and attempt
+     come from the same message in the mailbox read below, when it is in that page;
+   - `mailbox` of the actor: the first 50 pending messages (id, type, deliver at, attempt);
+   - `watches` with the actor as watcher, and with it as the exact stored target (the API lists exact targets only, so
+     a type-wide watch on its type is not shown; the tab says so), the first 50 of each.
+   Each part shows its own error. An actor that is gone shows "not found" and the rest of the pane empties.
+5. **JSON off the main thread.** The model formats the state as pretty JSON, cuts the text at 256 KiB with a notice,
+   and tokenizes it (keys, strings, numbers, literals, punctuation) into at most 20,000 style runs; past that the rest
+   is plain. The view applies the runs in one batch (`beginEditing`/`endEditing` on the text storage) with the system's
+   label and accent colours, so light and dark both work and a dense state stays responsive.
+6. **Read only, and the pane toggle.** No action buttons until `inspector-actions`. The toolbar gains a button that
+   shows and hides the pane (the split view's collapse); Refresh (⌘R) reloads the list from the top and the pane.
+7. **Where it lives.** Portable model code (`actors.rs`: the list, the turns sample, generations, the pane reads, the
+   formatter) with tests against an in-process server; the `appkit` module renders an `NSTableView` with columns
+   (flat; `inspector-children` turns it into an outline), the search field in the toolbar (prefix set 300 ms after the
+   last key), and the pane as an `NSTabView`.
 
 ## Tests
 
-Model, against an in-process server: the first page and the next by cursor; at most one page in flight; status from the
-row and from `/turns`; children read on opening and their "more…"; a search that drops an older generation's page; the
-pane's reads and dropping a stale one; the tokenizer on nested JSON, escapes and numbers; a state over 256 KB cut with
-the notice. The window gets a manual check list in the tasks. Tests on the paused clock keep a wall-clock bound.
+Model, against an in-process server: the first page and the next by the unchanged cursor; at most one page in flight; a
+failed page kept for Retry; the running status from one sample, the footer's "first 200" and "unknown" cases; a stale
+page and a stale pane read dropped, including A, then B, then A; the pane's parts, with a turn's type and attempt from
+the mailbox and without them when the message is not in the first page; a missing actor; one part failing alone; the
+formatter's cut at 256 KiB and its cap of 20,000 runs. The window gets a manual check list in the tasks. Tests on the
+paused clock keep a wall-clock bound.
 
 ## Docs
 

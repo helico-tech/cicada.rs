@@ -2,9 +2,9 @@
 
 ### Requirement: The Actors page
 
-The inspector SHALL list the actors under a prefix a page at a time, with their type, version, created time and
-status, SHALL fold a row open to show its children, and SHALL show the selected actor's state, running turn, details,
-mailbox and watches in a pane, read only.
+The inspector SHALL list the actors under a prefix a page at a time with their type, version, created time and status,
+and SHALL show the selected actor's state, running turn, details, mailbox and watches in a pane, read only. A read
+that no longer matches the current prefix, selection or context SHALL be dropped.
 
 #### Scenario: Paging
 
@@ -20,3 +20,8 @@ mailbox and watches in a pane, read only.
 
 - **WHEN** the user selects an actor with a running turn and two pending messages
 - **THEN** the pane shows its state as JSON, the turn's message type and attempt, and two rows under Mailbox
+
+#### Scenario: Back to an earlier selection
+
+- **WHEN** the user selects actor A, then B, then A again before the first read of A answers
+- **THEN** the pane shows only the last read of A
