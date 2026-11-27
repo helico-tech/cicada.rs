@@ -13,6 +13,10 @@ mockup's Live pill (https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Insp
 - The toolbar shows Live, Reconnecting or Paused. Clicking it pauses and resumes the updates.
 - The selection, the scroll position and the folded rows stay as they are across reloads.
 
+Split by its design review (2026-11-27): the stream reader is `client-change-stream` and the bounded refresh that keeps
+the view is `inspector-soft-refresh`; this change keeps the scheduling and the pill, and its design is rewritten on
+them.
+
 ## Out of scope
 
 - A change to `/changes` itself.
@@ -20,12 +24,12 @@ mockup's Live pill (https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Insp
 
 ## Order
 
-After `inspector-nodes`, before `inspector-actions`.
+After `inspector-soft-refresh`, before `inspector-actions`.
 
 ## Impact
 
-Crates: cicada-client, cicada-inspector.
+Crates: cicada-inspector.
 
-`crates/cicada-client` (a reader for `/changes`, which it lacks), `crates/cicada-inspector` (the stream's lifecycle,
-the throttle, keeping the selection). Tests on virtual time with an in-process
+`crates/cicada-inspector` (the stream's lifecycle and scheduling on `client-change-stream`, reloads through
+`inspector-soft-refresh`, the Live pill). Tests on virtual time with an in-process
 server sending hints. Docs handoff: the app guide.

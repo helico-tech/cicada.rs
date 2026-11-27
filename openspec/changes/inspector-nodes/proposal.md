@@ -18,7 +18,7 @@ to the server's status, with no age measured on the Mac's clock.
 
 ## Order
 
-After `inspector-outcomes`, before `inspector-live`.
+After `inspector-outcomes`, before `client-change-stream`.
 
 ## Impact
 
