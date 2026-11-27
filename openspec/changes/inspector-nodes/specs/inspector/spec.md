@@ -16,7 +16,7 @@ the Mac's clock.
 - **WHEN** the selected node's row has been removed from the node table
 - **THEN** the pane says "not found"
 
-#### Scenario: Duplicates across pages
+#### Scenario: Back to an ended turn
 
-- **WHEN** a turn's actor appears on two pages of Running Turns because the list changed between them
-- **THEN** the table shows it once
+- **WHEN** the user goes from a turn on Running Turns to its actor, the turn ends, and the user goes back
+- **THEN** the pane shows the turn as it was read, marked "no longer running"
