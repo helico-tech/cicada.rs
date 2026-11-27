@@ -21,7 +21,8 @@ manual Refresh (⌘R) keeps working.
 #### Scenario: Paused
 
 - **WHEN** the user pauses and hints arrive
-- **THEN** nothing reloads by itself until the user resumes (⌘R still does), and then the stream's first `resync` runs one soft refresh
+- **THEN** nothing reloads by itself until the user resumes (⌘R still does), and then the stream's first `resync` runs
+  one soft refresh
 
 #### Scenario: The stream drops
 
