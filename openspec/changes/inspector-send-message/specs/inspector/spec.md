@@ -10,7 +10,7 @@ payload kept, and a success SHALL be followed by a fresh read.
 #### Scenario: A payload that fails the schema
 
 - **WHEN** the operator types a payload without a property the schema requires
-- **THEN** the sheet shows the error with its JSON pointer and Send stays disabled
+- **THEN** the sheet says the payload does not match the schema and Send stays disabled
 
 #### Scenario: A sent message
 
