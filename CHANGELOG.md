@@ -31,6 +31,14 @@ the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask for con
 refreshes the Actors page even while Live is paused. Send Message… sends a message to the selected actor: pick one of
 its type's message types and type a JSON payload, which is checked against that type's schema before Send is enabled.
 
+The tray's menu follows the owner's mockup: rows with a tinted icon, a second line and a badge on the right; each
+context with its server's host; "Running N of M" with the elapsed time of each turn; a not-connected menu with the last
+connection error and Connect to the picked context (⌘K), where picking a context selects it without connecting; a
+disconnecting menu with the grace period's bar, the finishing turns and Stop Now; Registered Types with each type's
+state and Choose Types…; Recent Turns with each outcome and its time; and a hexagon in the menu bar, filled while
+connected. `cicada_app::Contexts::host` gives the host and port of a context's server, never its credentials, path or
+query, and `cicada_app::WorkerReady` gains `concurrency`, the most turns the started worker runs at once.
+
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
 fields instead of whole values. Use `clone()` when another owned value is needed. Only `App::on_worker_ready` supplies

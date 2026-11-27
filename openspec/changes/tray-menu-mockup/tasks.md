@@ -23,7 +23,7 @@ departure you find necessary is a question for the owner: stop and report it.
   as the boards show; identity by represented object; every `unsafe` with its reason, borrows released before AppKit
   calls (decisions 1–5). Verify: the build, clippy, and the manual check list below, each item noted as done, run by
   code (not seen), or not done.
-- [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the new menu, `Contexts::host` and
+- [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the new menu, `Contexts::host` and
   `WorkerReady::concurrency`; `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md`
   or the handwritten docs. Then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test
   --workspace`, `cargo test -p cicada-examples --test docs` and `--doc`, `openspec validate tray-menu-mockup --strict`,
