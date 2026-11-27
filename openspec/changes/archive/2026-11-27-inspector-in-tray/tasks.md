@@ -25,7 +25,8 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
 
 Manual check list (task 3): Open Inspector… opens the window in front, on the connected context; a second pick brings it
 to the front without changing its context; with Settings also open, ⌘W and ⌘R reach the key window; ⌘I works while the
-menu is open; Quit, Ctrl-C and logout with the inspector open and a refresh pending all end cleanly; light and dark.
+menu is open; Quit, Ctrl-C and logout with the inspector open and a refresh pending all end cleanly; closing it with ⌘W
+and with the close button, then reopening it, does not crash (code review); light and dark.
 
 Notes from the second design review: set the quit flag before closing the inspector, also on an immediate AppKit
 termination, and release mutable borrows before calling AppKit; test with the toolbar's Refresh in the overflow menu,

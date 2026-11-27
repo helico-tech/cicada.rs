@@ -44,7 +44,8 @@ directly or use `..` in matches.
   Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
-  window forward with its own context. Quit, Ctrl-C and logout close it and cancel its refresh before the tray exits.
+  window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
+  the tray exits.
 - `cicada-inspector`: `Embedded::new(mtm, env, handle)` opens an inspector in a host's AppKit application with
   `show(context)`. The host supplies its environment and Tokio runtime handle. `close()` and dropping the controller
   close the window and request cancellation of its refresh. Reopening starts a fresh session.
