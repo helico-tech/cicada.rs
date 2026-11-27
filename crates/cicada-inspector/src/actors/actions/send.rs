@@ -15,8 +15,10 @@ use serde_json::Value;
 use tokio::{sync::watch, task::JoinHandle, time::Instant, time::timeout};
 
 use crate::json::Json;
+#[cfg(test)]
+pub(crate) use check::MAX_TEXT;
+pub(crate) use check::Verdict;
 use check::{Checker, Job, Land, Landed};
-pub(crate) use check::{MAX_TEXT, Verdict};
 
 use super::{Alert, Feedback, Target, View};
 use crate::actors::{Actors, PaneView, Read, Shared, State as ActorState};
@@ -353,7 +355,7 @@ impl Shared {
                 let text = format!("{}sent {}", if receipt.duplicate { "already " } else { "" }, receipt.id);
                 self.drop_sheet(state);
                 self.refresh_after_write(state);
-                let feedback = selected.then(|| Feedback::Notice { generation: state.pane_generation, text });
+                let feedback = selected.then_some(Feedback::Notice { generation: state.pane_generation, text });
                 self.finish_action(state, feedback);
                 return;
             }

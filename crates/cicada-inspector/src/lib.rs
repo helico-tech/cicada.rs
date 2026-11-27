@@ -14,6 +14,8 @@
 //! actor); the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB),
 //! mailbox and watches. From the pane an operator can pause or resume the mailbox, ask to cancel the running turn,
 //! purge pending messages or delete the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask first.
+//! Send Message… opens a sheet with the message types of the actor's type and a JSON payload, checked locally by the
+//! server's validator settings before Send is enabled; the server's refusal shows in the sheet.
 //! Messages lists the pending messages to the actors under the searched prefix, 100 at a time, each once, with
 //! their id, target, type, delivery time and attempt; the pane shows the selected message's
 //! envelope and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and

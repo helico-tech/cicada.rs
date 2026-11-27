@@ -13,10 +13,12 @@ use objc2_app_kit::{
 use objc2_foundation::{NSInteger, NSString, ns_string};
 
 use super::Target;
-use crate::actors::PaneView;
 use crate::actors::actions::{Action, Alert, Confirmation};
+use crate::actors::{PaneView, Read};
 
 const ACTIONS: [Action; 5] = [Action::Pause, Action::Resume, Action::CancelTurn, Action::Purge, Action::Delete];
+/// The tag of Send Message…, after the actions'.
+pub(super) const SEND_MESSAGE: NSInteger = ACTIONS.len() as NSInteger;
 const RETURN: u16 = 36;
 const ESCAPE: u16 = 53;
 const KEYPAD_ENTER: u16 = 76;
@@ -32,13 +34,17 @@ pub(super) fn action(tag: NSInteger) -> Option<Action> {
 }
 
 pub(super) fn buttons(pane: &PaneView) -> Vec<(String, NSInteger)> {
-    Action::offered(pane)
+    let mut buttons: Vec<_> = Action::offered(pane)
         .map(|action| {
             let tag = ACTIONS.iter().position(|&value| value == action).expect("the buttons cover every actor action");
             let ellipsis = if action.asks_first() { "…" } else { "" };
             (format!("{}{ellipsis}", action.title()), tag as NSInteger)
         })
-        .collect()
+        .collect();
+    if matches!(pane.actor, Read::Ready(Some(_))) {
+        buttons.push(("Send Message…".into(), SEND_MESSAGE));
+    }
+    buttons
 }
 
 pub(super) struct Dialog {

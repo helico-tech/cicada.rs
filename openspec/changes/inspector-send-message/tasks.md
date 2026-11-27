@@ -21,7 +21,7 @@ checks, alert text and fresh read; rebase onto it when it landed first). Follow 
   or close dropping the result; one action at a time with `inspector-actions` (decision 4). Verify: the same id re-sent
   after a timeout shown as "already sent", an edited payload after a lost answer sent with a new id, and each answer's
   mapping.
-- [ ] 4. **The AppKit sheet.** Send Message… in the actor pane; the pop-up, the read-only schema and the plain-text
+- [x] 4. **The AppKit sheet.** Send Message… in the actor pane; the pop-up, the read-only schema and the plain-text
   editor with smart quotes, dashes and text replacement off; no default button, ⌘Return sends, Escape cancels also from
   the editor; every `unsafe` with its reason, borrows released before AppKit calls (decisions 1 and 6). Verify: `cargo
   build -p cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below, each

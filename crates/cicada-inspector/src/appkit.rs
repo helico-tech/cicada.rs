@@ -10,6 +10,7 @@ mod messages;
 mod nodes;
 mod outcomes;
 mod scroll;
+mod send_sheet;
 mod turns;
 mod types;
 mod watches;
@@ -35,10 +36,11 @@ use objc2_app_kit::{
     NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem, NSOutlineView,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton, NSScrollView, NSSearchField, NSSplitViewController,
     NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
-    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification,
-    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextDelegate,
+    NSTextField, NSTextView, NSTextViewDelegate, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
+    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -46,7 +48,7 @@ use objc2_foundation::{
 };
 use tokio::{runtime::Handle, sync::watch};
 
-use crate::actors::actions::{Feedback, View as ActionView};
+use crate::actors::actions::{Feedback, SendView, View as ActionView};
 use crate::actors::{ListView, PaneView};
 use crate::json::Json;
 use crate::lifecycle::WindowSlot;
@@ -245,6 +247,9 @@ struct Controller {
     actor_pane_shown: RefCell<PaneView>,
     actor_alert_shown: Cell<u64>,
     actor_dialog: RefCell<Option<actor_dialog::Dialog>>,
+    /// The model's Send Message sheet and the sheet that shows it.
+    send_view: RefCell<watch::Receiver<Option<SendView>>>,
+    send_sheet: RefCell<Option<send_sheet::SendSheet>>,
     /// The rows the table shows; the data source reads them.
     list_shown: RefCell<ListView>,
     /// One retained AppKit item per identity in the snapshot.
@@ -419,6 +424,42 @@ define_class!(
 
     // SAFETY: NSControlTextEditingDelegate has only optional methods.
     unsafe impl NSControlTextEditingDelegate for Target {}
+
+    // SAFETY: The callback has the signature required by NSTextDelegate. Only the Send Message editor has this
+    // delegate.
+    unsafe impl NSTextDelegate for Target {
+        #[unsafe(method(textDidChange:))]
+        fn text_did_change(&self, notification: &NSNotification) {
+            let c = self.ivars();
+            let Some(editor) = notification.object().and_then(|object| object.downcast::<NSTextView>().ok()) else {
+                return;
+            };
+            let id = c.send_sheet.borrow().as_ref().filter(|sheet| sheet.is_editor(&editor)).map(|sheet| sheet.id);
+            if let Some(id) = id
+                && !c.finished.get()
+            {
+                let text = editor.string().to_string();
+                c.session.actors().edit_send_payload(id, &text);
+                self.render_send_sheet();
+            }
+        }
+    }
+
+    // SAFETY: The callback has the signature required by NSTextViewDelegate.
+    unsafe impl NSTextViewDelegate for Target {
+        /// Escape in the editor cancels the sheet, instead of offering completions.
+        #[unsafe(method(textView:doCommandBySelector:))]
+        fn text_view_command(&self, view: &NSTextView, command: Sel) -> bool {
+            let id = self.ivars().send_sheet.borrow().as_ref().filter(|sheet| sheet.is_editor(view)).map(|sheet| sheet.id);
+            match id {
+                Some(id) if command == sel!(cancelOperation:) => {
+                    self.cancel_send(id);
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
 
     // SAFETY: The callback has the signature required by NSTableViewDataSource.
     unsafe impl NSTableViewDataSource for Target {
@@ -655,6 +696,9 @@ define_class!(
             }
             if c.outcomes_count.borrow().has_changed().unwrap_or(false) {
                 self.render_count();
+            }
+            if c.send_view.borrow().has_changed().unwrap_or(false) {
+                self.render_send_sheet();
             }
             let section = c.navigation.borrow().current();
             let action_changed = c.actor_actions.borrow().has_changed().unwrap_or(false);
@@ -1075,7 +1119,11 @@ define_class!(
         #[unsafe(method(inspectorActorAction:))]
         fn actor_action(&self, sender: &NSButton) {
             let c = self.ivars();
-            if c.finished.get() || c.actor_dialog.borrow().is_some() {
+            if c.finished.get() || c.actor_dialog.borrow().is_some() || c.send_sheet.borrow().is_some() {
+                return;
+            }
+            if sender.tag() == actor_dialog::SEND_MESSAGE {
+                self.open_send_sheet();
                 return;
             }
             let Some(action) = actor_dialog::action(sender.tag()) else { return };
@@ -1084,6 +1132,42 @@ define_class!(
             self.render_pane();
             if let Some(confirmation) = confirmation {
                 actor_dialog::Dialog::confirm(self, confirmation);
+            }
+        }
+
+        // SAFETY: Only the Send Message sheet's pop-up is wired to this action, with itself as sender.
+        #[unsafe(method(inspectorSendType:))]
+        fn send_type(&self, sender: &NSPopUpButton) {
+            let index = usize::try_from(sender.indexOfSelectedItem()).ok();
+            if let (Some(id), Some(index)) = (self.send_sheet_id(), index) {
+                self.ivars().session.actors().choose_send_type(id, index);
+                self.render_send_sheet();
+            }
+        }
+
+        // SAFETY: Only the Send Message sheet's Retry is wired to this action.
+        #[unsafe(method(inspectorSendRetry:))]
+        fn send_retry(&self, _: &NSButton) {
+            if let Some(id) = self.send_sheet_id() {
+                self.ivars().session.actors().retry_send_types(id);
+                self.render_send_sheet();
+            }
+        }
+
+        // SAFETY: Only the Send Message sheet's Cancel is wired to this action.
+        #[unsafe(method(inspectorSendCancel:))]
+        fn send_cancel(&self, _: &NSButton) {
+            if let Some(id) = self.send_sheet_id() {
+                self.cancel_send(id);
+            }
+        }
+
+        // SAFETY: Only the Send Message sheet's Send is wired to this action.
+        #[unsafe(method(inspectorSendMessage:))]
+        fn send_message(&self, _: &NSButton) {
+            if let Some(id) = self.send_sheet_id() {
+                self.ivars().session.actors().send_message(id);
+                self.render_send_sheet();
             }
         }
 
@@ -1098,6 +1182,7 @@ define_class!(
             let c = self.ivars();
             c.session.switch_context(&mut c.navigation.borrow_mut(), Some(name));
             self.dismiss_actor_dialog();
+            self.dismiss_send_sheet();
             self.render();
         }
 
@@ -1135,6 +1220,7 @@ impl Target {
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
         let actor_actions = session.actors().actions();
+        let send_view = session.actors().send_sheet();
         let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
         let outcomes = session.outcomes();
         let (outcomes_list, outcomes_pane, outcomes_count) = (outcomes.list(), outcomes.pane(), outcomes.count());
@@ -1165,6 +1251,8 @@ impl Target {
             actor_pane_shown: RefCell::default(),
             actor_alert_shown: Cell::new(0),
             actor_dialog: RefCell::default(),
+            send_view: RefCell::new(send_view),
+            send_sheet: RefCell::default(),
             list_shown: RefCell::default(),
             items: RefCell::new(Items::from([(ItemId::Status(None), Item::new(mtm, ItemId::Status(None)))])),
             state_shown: RefCell::default(),
@@ -1457,7 +1545,7 @@ impl Target {
         c.actor_pane_shown.replace(pane.clone());
         let controls = actor_dialog::Controls {
             selected: c.session.actors().selected().is_some(),
-            busy: actions.busy || c.actor_dialog.borrow().is_some(),
+            busy: actions.busy || c.actor_dialog.borrow().is_some() || c.send_sheet.borrow().is_some(),
             notice,
         };
         let shown = c.state_shown.borrow().clone();
@@ -1484,6 +1572,58 @@ impl Target {
             c.session.actors().answer_action(id, confirmed);
         }
         self.render_pane();
+    }
+
+    fn send_sheet_id(&self) -> Option<u64> {
+        let c = self.ivars();
+        if c.finished.get() {
+            return None;
+        }
+        c.send_sheet.borrow().as_ref().map(|sheet| sheet.id)
+    }
+
+    /// Send Message… from the actor pane: the model reserves the action slot, then the sheet opens.
+    fn open_send_sheet(&self) {
+        let c = self.ivars();
+        let pane = c.actor_pane_shown.borrow().clone();
+        let id = c.session.actors().open_send(&pane, c.session.types());
+        if let Some(id) = id {
+            let address = pane.address.as_ref().map(ToString::to_string).unwrap_or_default();
+            let sheet = send_sheet::SendSheet::open(self, &self.window().window, id, &address);
+            c.send_sheet.replace(Some(sheet));
+            self.render_send_sheet();
+        }
+        self.render_pane();
+    }
+
+    fn cancel_send(&self, id: u64) {
+        self.ivars().session.actors().cancel_send(id);
+        self.render_send_sheet();
+    }
+
+    /// Fills the sheet from the model, or closes it once the model closed it.
+    fn render_send_sheet(&self) {
+        let c = self.ivars();
+        let view = c.send_view.borrow_mut().borrow_and_update().clone();
+        // Release the borrow before AppKit calls, which may call back into the target.
+        let Some(sheet) = c.send_sheet.take() else { return };
+        match view {
+            Some(view) if view.id == sheet.id && !c.finished.get() => {
+                sheet.show(&view);
+                c.send_sheet.replace(Some(sheet));
+            }
+            _ => {
+                sheet.dismiss(&self.window().window);
+                self.render_pane();
+            }
+        }
+    }
+
+    fn dismiss_send_sheet(&self) {
+        let sheet = self.ivars().send_sheet.take();
+        if let Some(sheet) = sheet {
+            sheet.dismiss(&self.window().window);
+        }
     }
 
     fn dismiss_actor_dialog(&self) {
@@ -2180,6 +2320,7 @@ impl Target {
         c.live.stop();
         c.session.stop();
         self.dismiss_actor_dialog();
+        self.dismiss_send_sheet();
         let window = self.window();
         window.window.setDelegate(None);
         window.toolbar.setDelegate(None);
