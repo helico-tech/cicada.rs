@@ -10,9 +10,9 @@ Mockup: https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Inspector, "Outc
 - Outcomes in the sidebar shows finished messages (`/outcomes`) with a Failed / Cancelled / Done / All switch:
   message type, actor, attempt, finished time and error. The sidebar shows the failed count (`/stats`, from
   `stats-failed-count`).
-- Selecting one fills the pane with the message from its row (a linked message is read with `/messages/{id}`): the error, attempts and retry policy, the
-  envelope (to, from, correlation id, finished), the payload as highlighted JSON, and the chain that caused it
-  (`causedBy`, one step at a time) and the messages its turn sent (`/caused`).
+- Selecting one fills the pane with the message from its row (a linked message is read with `/messages/{id}`): the
+  error, attempts and retry policy, the envelope (to, from, correlation id, finished), the payload as highlighted JSON,
+  and the chain that caused it (`causedBy`, one step at a time) and the messages its turn sent (`/caused`).
 - Show Actor jumps to the actor in Actors. Back and forward follow these jumps.
 - Running Turns and Nodes moved to the next change, `inspector-nodes` (design, 2026-11-27: all of it did not fit five
   tasks).
