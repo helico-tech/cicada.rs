@@ -52,8 +52,10 @@ None.
 
 ## Status
 
-Proposed app guide text. The macOS inspector build, crate Clippy, 54 inspector unit tests and one doctest passed.
+Proposed app guide text. The macOS inspector build, crate and workspace Clippy, formatting, and strict OpenSpec
+validation passed. The 54 inspector unit tests and one doctest, the 11 documentation tests and 54 example doctests,
+and all 3,920 workspace test cases with PostgreSQL passed. The change loop runs the gate at landing.
 A temporary AppKit driver exercised the Types table, name filter, State and message schemas in both appearances,
 watch paging by scroll and **Load more**, both kinds of watch filter, both kinds of **Show Actor** with back and
-forward, the four search fields' saved text, the Refresh action, stopped-server errors and Down-arrow selection.
+forward, each page's saved search text, the Refresh action, stopped-server errors and Down-arrow selection.
 These checks ran by code and were not seen. The ⌘R key equivalent and VoiceOver still need a manual pass.
