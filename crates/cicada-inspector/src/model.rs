@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cicada::ActorAddress;
 use cicada::api::{NodeView, RunningTurnView, StatsView};
 use cicada::time::Timestamp;
 use cicada_app::{Contexts, Env};
@@ -359,6 +360,31 @@ impl Session {
         std::mem::take(&mut self.shared.current.lock().expect("inspector session").superseded)
     }
 
+    /// Applies `change` to `navigation` and its effect on the pages: leaving the Actors page cancels a Show Actor
+    /// still waiting for its page, and arriving at a Show Actor's place, by the jump or by back or forward, starts it
+    /// again. Returns what `change` returned.
+    pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
+        let left_actors = navigation.current() == Section::Actors;
+        if !change(navigation) {
+            return false;
+        }
+        if left_actors {
+            self.actors.cancel_jump();
+        }
+        if let Some(actor) = &navigation.place().actor {
+            self.actors.jump(actor.clone());
+        }
+        true
+    }
+
+    /// Show Actor: records a jump to `actor` on the Actors page and starts it.
+    pub fn show_actor(&self, navigation: &mut Navigation, actor: ActorAddress) {
+        self.navigate(navigation, |navigation| {
+            navigation.jump(actor);
+            true
+        });
+    }
+
     /// Cancels a refresh and the pages' reads, and discards their results; for a window that closes.
     pub fn stop(&self) {
         self.shared.current.lock().expect("inspector session").supersede();
@@ -434,39 +460,62 @@ impl Section {
     }
 }
 
+/// A place in the history: an item of the sidebar, and for a Show Actor the actor it went to on the Actors page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Place {
+    /// The item shown.
+    pub section: Section,
+    /// The actor a Show Actor selects on the Actors page, again whenever back or forward return here.
+    pub actor: Option<ActorAddress>,
+}
+
 /// The sidebar's selection with a back and forward history, as in a browser.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Navigation {
-    back: Vec<Section>,
-    current: Section,
-    forward: Vec<Section>,
+    back: Vec<Place>,
+    current: Place,
+    forward: Vec<Place>,
 }
 
 impl Navigation {
     /// The selected item.
     pub fn current(&self) -> Section {
-        self.current
+        self.current.section
+    }
+
+    /// The current place.
+    pub fn place(&self) -> &Place {
+        &self.current
     }
 
     /// Selects `section`; a new selection drops the forward list. Selecting the current item changes nothing.
     pub fn select(&mut self, section: Section) {
-        if section != self.current {
-            self.back.push(std::mem::replace(&mut self.current, section));
-            self.forward.clear();
+        if section != self.current.section {
+            self.go(Place { section, actor: None });
         }
+    }
+
+    /// Records a Show Actor: the Actors page with `actor` as its target, after the current place.
+    pub fn jump(&mut self, actor: ActorAddress) {
+        self.go(Place { section: Section::Actors, actor: Some(actor) });
+    }
+
+    fn go(&mut self, place: Place) {
+        self.back.push(std::mem::replace(&mut self.current, place));
+        self.forward.clear();
     }
 
     /// Goes back one selection; false when there is none.
     pub fn back(&mut self) -> bool {
-        let Some(section) = self.back.pop() else { return false };
-        self.forward.push(std::mem::replace(&mut self.current, section));
+        let Some(place) = self.back.pop() else { return false };
+        self.forward.push(std::mem::replace(&mut self.current, place));
         true
     }
 
     /// Goes forward one selection; false when there is none.
     pub fn forward(&mut self) -> bool {
-        let Some(section) = self.forward.pop() else { return false };
-        self.back.push(std::mem::replace(&mut self.current, section));
+        let Some(place) = self.forward.pop() else { return false };
+        self.back.push(std::mem::replace(&mut self.current, place));
         true
     }
 

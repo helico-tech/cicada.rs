@@ -326,6 +326,12 @@ impl PaneView {
     }
 }
 
+/// A Show Actor waiting for the first page of the generation it reloaded the list in.
+struct Jump {
+    generation: u64,
+    actor: ActorAddress,
+}
+
 #[derive(Default)]
 struct ChildRead {
     cursor: Cursor,
@@ -361,6 +367,7 @@ struct State {
     pane_generation: u64,
     selected: Option<ActorPath>,
     pane_task: Option<JoinHandle<()>>,
+    jump: Option<Jump>,
     /// The tasks aborted so far, for tests that await their end.
     #[cfg(test)]
     aborted: Vec<JoinHandle<()>>,
@@ -411,6 +418,7 @@ impl Actors {
             pane_generation: 0,
             selected: None,
             pane_task: None,
+            jump: None,
             #[cfg(test)]
             aborted: Vec::new(),
         };
@@ -443,6 +451,7 @@ impl Actors {
         state.client = client;
         state.loaded = false;
         state.selected = None;
+        state.jump = None;
         let (generation, prefix) = (state.list_generation(), state.prefix.clone());
         self.shared.list.send_replace(ListView { prefix, generation, ..ListView::default() });
         self.shared.pane.send_replace(PaneView { generation: state.pane_generation, ..PaneView::default() });
@@ -462,6 +471,7 @@ impl Actors {
         if state.client.is_none() {
             return;
         }
+        state.jump = None;
         self.shared.reload(&mut state, false);
         let selected = state.selected.clone();
         self.shared.select(&mut state, selected);
@@ -472,6 +482,7 @@ impl Actors {
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.lock();
         state.prefix = prefix.to_owned();
+        state.jump = None;
         if state.selected.as_ref().is_some_and(|path| !path.0[0].as_str().starts_with(prefix)) {
             self.shared.select(&mut state, None);
         }
@@ -552,12 +563,42 @@ impl Actors {
     /// dropped, also when they are of the same actor.
     pub fn select(&self, path: Option<ActorPath>) {
         let mut state = self.shared.lock();
+        state.jump = None;
         self.shared.select(&mut state, path);
+    }
+
+    /// Show Actor: unselects, searches for the exact address of `actor` at once, and once the first page of that
+    /// search has loaded selects the root row with exactly that address; when the page has no such row, the pane says
+    /// the actor is not found. A failed page selects nothing and keeps the target for Retry. A new search, Refresh,
+    /// a context switch, [`Self::cancel_jump`] or a selection cancels it.
+    pub fn jump(&self, actor: ActorAddress) {
+        let mut state = self.shared.lock();
+        state.prefix = actor.to_string();
+        state.jump = None;
+        self.shared.select(&mut state, None);
+        if state.client.is_none() {
+            self.shared.list.send_modify(|list| list.prefix = actor.to_string());
+            return;
+        }
+        self.shared.reload(&mut state, false);
+        state.jump = Some(Jump { generation: state.list_generation(), actor });
+    }
+
+    /// Cancels a Show Actor still waiting for its page; for leaving the page.
+    pub fn cancel_jump(&self) {
+        self.shared.lock().jump = None;
+    }
+
+    /// True while a Show Actor waits for its page.
+    #[cfg(test)]
+    pub fn jumping(&self) -> bool {
+        self.shared.lock().jump.is_some()
     }
 
     /// The window closes: every read is dropped.
     pub fn stop(&self) {
         let mut state = self.shared.lock();
+        state.jump = None;
         state.supersede_list();
         state.supersede_pane();
     }
@@ -665,6 +706,29 @@ impl Shared {
         for parent in reopen {
             self.request_children(state, parent);
         }
+        if landed.first && state.jump.as_ref().is_some_and(|jump| jump.generation == landed.generation) {
+            let actor = state.jump.take().expect("a jump waits").actor;
+            if self.list.borrow().root_index(&actor).is_some() {
+                self.select(state, Some(ActorPath::root(actor)));
+            } else {
+                self.not_found(state, actor);
+            }
+        }
+    }
+
+    /// The pane of a Show Actor whose actor is not in the list: "not found", with no row selected and no read.
+    fn not_found(&self, state: &mut State, actor: ActorAddress) {
+        state.supersede_pane();
+        state.selected = None;
+        self.pane.send_replace(PaneView {
+            generation: state.pane_generation,
+            address: Some(actor),
+            actor: Read::Ready(None),
+            turn: Read::Ready(None),
+            mailbox: Read::Ready(Mailbox::default()),
+            watching: Read::Ready(Watches::default()),
+            watched_by: Read::Ready(Watches::default()),
+        });
     }
 
     fn request_children(self: &Arc<Self>, state: &mut State, parent: ActorPath) {

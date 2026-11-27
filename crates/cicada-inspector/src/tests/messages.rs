@@ -2,18 +2,20 @@
 //! pane filled from the selected row. Real sockets and the real clock, as in the parent module; every wait has a bound.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use cicada::prelude::*;
 use cicada::store::MessageId;
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::time::timeout;
 
-use super::{Counter, Fake, Rule, Server, Work, actors, no_rule, serve};
+use super::{Counter, Fake, Rule, Server, Work, actors, config, no_rule, problem, serve};
+use crate::actors::{ActorPath, ListView, PaneView};
 use crate::messages::{MessagePane, Messages, MessagesView};
-use crate::model::Limits;
+use crate::model::{Limits, Navigation, Section, Session};
 use crate::pager::Paging;
 
 /// The longest a test waits for one change.
@@ -183,4 +185,159 @@ async fn the_pane_comes_from_the_row_and_formats_the_payload_only_on_selection()
     assert_eq!((model.selected(), pane.borrow().message.clone()), (None, None));
     model.select(Some(&id("not-a-row")));
     assert_eq!((model.selected(), pane.borrow().message.clone()), (None, None));
+}
+
+/// A session on the server of `server`, its Messages and Actors pages searching 10 ms after the last key.
+fn session(server: &Server, dir: &tempfile::TempDir) -> Session {
+    let env = config(dir, &[("prod", &server.url)]);
+    let session = Session::new(env, tokio::runtime::Handle::current(), Limits { debounce: SHORT, ..Limits::DEFAULT });
+    session.use_context(None);
+    session
+}
+
+const SHORT: Duration = Duration::from_millis(10);
+
+fn root(address: &str) -> ActorPath {
+    ActorPath::root(ActorAddress::parse(address).unwrap())
+}
+
+async fn actors_until(list: &mut watch::Receiver<ListView>, done: impl FnMut(&ListView) -> bool) -> ListView {
+    timeout(WAIT, list.wait_for(done)).await.expect("the Actors list changes in time").unwrap().clone()
+}
+
+async fn actor_pane_until(pane: &mut watch::Receiver<PaneView>, done: impl FnMut(&PaneView) -> bool) -> PaneView {
+    timeout(WAIT, pane.wait_for(done)).await.expect("the Actors pane changes in time").unwrap().clone()
+}
+
+/// Scenario: Show Actor. From a message on the second page, Show Actor selects exactly its actor's root row on the
+/// Actors page, under a search for its address that also holds a longer address. Back returns to Messages with its
+/// prefix, both pages and the message; Forward goes to the actor again, even after the Actors search changed.
+#[tokio::test]
+async fn show_actor_selects_the_exact_row_and_back_returns_to_the_message_on_a_later_page() {
+    let actors = actors().await;
+    for n in 0..120 {
+        let counter = Counter { id: format!("{n:03}") };
+        actors.create(&counter, &json!({})).await;
+        actors.send(&counter, Work::Ok).await;
+    }
+    actors.create(&Counter { id: "1100".into() }, &json!({})).await;
+    let server = serve(&actors, no_rule(), Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let mut navigation = Navigation::default();
+    session.navigate(&mut navigation, |navigation| {
+        navigation.select(Section::Messages);
+        true
+    });
+    let (messages, mut list) = (session.messages(), session.messages().list());
+    messages.search("counter/");
+    list_until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 100).await;
+    messages.more();
+    let view = list_until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 120).await;
+    let message = view.rows[110].clone();
+    assert_eq!(message.to.as_str(), "counter/110");
+    messages.select(Some(&message.id));
+
+    let (mut actor_list, mut actor_pane) = (session.actors().list(), session.actors().pane());
+    session.show_actor(&mut navigation, message.to.clone());
+    assert_eq!((navigation.current(), navigation.place().actor.as_ref()), (Section::Actors, Some(&message.to)));
+    let shown = actor_pane_until(&mut actor_pane, |p| p.address.as_ref() == Some(&message.to)).await;
+    assert!(!shown.not_found());
+    assert_eq!(session.actors().selected(), Some(root("counter/110")));
+    let rows: Vec<_> = actor_list.borrow_and_update().rows.iter().map(|r| r.address.to_string()).collect();
+    assert_eq!(rows, ["counter/110", "counter/1100"]);
+    assert_eq!(actor_list.borrow().prefix, "counter/110");
+
+    assert!(session.navigate(&mut navigation, Navigation::back));
+    assert_eq!(navigation.current(), Section::Messages);
+    assert!(!session.actors().jumping());
+    let back = list.borrow().clone();
+    assert_eq!((back.prefix.as_str(), back.rows.len()), ("counter/", 120));
+    assert_eq!(messages.selected(), Some(message.id.clone()));
+    assert!(messages.pane().borrow().message.as_ref().is_some_and(|m| Arc::ptr_eq(m, &message)));
+
+    session.actors().search("sync/");
+    assert_eq!(session.actors().selected(), None);
+    assert!(session.navigate(&mut navigation, Navigation::forward));
+    assert_eq!((navigation.current(), navigation.place().actor.as_ref()), (Section::Actors, Some(&message.to)));
+    assert_eq!(actor_list.borrow().prefix, "counter/110", "Forward searches for the address again");
+    actor_pane_until(&mut actor_pane, |p| p.address.as_ref() == Some(&message.to) && !p.not_found()).await;
+    assert_eq!(session.actors().selected(), Some(root("counter/110")));
+    actors_until(&mut actor_list, |l| l.paging == Paging::Idle && l.rows.len() == 2).await;
+    session.stop();
+}
+
+/// Show Actor for a gone actor says "not found" once the page loaded, with no row selected. A failed page selects
+/// nothing and shows its error; Retry keeps the target and then selects the actor.
+#[tokio::test]
+async fn show_actor_says_not_found_for_a_gone_actor_and_a_failed_read_selects_nothing_until_retry() {
+    let actors = actors().await;
+    actors.create(&Counter { id: "a".into() }, &json!({})).await;
+    let fails = Arc::new(AtomicBool::new(true));
+    let failing = fails.clone();
+    let rule: Rule = Arc::new(move |target| {
+        let first = target == "/actors/states?prefix=counter%2Fa&limit=100";
+        (first && failing.swap(false, Ordering::SeqCst)).then(|| problem(500))
+    });
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let mut navigation = Navigation::default();
+    let (mut list, mut pane) = (session.actors().list(), session.actors().pane());
+
+    let ghost = ActorAddress::parse("counter/ghost").unwrap();
+    session.show_actor(&mut navigation, ghost.clone());
+    let gone = actor_pane_until(&mut pane, |p| p.not_found()).await;
+    assert_eq!(gone.address, Some(ghost));
+    assert_eq!(session.actors().selected(), None);
+    assert!(list.borrow_and_update().rows.is_empty());
+
+    let a = ActorAddress::parse("counter/a").unwrap();
+    session.show_actor(&mut navigation, a.clone());
+    let failed = actors_until(&mut list, |l| l.prefix == "counter/a" && matches!(l.paging, Paging::Failed(_))).await;
+    assert!(matches!(&failed.paging, Paging::Failed(error) if error.contains("500")), "{:?}", failed.paging);
+    assert_eq!((session.actors().selected(), pane.borrow().address.clone()), (None, None));
+    assert!(session.actors().jumping(), "the target is kept for Retry");
+    session.actors().retry();
+    actor_pane_until(&mut pane, |p| p.address.as_ref() == Some(&a) && !p.not_found()).await;
+    assert_eq!(session.actors().selected(), Some(ActorPath::root(a)));
+    assert!(navigation.can_back());
+    session.stop();
+}
+
+/// A Show Actor still waiting for its page is cancelled by leaving the Actors page or by a new search: its page
+/// still lands, and no row is selected.
+#[tokio::test]
+async fn a_show_actor_is_cancelled_by_leaving_the_page_or_a_new_search() {
+    let actors = actors().await;
+    actors.create(&Counter { id: "a".into() }, &json!({})).await;
+    let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let stall = Fake::Wait { arrived: arrived.clone(), release: release.clone() };
+    let rule: Rule = Arc::new(move |t| (t == "/actors/states?prefix=counter%2Fa&limit=100").then(|| stall.clone()));
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let mut navigation = Navigation::default();
+    let mut list = session.actors().list();
+    let a = ActorAddress::parse("counter/a").unwrap();
+
+    session.show_actor(&mut navigation, a.clone());
+    timeout(WAIT, arrived.notified()).await.expect("the page of the Show Actor is held");
+    session.navigate(&mut navigation, |navigation| {
+        navigation.select(Section::Overview);
+        true
+    });
+    assert!(!session.actors().jumping());
+    release.notify_waiters();
+    actors_until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 1).await;
+    assert_eq!((session.actors().selected(), session.actors().pane().borrow().address.clone()), (None, None));
+
+    session.show_actor(&mut navigation, a);
+    timeout(WAIT, arrived.notified()).await.expect("the page of the second Show Actor is held");
+    session.actors().search("counter/");
+    assert!(!session.actors().jumping());
+    release.notify_waiters();
+    actors_until(&mut list, |l| l.prefix == "counter/" && l.paging == Paging::Idle && l.rows.len() == 1).await;
+    assert_eq!((session.actors().selected(), session.actors().pane().borrow().address.clone()), (None, None));
+    session.stop();
 }

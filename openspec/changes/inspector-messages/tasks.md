@@ -12,7 +12,7 @@ onto it when it landed first). Follow `design.md`; the spec is `specs/inspector/
   row count stays the same; the pane from the row, its payload formatted on selection only, the raw payload shared
   across view snapshots and a formatting result guarded by the selection (decisions 2 and 3). Verify: the Messages
   tests of the design.
-- [ ] 3. **Show Actor.** The jump bound to its context and generation, recorded in back and forward and replayed on
+- [x] 3. **Show Actor.** The jump bound to its context and generation, recorded in back and forward and replayed on
   Forward, cancelled on leaving the page or a new search, its target kept through Retry; the exact root row selected
   after a successful load, "not found" and a failed read apart (decision 4). Verify: the Show Actor tests, including
   Back restoring the source prefix and the message from a later page.
