@@ -24,7 +24,8 @@ After `inspector-nodes`, before `inspector-actions`.
 
 ## Impact
 
-Crates: cicada-inspector.
+Crates: cicada-client, cicada-inspector.
 
-`crates/cicada-inspector` (the stream, the throttle, keeping the selection). Tests on virtual time with an in-process
+`crates/cicada-client` (a reader for `/changes`, which it lacks), `crates/cicada-inspector` (the stream's lifecycle,
+the throttle, keeping the selection). Tests on virtual time with an in-process
 server sending hints. Docs handoff: the app guide.
