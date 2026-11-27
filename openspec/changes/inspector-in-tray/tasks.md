@@ -14,7 +14,7 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
   quitting, one `Embedded` in the view, the context passed, every quit path closing it first (decisions 3 and 4).
   Verify: the tray tests of the design with the feature on and off; the manual check list below, each item noted as
   done or not done in the report. Feature-on and feature-off tests passed on macOS. The manual GUI checks are pending.
-- [ ] 4. **The gate and the docs.** `scripts/ci/feature-builds.sh` runs check, clippy and test of `cicada-tray` with
+- [x] 4. **The gate and the docs.** `scripts/ci/feature-builds.sh` runs check, clippy and test of `cicada-tray` with
   `--features inspector`; the dependency check passes with the feature on and off; the 0.26.0 section names the feature
   and `Embedded`; `docs-handoff.md` carries the design's Docs section. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `bash scripts/ci/feature-builds.sh`, the script tests if they cover it, `cargo test -p
