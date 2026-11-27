@@ -6,6 +6,7 @@ mod browse;
 mod content;
 mod json_text;
 mod messages;
+mod outcomes;
 mod types;
 mod watches;
 
@@ -43,11 +44,13 @@ use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
+use crate::outcomes::{FailedCount, OutcomePane, OutcomesView, StatusFilter};
 use crate::types::{TypePane, TypesView};
 use crate::watches::WatchesView;
 use actors::{CellContent, Item, ItemId, Items, Page};
 use content::FlippedView;
 use messages::MessagesPage;
+use outcomes::{Links, OutcomesPage};
 use types::TypesPage;
 use watches::WatchesPage;
 
@@ -76,16 +79,19 @@ const REFRESH: &str = "inspector.refresh";
 const REFRESH_KEY: &str = "r";
 const SEARCH: &str = "inspector.search";
 const PANE: &str = "inspector.pane";
+/// The status switch, in the toolbar only on the Outcomes page.
+const STATUS: &str = "inspector.status";
 /// The identifiers of the lists sharing the sidebar's data source and delegate.
-const TABLES: [(Section, &str); 3] = [
+const TABLES: [(Section, &str); 4] = [
     (Section::Messages, "inspector.messages"),
+    (Section::Outcomes, "inspector.outcomes"),
     (Section::Types, "inspector.types"),
     (Section::Watches, "inspector.watches"),
 ];
 
 /// True for the pages with a table, the search field and the pane.
 fn browsable(section: Section) -> bool {
-    matches!(section, Section::Actors | Section::Messages | Section::Types | Section::Watches)
+    matches!(section, Section::Actors | Section::Messages | Section::Outcomes | Section::Types | Section::Watches)
 }
 
 fn table_section(table: &NSTableView) -> Option<Section> {
@@ -192,6 +198,7 @@ struct Controller {
     forward: RefCell<Option<Retained<NSToolbarItem>>>,
     refresh: RefCell<Option<Retained<NSToolbarItem>>>,
     pane_toggle: RefCell<Option<Retained<NSToolbarItem>>>,
+    status: RefCell<Option<Retained<NSToolbarItem>>>,
     /// The Actors page's rows and the pane's reads.
     list: RefCell<watch::Receiver<ListView>>,
     pane: RefCell<watch::Receiver<PaneView>>,
@@ -208,6 +215,17 @@ struct Controller {
     messages_shown: RefCell<MessagesView>,
     /// The payload the Messages pane's text view holds.
     payload_shown: RefCell<Option<Arc<Json>>>,
+    /// The Outcomes page's rows and pane, and the sidebar's failed count.
+    outcomes_list: RefCell<watch::Receiver<OutcomesView>>,
+    outcomes_pane: RefCell<watch::Receiver<OutcomePane>>,
+    outcomes_count: RefCell<watch::Receiver<FailedCount>>,
+    /// The outcomes the table shows; the data source reads them.
+    outcomes_shown: RefCell<OutcomesView>,
+    /// The payload the Outcomes pane's text view holds, and the ids of its links as shown.
+    outcome_payload_shown: RefCell<Option<Arc<Json>>>,
+    links_shown: RefCell<Links>,
+    /// The failed count the sidebar shows.
+    count_shown: RefCell<FailedCount>,
     types_list: RefCell<watch::Receiver<TypesView>>,
     types_pane: RefCell<watch::Receiver<TypePane>>,
     types_shown: RefCell<TypesView>,
@@ -326,6 +344,11 @@ define_class!(
                         window.messages.show_footer(&list, view.target_error.as_deref());
                         self.check_more_messages();
                     }
+                    Section::Outcomes => {
+                        let list = c.outcomes_shown.borrow().clone();
+                        window.outcomes.show_footer(&list, view.target_error.as_deref());
+                        self.check_more_outcomes();
+                    }
                     Section::Watches => self.check_more_watches(),
                     _ => {}
                 }
@@ -343,6 +366,7 @@ define_class!(
             let c = self.ivars();
             match table_section(table) {
                 Some(Section::Messages) => c.messages_shown.borrow().rows.len() as NSInteger,
+                Some(Section::Outcomes) => c.outcomes_shown.borrow().rows.len() as NSInteger,
                 Some(Section::Types) => c.types_shown.borrow().rows.len() as NSInteger,
                 Some(Section::Watches) => c.watches_shown.borrow().rows.len() as NSInteger,
                 _ => ROWS as NSInteger,
@@ -367,6 +391,10 @@ define_class!(
                     let text = messages::cell_text(&c.messages_shown.borrow(), row, &column);
                     text.map(|text| messages::cell(self.mtm(), &text, &column))
                 }
+                Some(Section::Outcomes) => {
+                    let text = outcomes::cell_text(&c.outcomes_shown.borrow(), row, &column);
+                    text.map(|(text, full)| browse::cell(self.mtm(), &text, &full))
+                }
                 Some(Section::Types) => {
                     let text = types::cell_text(&c.types_shown.borrow(), row, &column);
                     text.map(|(text, full)| browse::cell(self.mtm(), &text, &full))
@@ -375,7 +403,10 @@ define_class!(
                     let text = watches::cell_text(&c.watches_shown.borrow(), row, &column);
                     text.map(|text| browse::cell(self.mtm(), &text, &text))
                 }
-                _ => row_at(row).map(|row| sidebar_cell(self.mtm(), row)),
+                _ => {
+                    let count = c.count_shown.borrow().clone();
+                    row_at(row).map(|row| sidebar_cell(self.mtm(), row, &count))
+                }
             }
         }
 
@@ -410,6 +441,11 @@ define_class!(
                 let id = row.and_then(|row| c.messages_shown.borrow().rows.get(row).map(|message| message.id.clone()));
                 c.session.messages().select(id.as_ref());
                 self.render_message_pane();
+            } else if is(window.outcomes.list.table.as_ref()) {
+                let row = usize::try_from(window.outcomes.list.table.selectedRow()).ok();
+                let id = row.and_then(|row| c.outcomes_shown.borrow().rows.get(row).map(|outcome| outcome.id.clone()));
+                c.session.outcomes().select(id.as_ref());
+                self.render_outcome_pane();
             } else if is(window.types.list.table.as_ref()) {
                 let row = usize::try_from(window.types.list.table.selectedRow()).ok();
                 let name = row.and_then(|row| c.types_shown.borrow().rows.get(row).map(|row| row.name.clone()));
@@ -521,7 +557,9 @@ define_class!(
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_items(&self, _: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-            toolbar_identifiers()
+            let identifiers = toolbar_identifiers();
+            let status = NSString::from_str(STATUS);
+            identifiers.arrayByAddingObject(&status)
         }
     }
 
@@ -532,6 +570,9 @@ define_class!(
             let c = self.ivars();
             if c.view.borrow().has_changed().unwrap_or(false) {
                 self.render();
+            }
+            if c.outcomes_count.borrow().has_changed().unwrap_or(false) {
+                self.render_count();
             }
             let section = c.navigation.borrow().current();
             if section == Section::Actors {
@@ -550,6 +591,14 @@ define_class!(
                     self.render_message_pane();
                 }
                 self.check_more_messages();
+            } else if section == Section::Outcomes {
+                if c.outcomes_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_outcomes();
+                }
+                if c.outcomes_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_outcome_pane();
+                }
+                self.check_more_outcomes();
             } else if section == Section::Types {
                 c.session.types().set_pane_visible(!self.window().pane_item.isCollapsed());
                 if c.types_list.borrow().has_changed().unwrap_or(false) {
@@ -592,6 +641,10 @@ define_class!(
                     c.session.messages().search(&prefix);
                     self.render_messages();
                 }
+                Section::Outcomes => {
+                    c.session.outcomes().search(&prefix);
+                    self.render_outcomes();
+                }
                 Section::Types => {
                     c.session.types().search(&prefix);
                     self.render_types();
@@ -622,6 +675,87 @@ define_class!(
             }
             let to = c.messages_pane.borrow().borrow().message.as_ref().map(|message| message.to.clone());
             self.show_actor_address(to);
+        }
+
+        // SAFETY: The Retry button of the Outcomes footer sends this action with itself as the sender.
+        #[unsafe(method(inspectorOutcomesRetry:))]
+        fn outcomes_retry(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.outcomes().retry();
+                self.render_outcomes();
+            }
+        }
+
+        // SAFETY: The status pop-up of the toolbar sends this action with itself as the sender.
+        #[unsafe(method(inspectorStatus:))]
+        fn pick_status(&self, sender: &NSPopUpButton) {
+            let c = self.ivars();
+            let status = usize::try_from(sender.indexOfSelectedItem()).ok().and_then(|i| StatusFilter::ALL.get(i));
+            if !c.finished.get() && let Some(status) = status {
+                c.session.outcomes().set_status(*status);
+                self.render_outcomes();
+                self.render_outcome_pane();
+            }
+        }
+
+        // SAFETY: The Show Actor button of the Outcomes pane sends this action with itself as the sender.
+        #[unsafe(method(inspectorOutcomeShowActor:))]
+        fn outcome_show_actor(&self, _: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let to = {
+                let pane = c.outcomes_pane.borrow();
+                let pane = pane.borrow();
+                pane.subject.as_ref().and_then(|subject| subject.details()).map(|details| details.message.to.clone())
+            };
+            self.show_actor_address(to);
+        }
+
+        // SAFETY: The links of the Outcomes pane send this action with themselves as the sender; tags tell them apart.
+        #[unsafe(method(inspectorFollow:))]
+        fn follow(&self, sender: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let id = c.links_shown.borrow().get(sender.tag());
+            if let Some(id) = id {
+                c.session.follow(&mut c.navigation.borrow_mut(), id);
+                self.render();
+            }
+        }
+
+        // SAFETY: The Retry button of a failed linked read sends this action with itself as the sender.
+        #[unsafe(method(inspectorRetryLink:))]
+        fn retry_link(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.outcomes().retry_link();
+                self.render_outcome_pane();
+            }
+        }
+
+        // SAFETY: The more… button of Caused sends this action with itself as the sender.
+        #[unsafe(method(inspectorMoreCaused:))]
+        fn more_caused(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.outcomes().more_caused();
+                self.render_outcome_pane();
+            }
+        }
+
+        // SAFETY: The Retry button of a failed page of Caused sends this action with itself as the sender.
+        #[unsafe(method(inspectorRetryCaused:))]
+        fn retry_caused(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.outcomes().retry_caused();
+                self.render_outcome_pane();
+            }
         }
 
         // SAFETY: The Types footer sends the Retry button as sender.
@@ -785,6 +919,8 @@ impl Target {
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
         let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
+        let outcomes = session.outcomes();
+        let (outcomes_list, outcomes_pane, outcomes_count) = (outcomes.list(), outcomes.pane(), outcomes.count());
         let (types_list, types_pane) = (session.types().list(), session.types().pane());
         let (watches_list, watches_pane) = (session.watches().list(), session.watches().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
@@ -797,6 +933,7 @@ impl Target {
             forward: RefCell::default(),
             refresh: RefCell::default(),
             pane_toggle: RefCell::default(),
+            status: RefCell::default(),
             list: RefCell::new(list),
             pane: RefCell::new(pane),
             list_shown: RefCell::default(),
@@ -806,6 +943,13 @@ impl Target {
             messages_pane: RefCell::new(messages_pane),
             messages_shown: RefCell::default(),
             payload_shown: RefCell::default(),
+            outcomes_list: RefCell::new(outcomes_list),
+            outcomes_pane: RefCell::new(outcomes_pane),
+            outcomes_count: RefCell::new(outcomes_count),
+            outcomes_shown: RefCell::default(),
+            outcome_payload_shown: RefCell::default(),
+            links_shown: RefCell::default(),
+            count_shown: RefCell::default(),
             types_list: RefCell::new(types_list),
             types_pane: RefCell::new(types_pane),
             types_shown: RefCell::default(),
@@ -875,6 +1019,7 @@ impl Target {
             match section {
                 Section::Actors => c.session.actors().refresh(),
                 Section::Messages => c.session.messages().refresh(),
+                Section::Outcomes => c.session.outcomes().refresh(),
                 Section::Types => c.session.types().refresh(),
                 Section::Watches => c.session.watches().refresh(),
                 _ => c.session.refresh(),
@@ -1031,6 +1176,7 @@ impl Target {
         Some(match section {
             Section::Actors => c.list.borrow().borrow().prefix.clone(),
             Section::Messages => c.messages_list.borrow().borrow().prefix.clone(),
+            Section::Outcomes => c.outcomes_list.borrow().borrow().prefix.clone(),
             Section::Types => c.types_list.borrow().borrow().prefix.clone(),
             Section::Watches => c.watches_list.borrow().borrow().prefix.clone(),
             _ => return None,
@@ -1042,6 +1188,7 @@ impl Target {
         let (placeholder, tip) = match section {
             Section::Actors => ("Address prefix", "Search actors by address prefix"),
             Section::Messages => ("Address prefix", "Search pending messages by their actor's address prefix"),
+            Section::Outcomes => ("Address prefix", "Search outcomes by their actor's address prefix"),
             Section::Types => ("Type name prefix", "Search registered types by name prefix"),
             Section::Watches => ("Watcher or target prefix", "Filter loaded watches by watcher or target prefix"),
             _ => return,
@@ -1094,6 +1241,93 @@ impl Target {
         let shown = c.payload_shown.borrow().clone();
         let shown = window.messages.show_pane(&pane, shown.as_ref());
         c.payload_shown.replace(shown);
+    }
+
+    /// Reloads the Outcomes table, shows the status column on All, and restores the selection by message id.
+    fn render_outcomes(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let page = &self.window().outcomes;
+        let list = c.outcomes_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        page.show_footer(&list, target_error.as_deref());
+        page.show_columns(list.status);
+        let selected = c.session.outcomes().selected().and_then(|id| list.index(&id));
+        c.outcomes_shown.replace(list);
+        self.reload_table(&page.list.table, selected);
+        self.check_more_outcomes();
+    }
+
+    /// Asks for a page of outcomes when the last visible row is near the end, including after scrolling.
+    fn check_more_outcomes(&self) {
+        let c = self.ivars();
+        let last = self.window().outcomes.list.last_visible_row().unwrap_or(0);
+        let wants = c.outcomes_shown.borrow().wants_more(last);
+        if wants {
+            c.session.outcomes().more();
+        }
+    }
+
+    /// Shows the selected outcome or the linked message, with its links.
+    fn render_outcome_pane(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let pane = c.outcomes_pane.borrow_mut().borrow_and_update().clone();
+        let shown = c.outcome_payload_shown.borrow().clone();
+        let actions = outcomes::Actions {
+            show_actor: sel!(inspectorOutcomeShowActor:),
+            follow: sel!(inspectorFollow:),
+            retry_link: sel!(inspectorRetryLink:),
+            more_caused: sel!(inspectorMoreCaused:),
+            retry_caused: sel!(inspectorRetryCaused:),
+        };
+        let (payload, links) = self.window().outcomes.show_pane(&pane, shown.as_ref(), self.as_ref(), &actions);
+        c.outcome_payload_shown.replace(payload);
+        c.links_shown.replace(links);
+    }
+
+    /// Shows the failed count in the sidebar's Outcomes row.
+    fn render_count(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let count = c.outcomes_count.borrow_mut().borrow_and_update().clone();
+        c.count_shown.replace(count);
+        let row = Section::BROWSE.iter().position(|&section| section == Section::Outcomes).map_or(0, |n| n + 2);
+        let sidebar = &self.window().sidebar;
+        c.syncing.set(true);
+        sidebar.reloadDataForRowIndexes_columnIndexes(
+            &NSIndexSet::indexSetWithIndex(row),
+            &NSIndexSet::indexSetWithIndex(0),
+        );
+        c.syncing.set(false);
+    }
+
+    /// The status switch is in the toolbar only on the Outcomes page, and shows the page's status.
+    fn sync_status(&self, section: Section) {
+        let window = self.window();
+        let items = window.toolbar.items();
+        let index = |identifier: &str| items.iter().position(|item| item.itemIdentifier().to_string() == identifier);
+        let (status, search) = (index(STATUS), index(SEARCH));
+        drop(items);
+        match (section == Section::Outcomes, status) {
+            (true, None) => {
+                let at = search.unwrap_or(0) as NSInteger;
+                window.toolbar.insertItemWithItemIdentifier_atIndex(&NSString::from_str(STATUS), at);
+            }
+            (false, Some(at)) => window.toolbar.removeItemAtIndex(at as NSInteger),
+            _ => {}
+        }
+        let status = self.ivars().outcomes_list.borrow().borrow().status;
+        let index = StatusFilter::ALL.iter().position(|&s| s == status).unwrap_or(0);
+        if window.status.indexOfSelectedItem() != index as NSInteger {
+            window.status.selectItemAtIndex(index as NSInteger);
+        }
     }
 
     /// Reloads the Types table and restores selection by name.
@@ -1169,6 +1403,7 @@ impl Target {
         match section {
             Section::Actors => self.render_pane(),
             Section::Messages => self.render_message_pane(),
+            Section::Outcomes => self.render_outcome_pane(),
             Section::Types => self.render_types_pane(),
             Section::Watches => self.render_watch_pane(),
             _ => {}
@@ -1211,11 +1446,13 @@ impl Target {
             c.syncing.set(false);
         }
         self.sync_search(section);
+        self.sync_status(section);
         window.search.setEnabled(has_pane);
         window.content.setHidden(has_pane);
         for (page, root, pane) in [
             (Section::Actors, &*window.page.root, &**window.page.pane),
             (Section::Messages, &*window.messages.root, &**window.messages.pane),
+            (Section::Outcomes, &*window.outcomes.list.root, &**window.outcomes.pane),
             (Section::Types, &*window.types.list.root, &**window.types.pane),
             (Section::Watches, &*window.watches.list.root, &**window.watches.pane),
         ] {
@@ -1241,6 +1478,10 @@ impl Target {
             Section::Messages => {
                 c.session.messages().show();
                 self.render_messages();
+            }
+            Section::Outcomes => {
+                c.session.outcomes().show();
+                self.render_outcomes();
             }
             Section::Types => {
                 c.session.types().show();
@@ -1344,6 +1585,12 @@ impl Target {
                 button("sidebar.right", "Show or Hide Pane", sel!(inspectorTogglePane:));
                 c.pane_toggle.replace(Some(item.clone()));
             }
+            STATUS => {
+                item.setLabel(ns_string!("Status"));
+                item.setToolTip(Some(ns_string!("The status of the outcomes listed")));
+                item.setView(Some(&self.window().status));
+                c.status.replace(Some(item.clone()));
+            }
             _ => return None,
         }
         Some(item)
@@ -1374,9 +1621,11 @@ impl Target {
             window.sidebar.setDataSource(None);
             window.sidebar.setDelegate(None);
             NSControl::setTarget(&window.search, None);
+            NSControl::setTarget(&window.status, None);
         }
         window.page.clear_actions();
         window.messages.clear_actions();
+        window.outcomes.teardown();
         window.types.clear_actions();
         window.watches.clear_actions();
         true
@@ -1407,9 +1656,12 @@ struct Window {
     document: Retained<FlippedView>,
     contexts: Retained<NSPopUpButton>,
     search: Retained<NSSearchField>,
+    /// The status switch of the Outcomes page.
+    status: Retained<NSPopUpButton>,
     /// The Actors page, next to the Overview's scroll view in the content.
     page: Page,
     messages: MessagesPage,
+    outcomes: OutcomesPage,
     types: TypesPage,
     watches: WatchesPage,
     /// The inspector pane's split item, collapsed outside the browse pages and by the pane toggle.
@@ -1487,6 +1739,7 @@ impl Window {
         let page = Page::new(mtm);
         let messages =
             MessagesPage::new(mtm, target.as_ref(), sel!(inspectorMessagesRetry:), sel!(inspectorShowActor:));
+        let outcomes = OutcomesPage::new(mtm, target.as_ref(), sel!(inspectorOutcomesRetry:));
         let types = TypesPage::new(mtm, target.as_ref(), sel!(inspectorTypesRetry:), sel!(inspectorChooseSchema:));
         let watches = WatchesPage::new(
             mtm,
@@ -1496,7 +1749,9 @@ impl Window {
             sel!(inspectorShowTarget:),
             sel!(inspectorShowWatcher:),
         );
-        for view in [&**content, &*page.root, &*messages.root, &*types.list.root, &*watches.list.root] {
+        for view in
+            [&**content, &*page.root, &*messages.root, &*outcomes.list.root, &*types.list.root, &*watches.list.root]
+        {
             view.setFrame(container.bounds());
             view.setAutoresizingMask(fill);
             container.addSubview(view);
@@ -1504,6 +1759,7 @@ impl Window {
         page.root.setHidden(true);
         for ((_, identifier), (table, root)) in TABLES.into_iter().zip([
             (&*messages.table, &*messages.root),
+            (&*outcomes.list.table, &*outcomes.list.root),
             (&*types.list.table, &*types.list.root),
             (&*watches.list.table, &*watches.list.root),
         ]) {
@@ -1526,7 +1782,7 @@ impl Window {
         content_item.setMinimumThickness(420.0);
         // Each browse page shares the split item but shows its own pane.
         let panes = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(320.0, 600.0)));
-        for view in [&**page.pane, &**messages.pane, &**types.pane, &**watches.pane] {
+        for view in [&**page.pane, &**messages.pane, &**outcomes.pane, &**types.pane, &**watches.pane] {
             view.setHidden(true);
             view.setFrame(panes.bounds());
             view.setAutoresizingMask(fill);
@@ -1572,6 +1828,22 @@ impl Window {
             NSControl::setAction(&search, Some(sel!(inspectorSearch:)));
         }
 
+        let status = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            NSRect::new(NSPoint::ZERO, NSSize::new(120.0, 24.0)),
+            false,
+        );
+        for choice in StatusFilter::ALL {
+            status.addItemWithTitle(&NSString::from_str(choice.title()));
+        }
+        status.setAccessibilityLabel(Some(ns_string!("Outcome status")));
+        status.setToolTip(Some(ns_string!("The status of the outcomes listed")));
+        // SAFETY: The target implements inspectorStatus: with the pop-up as the sender, and clears it during teardown.
+        unsafe {
+            NSControl::setTarget(&status, Some(target));
+            NSControl::setAction(&status, Some(sel!(inspectorStatus:)));
+        }
+
         let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("CicadaInspectorToolbar"));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(target)));
@@ -1585,8 +1857,10 @@ impl Window {
             document,
             contexts,
             search,
+            status,
             page,
             messages,
+            outcomes,
             types,
             watches,
             pane_item,
@@ -1609,8 +1883,8 @@ fn toolbar_identifiers() -> Retained<NSArray<NSToolbarItemIdentifier>> {
     NSArray::from_slice(&[tracking, &*back, &*forward, flexible, &*search, &*context, &*refresh, &*pane])
 }
 
-/// A cell of the sidebar: a group's heading, or an item with its symbol.
-fn sidebar_cell(mtm: MainThreadMarker, row: Row) -> Retained<NSView> {
+/// A cell of the sidebar: a group's heading, or an item with its symbol; Outcomes with the failed count.
+fn sidebar_cell(mtm: MainThreadMarker, row: Row, count: &FailedCount) -> Retained<NSView> {
     let cell = NSTableCellView::new(mtm);
     cell.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 28.0)));
     let (title, symbol) = match row {
@@ -1631,6 +1905,20 @@ fn sidebar_cell(mtm: MainThreadMarker, row: Row) -> Retained<NSView> {
         cell.addSubview(&image);
         // SAFETY: The image view is a subview of the cell, which keeps it.
         unsafe { cell.setImageView(Some(&image)) };
+    }
+    if let Row::Item(Section::Outcomes) = row {
+        let (value, tip) = (count.text(), count.tooltip());
+        let field = NSTextField::labelWithString(&NSString::from_str(&value), mtm);
+        field.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(11.0, 0.0)));
+        field.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        field.setAlignment(objc2_app_kit::NSTextAlignment::Right);
+        field.setFrame(NSRect::new(NSPoint::new(140.0, 7.0), NSSize::new(56.0, 14.0)));
+        field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        field.setToolTip(Some(&NSString::from_str(&tip)));
+        cell.addSubview(&field);
+        text.setFrame(NSRect::new(NSPoint::new(28.0, 6.0), NSSize::new(110.0, 16.0)));
+        cell.setToolTip(Some(&NSString::from_str(&tip)));
+        cell.setAccessibilityLabel(Some(&NSString::from_str(&format!("Outcomes, {value} failed"))));
     }
     Retained::into_super(cell)
 }

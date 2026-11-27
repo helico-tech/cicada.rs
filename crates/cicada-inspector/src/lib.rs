@@ -15,8 +15,11 @@
 //! watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at a time,
 //! each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's envelope
 //! and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and forward.
-//! Types lists registered contracts and displays one schema at a time. Watches lists the stored watches, with a
-//! filter over the loaded rows and Show Actor for the watcher and any single-actor target.
+//! Outcomes lists the finished messages under the prefix by status (Failed by default, Cancelled, Done or All), 100
+//! at a time, each once, and the sidebar shows the store's failed count; the pane shows the selected outcome's error,
+//! attempts, retry policy, envelope and payload, the message that caused it and those it caused, each a link recorded
+//! in back and forward. Types lists registered contracts and displays one schema at a time. Watches lists the stored
+//! watches, with a filter over the loaded rows and Show Actor for the watcher and any single-actor target.
 //! The other items say "Coming soon". The server comes from the contexts of `cicada config`, resolved as `cicada`
 //! resolves them. Refresh is by hand.
 

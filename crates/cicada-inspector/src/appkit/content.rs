@@ -3,12 +3,13 @@
 
 use cicada::api::NodeView;
 use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class};
 use objc2_app_kit::{
-    NSAccessibility, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSFont, NSLineBreakMode, NSResponder,
-    NSScrollView, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
+    NSAccessibility, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSButton, NSColor, NSFont, NSLineBreakMode,
+    NSResponder, NSScrollView, NSTextAlignment, NSTextField, NSTitlePosition, NSView,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSInteger, NSPoint, NSRect, NSSize, NSString};
 
 use crate::model::{Count, Overview, Part, Section, TURNS_PAGE, Tile, View, age, count_text, tiles};
 
@@ -211,6 +212,45 @@ impl<'a> Layout<'a> {
         let height = label.fittingSize().height.max(LINE);
         self.add(&label, MARGIN, self.inner(), height);
         self.y += height + 4.0;
+    }
+
+    /// A push button on its own line that sends `action` to `target`, with `tag` and the VoiceOver `label`.
+    pub(super) fn button(&mut self, title: &str, target: &AnyObject, action: Sel, tag: NSInteger, label: &str) {
+        let button = self.action_button(title, target, action, tag, label);
+        let width = button.fittingSize().width.max(80.0);
+        self.add(&button, MARGIN, width, 24.0);
+        self.y += 28.0;
+    }
+
+    /// A link on its own line: a borderless button in the link colour, as wide as the layout.
+    pub(super) fn link(&mut self, title: &str, target: &AnyObject, action: Sel, tag: NSInteger, label: &str) {
+        let button = self.action_button(title, target, action, tag, label);
+        button.setBordered(false);
+        button.setContentTintColor(Some(&NSColor::linkColor()));
+        button.setAlignment(NSTextAlignment::Left);
+        button.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+        self.add(&button, MARGIN, self.inner(), LINE);
+        self.y += LINE + 2.0;
+    }
+
+    fn action_button(
+        &self,
+        title: &str,
+        target: &AnyObject,
+        action: Sel,
+        tag: NSInteger,
+        label: &str,
+    ) -> Retained<NSButton> {
+        // SAFETY: The target implements the action with the button as the sender, and clears it before the button is
+        // removed and during teardown.
+        let button = unsafe {
+            NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(target), Some(action), self.mtm)
+        };
+        button.setTag(tag);
+        let label = NSString::from_str(label);
+        button.setToolTip(Some(&label));
+        button.setAccessibilityLabel(Some(&label));
+        button
     }
 
     fn centered(&mut self, text: &str, size: f64, bold: bool) {
