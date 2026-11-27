@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use cicada_app::Contexts;
 #[cfg(feature = "inspector")]
@@ -32,7 +32,7 @@ use tokio::time::Instant;
 
 #[cfg(feature = "inspector")]
 use crate::menu::InspectorItem;
-use crate::menu::{Action, MenuControl, MenuInput, QuitRequest, Terminate, macos_subtitles, menu};
+use crate::menu::{Action, MenuControl, MenuInput, QuitRequest, Terminate, Worker, macos_subtitles, menu};
 use crate::settings::SettingsForm;
 use crate::{Tray, TrayState};
 use settings::SettingsWindow;
@@ -268,8 +268,9 @@ define_class!(
                 |switch| switch.state() == NSControlStateValueOn,
             );
             let contexts = c.contexts.borrow();
-            let current = contexts.current().filter(|name| contexts.names().iter().any(|context| context == name));
-            let action = c.control.borrow().toggle(&state, on, current);
+            let control = c.control.borrow();
+            let action = control.toggle(&state, on, control.selected(contexts.names(), contexts.current()));
+            drop(control);
             drop(contexts);
             self.act(action);
             self.render();
@@ -402,30 +403,39 @@ impl Target {
 
     fn render(&self) {
         let c = self.ivars();
-        let (state, worker_types, ready) = {
+        let (state, details) = {
             let connection = c.tray.control.connection.lock().expect("tray connection");
             let state = c.state.borrow_mut().borrow_and_update().clone();
-            let ready = connection.as_ref().and_then(|connection| connection.ready.as_ref());
-            let worker_types = ready.map(|ready| ready.types.clone()).unwrap_or_default();
-            (state, worker_types, ready.is_some())
+            (state, c.tray.control.details(&connection))
         };
         c.turns.borrow_mut().borrow_and_update();
         let registered_types = c.tray.control.registered_types.lock().expect("tray registered types").clone();
         let contexts = c.contexts.borrow();
+        let hosts: Vec<_> =
+            contexts.names().iter().map(|name| (name.clone(), contexts.host(name).map(str::to_owned))).collect();
+        let control = c.control.borrow();
         let now = Instant::now();
+        let wall = chrono::Local::now();
         let model = menu(&MenuInput {
             title: &c.title,
             state: &state,
             turns: &c.tray.turns(),
             registered_types: &registered_types,
-            worker_types: &worker_types,
-            ready,
-            contexts: contexts.names(),
-            current: contexts.current(),
-            now: SystemTime::now().into(),
+            worker: details.ready.as_ref().map(|ready| Worker {
+                types: &ready.types,
+                concurrency: ready.concurrency,
+                grace_period: ready.grace_period,
+            }),
+            stopping: details.stopping,
+            failed_at: details.failed_at,
+            contexts: &hosts,
+            selected: control.selected(contexts.names(), contexts.current()),
+            now: wall.to_utc(),
+            zone: *wall.offset(),
             monotonic_now: now,
-            quitting: c.control.borrow().quitting(),
+            quitting: control.quitting(),
         });
+        drop(control);
         drop(contexts);
         c.view.render(self, model);
         c.last_clock.set(now);

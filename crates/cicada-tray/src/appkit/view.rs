@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAccessibility, NSColor, NSControlStateValue, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSImage,
     NSLineBreakMode, NSMenu, NSMenuItem, NSMenuItemBadge, NSStatusBar, NSStatusBarButton, NSStatusItem, NSSwitch,
@@ -13,7 +13,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
-use crate::menu::{Choice, Header, InspectorItem, MenuModel, RecentRow, RunningRow, running_row_text};
+use crate::menu::{ContextRow, Header, Icon, InspectorItem, MenuModel, RecentRow, RunningRow, TypeRow, row_text};
 
 pub(super) struct MenuView {
     pub root: Retained<NSMenu>,
@@ -30,11 +30,11 @@ pub(super) struct MenuView {
     quit: Retained<NSMenuItem>,
     subtitles: bool,
     running_rows: RefCell<Rows<RunningRow>>,
-    context_rows: RefCell<Rows<Choice<String>>>,
-    registered_rows: RefCell<Rows<Choice<&'static str>>>,
+    context_rows: RefCell<Rows<ContextRow>>,
+    registered_rows: RefCell<Rows<TypeRow>>,
     recent_rows: RefCell<Rows<RecentRow>>,
     contexts_enabled: Cell<bool>,
-    failures: Cell<usize>,
+    failures: RefCell<Option<String>>,
 }
 
 impl MenuView {
@@ -114,7 +114,7 @@ impl MenuView {
             registered_rows: RefCell::default(),
             recent_rows: RefCell::default(),
             contexts_enabled: Cell::new(true),
-            failures: Cell::new(0),
+            failures: RefCell::default(),
         };
         Some((status, view))
     }
@@ -144,19 +144,19 @@ impl MenuView {
         if self.stop_now.isHidden() == model.stop_now {
             self.stop_now.setHidden(!model.stop_now);
         }
-        if self.button.appearsDisabled() != model.dimmed {
-            self.button.setAppearsDisabled(model.dimmed);
+        if self.button.appearsDisabled() == model.connected {
+            self.button.setAppearsDisabled(!model.connected);
         }
 
         let start = self.root.indexOfItem(&self.running_section) + 1;
         self.running_rows.borrow_mut().sync(
             &self.root,
             start,
-            model.running,
+            model.running.map(|section| section.rows).unwrap_or_default(),
             |old, new| old.turn == new.turn,
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
             |item, row| {
-                let (title, subtitle) = running_row_text(row, self.subtitles);
+                let (title, subtitle) = row_text(&row.row, self.subtitles);
                 item.setTitle(&NSString::from_str(&title));
                 if let Some(subtitle) = subtitle {
                     item.setSubtitle(Some(&NSString::from_str(&subtitle)));
@@ -169,7 +169,7 @@ impl MenuView {
         rows.sync(
             &self.root,
             start,
-            model.contexts,
+            model.contexts.unwrap_or_default(),
             |old, new| old.name == new.name,
             |row| {
                 let item = item(mtm, &NSString::from_str(&row.name), Some(sel!(trayPickContext:)), ns_string!(""));
@@ -178,7 +178,7 @@ impl MenuView {
                 item.setEnabled(model.contexts_enabled);
                 item
             },
-            |item, row| item.setState(mark(row.marked)),
+            |item, row| item.setState(mark(row.row.icon == Icon::Context { selected: true })),
         );
         if self.contexts_enabled.replace(model.contexts_enabled) != model.contexts_enabled {
             for (_, item) in &rows.items {
@@ -188,28 +188,34 @@ impl MenuView {
         }
         drop(rows);
 
+        let submenus = model.submenus;
+        let (types, recent, failures) =
+            submenus.map(|submenus| (submenus.types, submenus.recent, submenus.recent_right)).unwrap_or_default();
         self.registered_rows.borrow_mut().sync(
             &self.registered,
             0,
-            model.registered_types,
+            types,
             |old, new| old.name == new.name,
             |row| item(mtm, &NSString::from_str(row.name), None, ns_string!("")),
-            |item, row| item.setState(mark(row.marked)),
+            |item, row| item.setState(mark(row.runs)),
         );
         self.recent_rows.borrow_mut().sync(
             &self.recent,
             0,
-            model.recent,
+            recent,
             |old, new| old.turn == new.turn,
             |row| {
-                let title = format!("{} · {}", row.turn.turn.actor, row.outcome);
+                let (title, _) = row_text(&row.row, false);
                 item(mtm, &NSString::from_str(&title), None, ns_string!(""))
             },
             |_, _| {},
         );
-        if self.failures.replace(model.failures) != model.failures {
-            let badge = (model.failures > 0).then(|| NSMenuItemBadge::alertsWithCount(model.failures as isize));
+        if *self.failures.borrow() != failures {
+            let badge = failures
+                .as_deref()
+                .map(|text| NSMenuItemBadge::initWithString(NSMenuItemBadge::alloc(), &NSString::from_str(text)));
             self.recent_item.setBadge(badge.as_deref());
+            self.failures.replace(failures);
         }
     }
 }
@@ -271,8 +277,6 @@ impl HeaderView {
         if shown.as_ref() != Some(&header) {
             self.title.setStringValue(&NSString::from_str(&header.title));
             self.subtitle.setStringValue(&NSString::from_str(&header.subtitle));
-            let tooltip = NSString::from_str(header.error.as_deref().unwrap_or(&header.subtitle));
-            self.subtitle.setToolTip(Some(&tooltip));
             self.switch.setEnabled(header.enabled);
             self.item.setEnabled(header.enabled);
         }

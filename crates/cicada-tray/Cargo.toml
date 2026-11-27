@@ -12,6 +12,7 @@ inspector = ["dep:cicada-inspector"]
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 cicada.workspace = true
 cicada-app.workspace = true
 cicada-inspector = { workspace = true, optional = true }

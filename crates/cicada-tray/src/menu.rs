@@ -1,40 +1,83 @@
 use std::cell::RefCell;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use cicada::store::TurnOutcome;
-use cicada::time::{Timestamp, between};
+use chrono::FixedOffset;
+use cicada::store::{Delivery, TurnOutcome};
+use cicada::time::{Timestamp, add, between};
 use tokio::time::Instant;
 
 use crate::{FinishedTurn, RunningTurn, TrayState, TurnResult, TurnSnapshot};
+
+/// The header of the Registered Types submenu.
+pub(crate) const ACTOR_TYPES: &str = "Actor Types";
+/// The second section of the Registered Types submenu, with its only row.
+pub(crate) const BACKGROUND_TASKS: (&str, &str) = ("Background Tasks", "Not available over HTTP");
+/// The last row of the Registered Types submenu, which opens Settings.
+pub(crate) const CHOOSE_TYPES: &str = "Choose Types…";
+/// The header and the footer of the Recent Turns submenu.
+pub(crate) const RECENT: (&str, &str) = ("Finished on this worker", "Kept until the app quits");
+/// The help under Stop Now.
+pub(crate) const STOP_NOW_HELP: &str = "Stopping now cancels these turns. Their messages stay and run again later.";
+/// The longest failure text the menu shows.
+pub(crate) const FAILURE_LENGTH: usize = 200;
+/// The longest turn error a recent row shows.
+pub(crate) const TURN_ERROR_LENGTH: usize = 80;
 
 pub(crate) struct MenuInput<'a> {
     pub title: &'a str,
     pub state: &'a TrayState,
     pub turns: &'a TurnSnapshot,
     pub registered_types: &'a [&'static str],
-    pub worker_types: &'a [&'static str],
-    /// Whether the connection's worker was ready.
-    pub ready: bool,
-    pub contexts: &'a [String],
-    pub current: Option<&'a str>,
+    /// The connection's worker, once it was ready.
+    pub worker: Option<Worker<'a>>,
+    /// When the stop of the connection began, and whether Stop Now was used.
+    pub stopping: Option<(Instant, bool)>,
+    /// When the last connection failed, by the wall clock.
+    pub failed_at: Option<Timestamp>,
+    /// Each context's name and its server's host.
+    pub contexts: &'a [(String, Option<String>)],
+    /// The context Connect targets while not connected.
+    pub selected: Option<&'a str>,
     pub now: Timestamp,
+    /// The local time zone's offset, for the times of day shown.
+    pub zone: FixedOffset,
     pub monotonic_now: Instant,
     pub quitting: bool,
 }
 
-#[derive(PartialEq, Eq)]
+/// What the menu needs of a ready worker.
+#[derive(Clone, Copy)]
+pub(crate) struct Worker<'a> {
+    pub types: &'a [&'static str],
+    pub concurrency: usize,
+    pub grace_period: Duration,
+}
+
+#[derive(PartialEq)]
 pub(crate) struct MenuModel {
     pub header: Header,
-    /// Offer Stop Now: while stopping a worker that was ready.
-    pub stop_now: bool,
-    pub dimmed: bool,
-    pub running: Vec<RunningRow>,
-    pub contexts: Vec<Choice<String>>,
+    /// The grace period's bar in the header, while stopping a worker that was ready.
+    pub bar: Option<Bar>,
+    /// The status item's hexagon is filled: only while online.
+    pub connected: bool,
+    /// The last connection failure, while not connected.
+    pub failure: Option<Row>,
+    /// "Running" while connected, "Finishing" while disconnecting.
+    pub running: Option<Section>,
+    /// Hidden while disconnecting.
+    pub contexts: Option<Vec<ContextRow>>,
     pub contexts_enabled: bool,
-    pub registered_types: Vec<Choice<&'static str>>,
-    pub recent: Vec<RecentRow>,
-    pub failures: usize,
+    /// Registered Types and Recent Turns, while connecting or connected.
+    pub submenus: Option<Submenus>,
+    /// "Connect to <context>", while not connected with a selected context.
+    pub connect: Option<String>,
+    /// Offer Stop Now and its help: while stopping a worker that was ready.
+    pub stop_now: bool,
     pub inspector: Option<InspectorItem>,
+    pub settings: bool,
+    pub quit: String,
+    pub quit_enabled: bool,
 }
 
 /// The inspector menu item, when the feature is built in.
@@ -61,31 +104,103 @@ impl InspectorItem {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Header {
     pub title: String,
     pub subtitle: String,
-    pub error: Option<String>,
     pub on: bool,
     pub enabled: bool,
 }
 
-#[derive(PartialEq, Eq)]
-pub(crate) struct Choice<T> {
-    pub name: T,
-    pub marked: bool,
+/// The disconnecting bar: its fill from 0 to 1, the text on the left and the seconds on the right.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Bar {
+    pub fraction: f64,
+    pub text: &'static str,
+    pub left: Option<String>,
+    pub label: String,
 }
 
-#[derive(PartialEq, Eq)]
+/// The icon of a rich row: the board's glyph in a tinted circle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Icon {
+    /// Green pulse.
+    Running,
+    /// Orange clock.
+    Finishing,
+    /// Server glyph, blue filled when selected, grey otherwise.
+    Context { selected: bool },
+    /// Green check.
+    Done,
+    /// Red cross: failed, rescheduled and abandoned turns.
+    Failed,
+    /// Grey cross.
+    Cancelled,
+    /// Red exclamation mark: the connection failure.
+    Alert,
+}
+
+/// A rich row: an icon, a title, a second line and the text on the right.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Row {
+    pub icon: Icon,
+    pub title: String,
+    pub subtitle: String,
+    pub right: Option<String>,
+}
+
+/// A section header with its text on the right, and its rows.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Section {
+    pub title: &'static str,
+    pub right: String,
+    pub rows: Vec<RunningRow>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RunningRow {
     pub turn: RunningTurn,
-    pub elapsed: u64,
+    pub row: Row,
 }
 
-pub(crate) fn running_row_text(row: &RunningRow, subtitles: bool) -> (String, Option<String>) {
-    let title = format!("{}     {}s", row.turn.actor, row.elapsed);
-    let details = format!("{} · Attempt {}", row.turn.message_type, row.turn.attempt);
-    if subtitles { (title, Some(details)) } else { (format!("{title} · {details}"), None) }
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ContextRow {
+    pub name: String,
+    pub row: Row,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Submenus {
+    /// "K of T": the registered types the worker runs, once it is ready.
+    pub registered_right: Option<String>,
+    pub types: Vec<TypeRow>,
+    /// "N failed", when any recent turn failed.
+    pub recent_right: Option<String>,
+    pub recent: Vec<RecentRow>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TypeRow {
+    pub name: &'static str,
+    /// The worker runs it: a checkmark.
+    pub runs: bool,
+    /// "N running" or "Not on this worker", once the worker is ready.
+    pub right: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RecentRow {
+    pub turn: FinishedTurn,
+    pub row: Row,
+}
+
+/// The title and subtitle of a row: on macOS 14.0 to 14.3, which have no subtitles, the second line joins the title.
+pub(crate) fn row_text(row: &Row, subtitles: bool) -> (String, Option<String>) {
+    if subtitles || row.subtitle.is_empty() {
+        (row.title.clone(), (!row.subtitle.is_empty()).then(|| row.subtitle.clone()))
+    } else {
+        (format!("{} · {}", row.title, row.subtitle), None)
+    }
 }
 
 /// Checks the minimum macOS version and reports whether it supports menu item subtitles.
@@ -94,12 +209,6 @@ pub(crate) fn macos_subtitles(version: (isize, isize, isize)) -> Result<bool, (&
         return Err(("the Cicada menu bar app requires macOS 14 or later", ExitCode::FAILURE));
     }
     Ok(version >= (14, 4, 0))
-}
-
-#[derive(PartialEq, Eq)]
-pub(crate) struct RecentRow {
-    pub turn: FinishedTurn,
-    pub outcome: &'static str,
 }
 
 impl TrayState {
@@ -112,25 +221,198 @@ impl TrayState {
     }
 }
 
-pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
-    let current = input.current.filter(|name| input.contexts.iter().any(|context| context == name));
-    let marked = input.state.connection().or(current);
-    let (subtitle, error, on, enabled) = match input.state {
-        TrayState::Offline => {
-            let title = if current.is_some() { "Offline" } else { "Offline · Run cicada config" };
-            (title.to_owned(), None, false, current.is_some())
-        }
-        TrayState::Connecting { context } => (format!("Connecting to {context}"), None, true, true),
-        TrayState::Online { context } => (format!("Connected to {context}"), None, true, true),
-        TrayState::Stopping { until, .. } => {
-            let left = until.saturating_duration_since(input.monotonic_now);
-            let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
-            (format!("Disconnecting · {seconds}s left"), None, false, false)
-        }
-        TrayState::Failed { context, error } => {
-            (format!("Connection failed · {context}"), Some(error.clone()), false, current.is_some())
-        }
+/// `text` as the menu shows it: the user, password, query and fragment of each URL removed, each run of control
+/// characters and white space made one space, and cut at `limit` characters, the last an ellipsis when cut.
+pub(crate) fn display_text(text: &str, limit: usize) -> String {
+    let mut shown = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        shown.push_str(&rest[..at + 3]);
+        let after = &rest[at + 3..];
+        let end =
+            after.find(|c: char| c.is_whitespace() || c.is_control() || "()<>\"'`".contains(c)).unwrap_or(after.len());
+        let url = &after[..end];
+        let authority = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let host = url[..authority].rfind('@').map_or(0, |at| at + 1);
+        let kept = url.find(['?', '#']).unwrap_or(url.len());
+        shown.push_str(&url[host..kept]);
+        rest = &after[end..];
+    }
+    shown.push_str(rest);
+    let words = shown.split(|c: char| c.is_whitespace() || c.is_control()).filter(|word| !word.is_empty());
+    let joined = words.collect::<Vec<_>>().join(" ");
+    if joined.chars().count() <= limit {
+        return joined;
+    }
+    let mut cut: String = joined.chars().take(limit.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+fn clock(at: Timestamp, zone: FixedOffset) -> String {
+    at.with_timezone(&zone).format("%H:%M").to_string()
+}
+
+/// A duration as m:ss.
+fn minutes(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn running_row(turn: &RunningTurn, icon: Icon, now: Timestamp) -> RunningRow {
+    let row = Row {
+        icon,
+        title: turn.actor.to_string(),
+        subtitle: format!("{} · attempt {}", turn.message_type, turn.attempt),
+        right: Some(minutes(between(turn.claimed_at, now))),
     };
+    RunningRow { turn: turn.clone(), row }
+}
+
+/// A finished turn's row, and whether it counts as failed.
+fn recent_row(turn: &FinishedTurn, zone: FixedOffset) -> (RecentRow, bool) {
+    let kind = &turn.turn.message_type;
+    let error = |error: &str| display_text(error.lines().next().unwrap_or_default(), TURN_ERROR_LENGTH);
+    let (icon, line, failed) = match &turn.outcome {
+        TurnResult::Committed(TurnOutcome::Done) => {
+            (Icon::Done, format!("done in {}", minutes(between(turn.turn.claimed_at, turn.finished_at))), false)
+        }
+        TurnResult::Committed(TurnOutcome::Failed(reason)) => (Icon::Failed, error(reason), true),
+        TurnResult::Committed(TurnOutcome::Rescheduled { delivery, error: reason }) => {
+            let retry = match delivery {
+                Delivery::Now => "now".to_owned(),
+                Delivery::At(at) => clock(*at, zone),
+                Delivery::After(delay) => clock(add(turn.finished_at, *delay).unwrap_or(turn.finished_at), zone),
+            };
+            (Icon::Failed, format!("{}, retry {retry}", error(reason)), true)
+        }
+        TurnResult::Committed(TurnOutcome::Cancelled) => (Icon::Cancelled, "cancelled".to_owned(), false),
+        TurnResult::Abandoned => (Icon::Failed, "abandoned".to_owned(), true),
+    };
+    let row = Row {
+        icon,
+        title: turn.turn.actor.to_string(),
+        subtitle: format!("{kind} · {line}"),
+        right: Some(clock(turn.finished_at, zone)),
+    };
+    (RecentRow { turn: turn.clone(), row }, failed)
+}
+
+/// The disconnecting bar: the grace period's share used, or full once it ended, after Stop Now or with no grace.
+fn bar(grace: Duration, began: Instant, stopped_now: bool, now: Instant) -> Bar {
+    let elapsed = now.saturating_duration_since(began);
+    if stopped_now || elapsed >= grace {
+        let label = "Grace period over: cancelling turns".to_owned();
+        return Bar { fraction: 1.0, text: "Cancelling turns…", left: None, label };
+    }
+    let left = grace - elapsed;
+    let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+    let label = format!("Grace period: {} of {} seconds used", elapsed.as_secs(), grace.as_secs());
+    let fraction = elapsed.as_secs_f64() / grace.as_secs_f64();
+    Bar { fraction, text: "Taking no new turns", left: Some(format!("{seconds} s left")), label }
+}
+
+pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
+    let selected = input.selected.filter(|name| input.contexts.iter().any(|(context, _)| context == name));
+    let marked = input.state.connection().or(selected);
+    let enabled = !input.quitting;
+    let header = |subtitle: String, on: bool, switch: bool| Header {
+        title: input.title.to_owned(),
+        subtitle,
+        on,
+        enabled: switch && enabled,
+    };
+    let contexts = || {
+        input
+            .contexts
+            .iter()
+            .map(|(name, host)| ContextRow {
+                name: name.clone(),
+                row: Row {
+                    icon: Icon::Context { selected: Some(name.as_str()) == marked },
+                    title: name.clone(),
+                    subtitle: host.clone().unwrap_or_default(),
+                    right: None,
+                },
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = |icon| input.turns.running.iter().map(|turn| running_row(turn, icon, input.now)).collect::<Vec<_>>();
+    let mut model = MenuModel {
+        header: header(String::new(), false, false),
+        bar: None,
+        connected: matches!(input.state, TrayState::Online { .. }),
+        failure: None,
+        running: None,
+        contexts: None,
+        contexts_enabled: enabled,
+        submenus: None,
+        connect: None,
+        stop_now: false,
+        inspector: InspectorItem::entry(input.quitting),
+        settings: true,
+        quit: format!("Quit {}", input.title),
+        quit_enabled: enabled,
+    };
+    match input.state {
+        TrayState::Offline | TrayState::Failed { .. } => {
+            let subtitle =
+                if input.contexts.is_empty() { "Not connected · Run cicada config" } else { "Not connected" };
+            model.header = header(subtitle.to_owned(), false, selected.is_some());
+            if let TrayState::Failed { context, error } = input.state {
+                let error = display_text(error, FAILURE_LENGTH);
+                let subtitle = match input.failed_at {
+                    Some(at) => format!("{error} at {}", clock(at, input.zone)),
+                    None => error,
+                };
+                let title = format!("Couldn't reach {context}");
+                model.failure = Some(Row { icon: Icon::Alert, title, subtitle, right: None });
+            }
+            model.contexts = Some(contexts());
+            model.connect = selected.map(|name| format!("Connect to {name}"));
+        }
+        TrayState::Connecting { context } => {
+            model.header = header(format!("Connecting to {context}…"), true, true);
+            model.contexts = Some(contexts());
+            model.submenus = Some(submenus(input));
+        }
+        TrayState::Online { context } => {
+            model.header = header(format!("Connected to {context}"), true, true);
+            let rows = rows(Icon::Running);
+            let limit = input.worker.map_or(0, |worker| worker.concurrency);
+            model.running = Some(Section { title: "Running", right: format!("{} of {limit}", rows.len()), rows });
+            model.contexts = Some(contexts());
+            model.submenus = Some(submenus(input));
+        }
+        TrayState::Stopping { context, .. } => {
+            model.header = header(format!("Disconnecting from {context}…"), false, false);
+            if let (Some(worker), Some((began, stopped_now))) = (input.worker, input.stopping) {
+                model.bar = Some(bar(worker.grace_period, began, stopped_now, input.monotonic_now));
+                model.stop_now = true;
+            }
+            let rows = rows(Icon::Finishing);
+            model.running = Some(Section { title: "Finishing", right: rows.len().to_string(), rows });
+            model.inspector = None;
+            model.settings = false;
+        }
+    }
+    model
+}
+
+fn submenus(input: &MenuInput<'_>) -> Submenus {
+    let worker_types = input.worker.map_or(&[][..], |worker| worker.types);
+    let types: Vec<_> = input
+        .registered_types
+        .iter()
+        .map(|&name| {
+            let runs = worker_types.contains(&name);
+            let running = input.turns.running.iter().filter(|turn| turn.actor.type_name().as_str() == name).count();
+            let right =
+                input.worker.map(|_| if runs { format!("{running} running") } else { "Not on this worker".to_owned() });
+            TypeRow { name, runs, right }
+        })
+        .collect();
+    let runs = types.iter().filter(|row| row.runs).count();
     let mut failures = 0;
     let recent = input
         .turns
@@ -138,50 +420,16 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
         .iter()
         .rev()
         .map(|turn| {
-            let outcome = match &turn.outcome {
-                TurnResult::Committed(TurnOutcome::Done) => "Done",
-                TurnResult::Committed(TurnOutcome::Cancelled) => "Cancelled",
-                TurnResult::Committed(TurnOutcome::Rescheduled { .. }) => "Rescheduled",
-                TurnResult::Committed(TurnOutcome::Failed(_)) => {
-                    failures += 1;
-                    "Failed"
-                }
-                TurnResult::Abandoned => {
-                    failures += 1;
-                    "Abandoned"
-                }
-            };
-            RecentRow { turn: turn.clone(), outcome }
+            let (row, failed) = recent_row(turn, input.zone);
+            failures += usize::from(failed);
+            row
         })
         .collect();
-
-    MenuModel {
-        header: Header { title: input.title.to_owned(), subtitle, error, on, enabled: enabled && !input.quitting },
-        stop_now: input.ready && matches!(input.state, TrayState::Stopping { .. }),
-        dimmed: input.state.connection().is_none(),
-        running: input
-            .turns
-            .running
-            .iter()
-            .map(|turn| RunningRow { turn: turn.clone(), elapsed: between(turn.claimed_at, input.now).as_secs() })
-            .collect(),
-        contexts: input
-            .contexts
-            .iter()
-            .map(|name| Choice { name: name.clone(), marked: Some(name.as_str()) == marked })
-            .collect(),
-        contexts_enabled: !input.quitting,
-        registered_types: input
-            .registered_types
-            .iter()
-            .map(|&name| Choice {
-                name,
-                marked: input.state.connection().is_some() && input.worker_types.contains(&name),
-            })
-            .collect(),
+    Submenus {
+        registered_right: input.worker.map(|_| format!("{runs} of {}", types.len())),
+        types,
+        recent_right: (failures > 0).then(|| format!("{failures} failed")),
         recent,
-        failures,
-        inspector: InspectorItem::entry(input.quitting),
     }
 }
 
@@ -230,12 +478,21 @@ enum Quit {
 #[derive(Default)]
 pub(crate) struct MenuControl {
     pending: Option<String>,
+    /// The last context picked; never written to the config file.
+    picked: Option<String>,
     quit: Option<Quit>,
 }
 
 impl MenuControl {
     pub fn quitting(&self) -> bool {
         self.quit.is_some()
+    }
+
+    /// The context Connect and the switch use: the last pick while it is still configured, else the config file's
+    /// current context while it is configured.
+    pub fn selected<'a>(&'a self, names: &[String], current: Option<&'a str>) -> Option<&'a str> {
+        let known = |name: &&str| names.iter().any(|known| known == name);
+        self.picked.as_deref().filter(known).or(current.filter(known))
     }
 
     pub fn toggle(&self, state: &TrayState, on: bool, current: Option<&str>) -> Option<Action> {
@@ -249,14 +506,16 @@ impl MenuControl {
         }
     }
 
+    /// Picks a context: while not connected, selects it without connecting; while connected to another, switches.
     pub fn pick(&mut self, state: &TrayState, name: String) -> Option<Action> {
         if self.quitting() {
             return None;
         }
+        self.picked = Some(name.clone());
         match state {
             TrayState::Offline | TrayState::Failed { .. } => {
                 self.pending = None;
-                Some(Action::Connect(name))
+                None
             }
             TrayState::Stopping { .. } => {
                 self.pending = Some(name);
@@ -335,7 +594,11 @@ impl MenuControl {
                 Some(Action::ReplyToTerminate)
             }
             Some(Quit::Finishing) => None,
-            None => self.pending.take().map(Action::Connect),
+            None => {
+                let name = self.pending.take()?;
+                self.picked = Some(name.clone());
+                Some(Action::Connect(name))
+            }
         }
     }
 }
@@ -348,31 +611,68 @@ mod tests {
 
     use super::*;
 
-    fn model(state: &TrayState, now: Instant, turns: &TurnSnapshot, current: Option<&str>) -> MenuModel {
-        model_of(state, true, now, turns, current, false)
+    const SECOND: i64 = 1_000_000;
+
+    /// The menu's inputs; `model` turns them into the menu. Times are UTC and the clock reads 14:32:00.
+    struct Fixture {
+        state: TrayState,
+        turns: TurnSnapshot,
+        ready: bool,
+        stopping: Option<(Instant, bool)>,
+        grace: Duration,
+        failed_at: Option<Timestamp>,
+        contexts: Vec<(String, Option<String>)>,
+        selected: Option<&'static str>,
+        monotonic_now: Instant,
+        quitting: bool,
     }
 
-    fn model_of(
-        state: &TrayState,
-        ready: bool,
-        now: Instant,
-        turns: &TurnSnapshot,
-        current: Option<&str>,
-        quitting: bool,
-    ) -> MenuModel {
-        menu(&MenuInput {
-            title: "Test Worker",
-            state,
-            turns,
-            registered_types: &["one", "two", "three"],
-            worker_types: &["one", "three"],
-            ready,
-            contexts: &["prod".into(), "test".into()],
-            current,
-            now: from_micros(4_000_000),
-            monotonic_now: now,
-            quitting,
-        })
+    /// A time of day, UTC, on 2026-11-18.
+    fn at(hour: i64, minute: i64, second: i64) -> Timestamp {
+        from_micros((1_794_960_000 + hour * 3600 + minute * 60 + second) * SECOND)
+    }
+
+    impl Fixture {
+        fn new(state: TrayState) -> Self {
+            Self {
+                state,
+                turns: TurnSnapshot::default(),
+                ready: true,
+                stopping: None,
+                grace: Duration::from_secs(30),
+                failed_at: None,
+                contexts: vec![
+                    ("local".into(), Some("127.0.0.1:8080".into())),
+                    ("prod".into(), Some("actors.internal".into())),
+                    ("staging".into(), Some("staging.actors.internal".into())),
+                ],
+                selected: Some("prod"),
+                monotonic_now: Instant::now(),
+                quitting: false,
+            }
+        }
+
+        fn model(&self) -> MenuModel {
+            menu(&MenuInput {
+                title: "myapp worker",
+                state: &self.state,
+                turns: &self.turns,
+                registered_types: &["reports", "invoices", "mailer", "audit"],
+                worker: self.ready.then_some(Worker {
+                    types: &["reports", "invoices", "mailer"],
+                    concurrency: 4,
+                    grace_period: self.grace,
+                }),
+                stopping: self.stopping,
+                failed_at: self.failed_at,
+                contexts: &self.contexts,
+                selected: self.selected,
+                now: at(14, 32, 0),
+                zone: FixedOffset::east_opt(0).unwrap(),
+                monotonic_now: self.monotonic_now,
+                quitting: self.quitting,
+            })
+        }
     }
 
     fn online() -> TrayState {
@@ -380,23 +680,338 @@ mod tests {
     }
 
     fn failed() -> TrayState {
-        TrayState::Failed { context: "prod".into(), error: "Server unavailable".into() }
+        TrayState::Failed { context: "staging".into(), error: "Connection refused".into() }
     }
 
     fn stopping(until: Instant) -> TrayState {
         TrayState::Stopping { context: "prod".into(), until }
     }
 
+    fn running(actor: &str, kind: &str, attempt: u32, claimed_at: Timestamp) -> RunningTurn {
+        RunningTurn { actor: actor.parse().unwrap(), message_type: kind.into(), attempt, claimed_at }
+    }
+
+    /// The running turns of board Main: claimed 0:42, 0:07 and 0:03 ago.
+    fn main_turns() -> Vec<RunningTurn> {
+        vec![
+            running("reports/2026-q3", "GenerateReport", 1, at(14, 31, 18)),
+            running("invoices/inv-10422", "Render", 2, at(14, 31, 53)),
+            running("mailer/daily-digest", "Send", 1, at(14, 31, 57)),
+        ]
+    }
+
+    fn texts(row: &Row) -> (&str, &str, Option<&str>) {
+        (&row.title, &row.subtitle, row.right.as_deref())
+    }
+
+    fn context_icons(model: &MenuModel) -> Vec<(&str, &str, Icon)> {
+        let rows = model.contexts.as_ref().expect("a Context section");
+        rows.iter().map(|context| (context.name.as_str(), context.row.subtitle.as_str(), context.row.icon)).collect()
+    }
+
+    /// Board Main.
     #[test]
-    fn open_inspector_is_feature_gated_and_disabled_during_quit() {
-        for quitting in [false, true] {
-            let menu = model_of(&TrayState::Offline, false, Instant::now(), &TurnSnapshot::default(), None, quitting);
-            if cfg!(feature = "inspector") {
-                let item = menu.inspector.expect("the feature adds the inspector item");
-                assert_eq!((item.title, item.key, item.enabled), ("Open Inspector…", "i", !quitting));
-            } else {
-                assert!(menu.inspector.is_none());
+    fn connected_shows_running_n_of_m_the_contexts_with_their_hosts_and_both_submenus() {
+        let mut fixture = Fixture::new(online());
+        fixture.turns.running = main_turns();
+        fixture.selected = Some("staging");
+        let model = fixture.model();
+        assert_eq!(
+            model.header,
+            Header { title: "myapp worker".into(), subtitle: "Connected to prod".into(), on: true, enabled: true }
+        );
+        assert!(model.connected && model.bar.is_none() && model.failure.is_none() && !model.stop_now);
+        let running = model.running.as_ref().expect("a Running section");
+        assert_eq!((running.title, running.right.as_str()), ("Running", "3 of 4"));
+        assert_eq!(
+            running.rows.iter().map(|row| texts(&row.row)).collect::<Vec<_>>(),
+            [
+                ("reports/2026-q3", "GenerateReport · attempt 1", Some("0:42")),
+                ("invoices/inv-10422", "Render · attempt 2", Some("0:07")),
+                ("mailer/daily-digest", "Send · attempt 1", Some("0:03")),
+            ]
+        );
+        assert!(running.rows.iter().all(|row| row.row.icon == Icon::Running));
+        assert_eq!(
+            context_icons(&model),
+            [
+                ("local", "127.0.0.1:8080", Icon::Context { selected: false }),
+                ("prod", "actors.internal", Icon::Context { selected: true }),
+                ("staging", "staging.actors.internal", Icon::Context { selected: false }),
+            ],
+            "the connected context is filled, not the pick"
+        );
+        let submenus = model.submenus.as_ref().expect("the submenus");
+        assert_eq!(submenus.registered_right.as_deref(), Some("3 of 4"));
+        assert_eq!(submenus.recent_right, None, "no failures: no text");
+        assert!(model.connect.is_none());
+        assert!(model.settings);
+        assert_eq!(model.inspector.is_some(), cfg!(feature = "inspector"));
+        assert_eq!((model.quit.as_str(), model.quit_enabled), ("Quit myapp worker", true));
+    }
+
+    #[test]
+    fn running_time_is_minutes_and_seconds_and_clamps_at_zero() {
+        let mut fixture = Fixture::new(online());
+        fixture.turns.running =
+            vec![running("work/a", "Work", 1, at(13, 20, 55)), running("work/b", "Work", 1, at(14, 33, 0))];
+        let model = fixture.model();
+        let rows = &model.running.as_ref().unwrap().rows;
+        assert_eq!(rows[0].row.right.as_deref(), Some("71:05"));
+        assert_eq!(rows[1].row.right.as_deref(), Some("0:00"));
+        assert_eq!(rows[0].turn, fixture.turns.running[0], "the turn is the row's identity");
+    }
+
+    /// Board Registered.
+    #[test]
+    fn registered_types_mark_the_workers_types_with_their_running_counts() {
+        let mut fixture = Fixture::new(online());
+        fixture.turns.running = main_turns();
+        let submenus = fixture.model().submenus.unwrap();
+        assert_eq!(
+            submenus.types,
+            [
+                TypeRow { name: "reports", runs: true, right: Some("1 running".into()) },
+                TypeRow { name: "invoices", runs: true, right: Some("1 running".into()) },
+                TypeRow { name: "mailer", runs: true, right: Some("1 running".into()) },
+                TypeRow { name: "audit", runs: false, right: Some("Not on this worker".into()) },
+            ]
+        );
+        assert_eq!(
+            (ACTOR_TYPES, BACKGROUND_TASKS, CHOOSE_TYPES),
+            ("Actor Types", ("Background Tasks", "Not available over HTTP"), "Choose Types…")
+        );
+    }
+
+    fn finished(
+        actor: &str,
+        kind: &str,
+        claimed_at: Timestamp,
+        finished_at: Timestamp,
+        outcome: TurnResult,
+    ) -> FinishedTurn {
+        FinishedTurn { turn: running(actor, kind, 1, claimed_at), finished_at, outcome }
+    }
+
+    /// Board Running, and one row per outcome.
+    #[test]
+    fn recent_turns_show_each_outcome_newest_first_and_count_failures() {
+        let committed = TurnResult::Committed;
+        let mut fixture = Fixture::new(online());
+        let retry = |delivery| committed(TurnOutcome::Rescheduled { delivery, error: "deadline passed".into() });
+        fixture.turns.finished = vec![
+            finished("reports/2026-q1", "Archive", at(14, 26, 52), at(14, 27, 0), committed(TurnOutcome::Done)),
+            finished("invoices/inv-10419", "Render", at(14, 28, 0), at(14, 29, 0), retry(Delivery::At(at(14, 40, 0)))),
+            finished("mailer/welcome-881", "Send", at(14, 29, 58), at(14, 30, 0), committed(TurnOutcome::Done)),
+            finished("reports/2026-q2", "GenerateReport", at(14, 29, 48), at(14, 31, 0), committed(TurnOutcome::Done)),
+        ];
+        let submenus = fixture.model().submenus.unwrap();
+        assert_eq!(
+            submenus.recent.iter().map(|row| (texts(&row.row), row.row.icon)).collect::<Vec<_>>(),
+            [
+                (("reports/2026-q2", "GenerateReport · done in 1:12", Some("14:31")), Icon::Done),
+                (("mailer/welcome-881", "Send · done in 0:02", Some("14:30")), Icon::Done),
+                (("invoices/inv-10419", "Render · deadline passed, retry 14:40", Some("14:29")), Icon::Failed),
+                (("reports/2026-q1", "Archive · done in 0:08", Some("14:27")), Icon::Done),
+            ]
+        );
+        assert_eq!(submenus.recent_right.as_deref(), Some("1 failed"), "board Main counts the retried turn");
+        assert_eq!(RECENT, ("Finished on this worker", "Kept until the app quits"));
+
+        let long = format!("first line {}\nsecond line", "x".repeat(100));
+        fixture.turns.finished = vec![
+            finished("a/1", "Work", at(14, 0, 0), at(14, 1, 0), committed(TurnOutcome::Failed(long))),
+            finished("a/2", "Work", at(14, 0, 0), at(14, 2, 0), retry(Delivery::After(Duration::from_secs(300)))),
+            finished("a/3", "Work", at(14, 0, 0), at(14, 3, 0), retry(Delivery::Now)),
+            finished("a/4", "Work", at(14, 0, 0), at(14, 4, 0), committed(TurnOutcome::Cancelled)),
+            finished("a/5", "Work", at(14, 0, 0), at(14, 5, 0), TurnResult::Abandoned),
+        ];
+        let submenus = fixture.model().submenus.unwrap();
+        let rows: Vec<_> = submenus.recent.iter().map(|row| (row.row.subtitle.as_str(), row.row.icon)).collect();
+        assert_eq!(rows[0], ("Work · abandoned", Icon::Failed));
+        assert_eq!(rows[1], ("Work · cancelled", Icon::Cancelled));
+        assert_eq!(rows[2], ("Work · deadline passed, retry now", Icon::Failed));
+        assert_eq!(rows[3], ("Work · deadline passed, retry 14:07", Icon::Failed), "finish plus the delay");
+        let failure = rows[4].0.strip_prefix("Work · ").unwrap();
+        assert_eq!((failure.chars().count(), rows[4].1), (TURN_ERROR_LENGTH, Icon::Failed));
+        assert!(failure.starts_with("first line xxx") && failure.ends_with('…') && !failure.contains("second"));
+        assert_eq!(submenus.recent_right.as_deref(), Some("4 failed"), "failed, rescheduled and abandoned");
+    }
+
+    /// Board Disconnected, and the scenario "Not connected after a failure".
+    #[test]
+    fn not_connected_after_a_failure_shows_the_error_the_contexts_and_connect() {
+        let mut fixture = Fixture::new(failed());
+        fixture.turns.running = main_turns();
+        fixture.failed_at = Some(at(14, 5, 30));
+        let model = fixture.model();
+        assert_eq!(
+            model.header,
+            Header { title: "myapp worker".into(), subtitle: "Not connected".into(), on: false, enabled: true }
+        );
+        let failure = model.failure.as_ref().expect("the failure row");
+        assert_eq!(texts(failure), ("Couldn't reach staging", "Connection refused at 14:05", None));
+        assert_eq!(failure.icon, Icon::Alert);
+        assert!(model.running.is_none() && model.submenus.is_none() && model.bar.is_none() && !model.connected);
+        assert_eq!(context_icons(&model)[1], ("prod", "actors.internal", Icon::Context { selected: true }));
+        assert_eq!(model.connect.as_deref(), Some("Connect to prod"));
+        assert!(model.settings && !model.stop_now);
+
+        fixture.failed_at = None;
+        assert_eq!(fixture.model().failure.unwrap().subtitle, "Connection refused", "no time recorded");
+        fixture.state = TrayState::Offline;
+        assert!(fixture.model().failure.is_none(), "offline has no failure row");
+    }
+
+    #[test]
+    fn the_failure_row_shows_no_credentials_queries_or_control_characters() {
+        let error = "error sending request for url (https://user:secret@actors.internal:8443/api/v1?token=hidden#x):\n\
+                     connection\trefused\u{7}";
+        let mut fixture = Fixture::new(TrayState::Failed { context: "prod".into(), error: error.into() });
+        fixture.failed_at = Some(at(9, 1, 0));
+        let failure = fixture.model().failure.unwrap();
+        assert_eq!(
+            failure.subtitle,
+            "error sending request for url (https://actors.internal:8443/api/v1): connection refused at 09:01"
+        );
+        let long = format!("http://a@b/{}", "y".repeat(400));
+        let shown = display_text(&long, FAILURE_LENGTH);
+        assert_eq!(shown.chars().count(), FAILURE_LENGTH);
+        assert!(shown.starts_with("http://b/yyy") && shown.ends_with('…'));
+        assert_eq!(display_text("a://u@h?q b://h#f ok", 200), "a://h b://h ok");
+    }
+
+    #[test]
+    fn with_no_contexts_the_header_says_run_cicada_config_and_there_is_no_connect() {
+        let mut fixture = Fixture::new(TrayState::Offline);
+        fixture.contexts.clear();
+        let model = fixture.model();
+        assert_eq!(model.header.subtitle, "Not connected · Run cicada config");
+        assert!(!model.header.enabled && model.connect.is_none());
+        assert_eq!(model.contexts, Some(Vec::new()));
+
+        let mut fixture = Fixture::new(TrayState::Offline);
+        for selected in [None, Some("missing")] {
+            fixture.selected = selected;
+            let model = fixture.model();
+            assert_eq!(model.header.subtitle, "Not connected");
+            assert!(!model.header.enabled && model.connect.is_none(), "nothing selected: no target");
+        }
+    }
+
+    /// The connecting menu, which has no board.
+    #[test]
+    fn connecting_is_main_without_running_rows() {
+        let mut fixture = Fixture::new(TrayState::Connecting { context: "prod".into() });
+        fixture.ready = false;
+        fixture.turns.running = main_turns();
+        let model = fixture.model();
+        assert_eq!(model.header.subtitle, "Connecting to prod…");
+        assert!(model.header.on && model.header.enabled && !model.connected);
+        assert!(model.running.is_none());
+        let submenus = model.submenus.as_ref().unwrap();
+        assert_eq!(submenus.registered_right, None, "the worker's types are not known yet");
+        assert!(submenus.types.iter().all(|row| !row.runs && row.right.is_none()));
+        assert!(model.contexts.is_some() && model.connect.is_none() && model.settings);
+    }
+
+    /// Board Disconnecting, and the scenario "Disconnecting".
+    #[test]
+    fn disconnecting_shows_the_bar_the_finishing_turns_and_stop_now_only() {
+        let now = Instant::now();
+        let mut fixture = Fixture::new(stopping(now + Duration::from_secs(40)));
+        fixture.turns.running = main_turns()[..2].to_vec();
+        fixture.stopping = Some((now - Duration::from_secs(12), false));
+        fixture.monotonic_now = now;
+        let model = fixture.model();
+        assert_eq!(
+            model.header,
+            Header {
+                title: "myapp worker".into(),
+                subtitle: "Disconnecting from prod…".into(),
+                on: false,
+                enabled: false
             }
+        );
+        let bar = model.bar.as_ref().expect("the bar");
+        assert!((bar.fraction - 0.4).abs() < 1e-9);
+        assert_eq!((bar.text, bar.left.as_deref()), ("Taking no new turns", Some("18 s left")));
+        assert_eq!(bar.label, "Grace period: 12 of 30 seconds used");
+        let finishing = model.running.as_ref().unwrap();
+        assert_eq!((finishing.title, finishing.right.as_str()), ("Finishing", "2"));
+        assert!(finishing.rows.iter().all(|row| row.row.icon == Icon::Finishing));
+        assert!(model.stop_now);
+        assert_eq!(STOP_NOW_HELP, "Stopping now cancels these turns. Their messages stay and run again later.");
+        assert!(model.contexts.is_none() && model.submenus.is_none() && model.connect.is_none());
+        assert!(model.inspector.is_none() && !model.settings && model.failure.is_none() && !model.connected);
+        assert_eq!(model.quit, "Quit myapp worker");
+
+        fixture.monotonic_now = now + Duration::from_millis(17_100);
+        assert_eq!(fixture.model().bar.unwrap().left.as_deref(), Some("1 s left"), "rounded up");
+    }
+
+    #[test]
+    fn the_bar_is_full_with_no_grace_after_the_grace_and_after_stop_now() {
+        let now = Instant::now();
+        let mut fixture = Fixture::new(stopping(now));
+        fixture.monotonic_now = now;
+        let full = |fixture: &Fixture| {
+            let bar = fixture.model().bar.unwrap();
+            (bar.fraction, bar.text, bar.left)
+        };
+        fixture.grace = Duration::ZERO;
+        fixture.stopping = Some((now, false));
+        assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "zero grace");
+        fixture.grace = Duration::from_secs(30);
+        fixture.stopping = Some((now - Duration::from_secs(31), false));
+        assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "the grace ended");
+        fixture.stopping = Some((now - Duration::from_secs(2), true));
+        assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "after Stop Now");
+    }
+
+    #[test]
+    fn a_stop_before_the_worker_was_ready_shows_no_bar_and_no_stop_now() {
+        let now = Instant::now();
+        let mut fixture = Fixture::new(stopping(now));
+        fixture.ready = false;
+        fixture.stopping = Some((now, false));
+        let model = fixture.model();
+        assert!(model.bar.is_none() && !model.stop_now);
+        assert_eq!(model.running.unwrap().right, "0");
+    }
+
+    #[test]
+    fn rows_join_the_second_line_into_the_title_before_macos_14_4() {
+        let row =
+            Row { icon: Icon::Running, title: "work/a".into(), subtitle: "Work · attempt 2".into(), right: None };
+        assert_eq!(row_text(&row, macos_subtitles((14, 2, 0)).unwrap()), ("work/a · Work · attempt 2".into(), None));
+        assert_eq!(
+            row_text(&row, macos_subtitles((14, 4, 0)).unwrap()),
+            ("work/a".into(), Some("Work · attempt 2".into()))
+        );
+        let bare = Row { subtitle: String::new(), ..row };
+        assert_eq!(row_text(&bare, false), ("work/a".into(), None));
+    }
+
+    #[test]
+    fn a_quit_disables_the_switch_the_contexts_quit_and_the_inspector() {
+        let mut fixture = Fixture::new(online());
+        fixture.quitting = true;
+        let model = fixture.model();
+        assert!(!model.header.enabled && !model.contexts_enabled && !model.quit_enabled);
+        if let Some(item) = model.inspector {
+            assert_eq!((item.title, item.key, item.enabled), ("Open Inspector…", "i", false));
+        }
+    }
+
+    #[test]
+    fn open_inspector_is_feature_gated() {
+        let model = Fixture::new(TrayState::Offline).model();
+        if cfg!(feature = "inspector") {
+            let item = model.inspector.expect("the feature adds the inspector item");
+            assert_eq!((item.title, item.key, item.enabled), ("Open Inspector…", "i", true));
+        } else {
+            assert!(model.inspector.is_none());
         }
     }
 
@@ -421,95 +1036,48 @@ mod tests {
         }
     }
 
+    /// Scenario: A context pick after a failure.
     #[test]
-    fn every_state_gives_the_header_and_switch() {
-        let now = Instant::now();
-        let turns = TurnSnapshot::default();
-        let connecting = TrayState::Connecting { context: "prod".into() };
-        for (state, subtitle, on, enabled, dimmed) in [
-            (TrayState::Offline, "Offline", false, true, true),
-            (connecting, "Connecting to prod", true, true, false),
-            (online(), "Connected to prod", true, true, false),
-            (stopping(now + Duration::from_millis(3900)), "Disconnecting · 4s left", false, false, false),
-            (stopping(now - Duration::from_secs(1)), "Disconnecting · 0s left", false, false, false),
-            (failed(), "Connection failed · prod", false, true, true),
-        ] {
-            let menu = model(&state, now, &turns, Some("test"));
-            assert_eq!(menu.header.title, "Test Worker");
-            assert_eq!(menu.header.subtitle, subtitle);
-            assert_eq!((menu.header.on, menu.header.enabled, menu.dimmed), (on, enabled, dimmed));
+    fn a_pick_while_not_connected_selects_without_connecting() {
+        let names: Vec<String> = ["local", "prod", "staging"].map(String::from).into();
+        for state in [failed(), TrayState::Offline] {
+            let mut control = MenuControl::default();
+            assert_eq!(control.selected(&names, Some("prod")), Some("prod"), "starts from the config file");
+            assert_eq!(control.pick(&state, "local".into()), None, "no connection");
+            assert_eq!(control.selected(&names, Some("prod")), Some("local"));
+            assert_eq!(control.tick(&state), None);
+            assert_eq!(
+                control.toggle(&state, true, control.selected(&names, Some("prod"))),
+                Some(Action::Connect("local".into())),
+                "Connect and the switch use the pick"
+            );
+            assert_eq!(control.selected(&names, Some("prod")), Some("local"));
+            let mut fixture = Fixture::new(state);
+            fixture.selected = Some("local");
+            let model = fixture.model();
+            assert_eq!(model.connect.as_deref(), Some("Connect to local"));
+            assert_eq!(context_icons(&model)[0].2, Icon::Context { selected: true });
         }
     }
 
     #[test]
-    fn stop_now_is_offered_only_while_stopping_a_ready_worker() {
-        let now = Instant::now();
-        let turns = TurnSnapshot::default();
-        let connecting = TrayState::Connecting { context: "prod".into() };
-        for state in [TrayState::Offline, connecting, online(), failed()] {
-            assert!(!model(&state, now, &turns, Some("prod")).stop_now, "{state:?}");
-        }
-        let state = stopping(now + Duration::from_secs(3));
-        assert!(model(&state, now, &turns, Some("prod")).stop_now);
-        assert!(!model_of(&state, false, now, &turns, Some("prod"), false).stop_now, "never ready");
+    fn the_pick_survives_a_reload_while_its_name_exists() {
+        let mut control = MenuControl::default();
+        control.pick(&TrayState::Offline, "staging".into());
+        let reloaded: Vec<String> = ["prod", "staging"].map(String::from).into();
+        assert_eq!(control.selected(&reloaded, Some("prod")), Some("staging"));
+        let without: Vec<String> = vec!["prod".into()];
+        assert_eq!(control.selected(&without, Some("prod")), Some("prod"), "back to the config file's context");
+        assert_eq!(control.selected(&without, Some("gone")), None);
     }
 
     #[test]
-    fn no_current_context_disables_the_offline_switch() {
-        for current in [None, Some("missing")] {
-            let menu = model(&TrayState::Offline, Instant::now(), &TurnSnapshot::default(), current);
-            assert!(!menu.header.enabled);
-            assert!(menu.header.subtitle.contains("cicada config"));
-        }
-    }
-
-    #[test]
-    fn the_connected_context_and_the_workers_types_are_marked() {
-        let turns = TurnSnapshot::default();
-        let now = Instant::now();
-        let menu = model(&online(), now, &turns, Some("test"));
-        assert_eq!(menu.contexts.iter().map(|row| row.marked).collect::<Vec<_>>(), [true, false]);
-        assert_eq!(menu.registered_types.iter().map(|row| row.marked).collect::<Vec<_>>(), [true, false, true]);
-        let offline = model(&TrayState::Offline, now, &turns, Some("test"));
-        assert_eq!(offline.contexts.iter().map(|row| row.marked).collect::<Vec<_>>(), [false, true]);
-        assert!(offline.registered_types.iter().all(|row| !row.marked));
-    }
-
-    #[test]
-    fn running_turns_show_the_claim_details_and_clamp_time_at_zero() {
-        let running = RunningTurn {
-            actor: "work/a".parse().unwrap(),
-            message_type: "Work".into(),
-            attempt: 2,
-            claimed_at: from_micros(500_000),
-        };
-        let future = RunningTurn { claimed_at: from_micros(5_000_000), ..running.clone() };
-        let turns = TurnSnapshot { running: vec![running.clone(), future], ..Default::default() };
-        let menu = model(&online(), Instant::now(), &turns, Some("prod"));
-        assert_eq!(menu.running[0].turn, running);
-        assert_eq!(menu.running[0].elapsed, 3);
-        assert_eq!(menu.running[1].elapsed, 0);
-    }
-
-    #[test]
-    fn running_turn_text_puts_the_details_in_the_title_before_macos_14_4() {
-        let row = RunningRow {
-            turn: RunningTurn {
-                actor: "work/a".parse().unwrap(),
-                message_type: "Work".into(),
-                attempt: 2,
-                claimed_at: from_micros(0),
-            },
-            elapsed: 3,
-        };
-        assert_eq!(
-            running_row_text(&row, macos_subtitles((14, 2, 0)).unwrap()),
-            ("work/a     3s · Work · Attempt 2".into(), None)
-        );
-        assert_eq!(
-            running_row_text(&row, macos_subtitles((14, 4, 0)).unwrap()),
-            ("work/a     3s".into(), Some("Work · Attempt 2".into()))
-        );
+    fn a_switch_while_connected_becomes_the_pick() {
+        let names: Vec<String> = ["prod", "test"].map(String::from).into();
+        let mut control = MenuControl::default();
+        assert_eq!(control.pick(&online(), "test".into()), Some(Action::Disconnect));
+        assert_eq!(control.tick(&TrayState::Offline), Some(Action::Connect("test".into())));
+        assert_eq!(control.selected(&names, Some("prod")), Some("test"));
     }
 
     #[test]
@@ -521,33 +1089,6 @@ mod tests {
         assert_eq!(macos_subtitles((14, 0, 0)), Ok(false));
         assert_eq!(macos_subtitles((14, 3, 9)), Ok(false));
         assert_eq!(macos_subtitles((15, 0, 0)), Ok(true));
-    }
-
-    #[test]
-    fn recent_turns_are_newest_first_and_the_badge_counts_failures_and_abandonment() {
-        let turn = RunningTurn {
-            actor: "work/a".parse().unwrap(),
-            message_type: "Work".into(),
-            attempt: 1,
-            claimed_at: from_micros(0),
-        };
-        let finished = [
-            TurnResult::Committed(TurnOutcome::Failed("failed".into())),
-            TurnResult::Committed(TurnOutcome::Done),
-            TurnResult::Abandoned,
-            TurnResult::Committed(TurnOutcome::Cancelled),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, outcome)| FinishedTurn { turn: turn.clone(), finished_at: from_micros(i as i64), outcome })
-        .collect();
-        let turns = TurnSnapshot { running: Vec::new(), finished };
-        let menu = model(&online(), Instant::now(), &turns, Some("prod"));
-        assert_eq!(
-            menu.recent.iter().map(|row| row.outcome).collect::<Vec<_>>(),
-            ["Cancelled", "Abandoned", "Done", "Failed"]
-        );
-        assert_eq!(menu.failures, 2);
     }
 
     #[test]
@@ -627,12 +1168,6 @@ mod tests {
         assert_eq!(control.tick(&state), None);
         assert_eq!(control.tick(&failed()), Some(Action::Connect("b".into())));
         assert_eq!(control.tick(&TrayState::Offline), None);
-    }
-
-    #[test]
-    fn a_pick_from_failed_connects_at_once() {
-        let mut control = MenuControl::default();
-        assert_eq!(control.pick(&failed(), "test".into()), Some(Action::Connect("test".into())));
     }
 
     #[test]

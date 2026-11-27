@@ -15,7 +15,9 @@ mod turns;
 use std::io;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
+use cicada::time::Timestamp;
 use cicada_app::{App, AppError, Env, WorkerReady};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
@@ -69,6 +71,8 @@ struct Control {
     // Serializes accepting a connect, publishing state and signalling a stop.
     connection: Mutex<Option<Connection>>,
     state: watch::Sender<TrayState>,
+    /// When the last connection failed, by the wall clock; written with the state, under the connection lock.
+    failed_at: Mutex<Option<Timestamp>>,
     #[cfg(target_os = "macos")]
     registered_types: Mutex<Vec<&'static str>>,
     /// The arguments of the last worker command, for tests.
@@ -81,6 +85,16 @@ struct Connection {
     stop: Option<oneshot::Sender<()>>,
     ready: Option<WorkerReady>,
     stopping_at: Option<Instant>,
+    /// Stop Now was used during this stop.
+    stopped_now: bool,
+}
+
+/// What the menu shows beside [`TrayState`], kept crate-private so its public variants do not change.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Details {
+    ready: Option<WorkerReady>,
+    stopping: Option<(Instant, bool)>,
+    failed_at: Option<Timestamp>,
 }
 
 struct WorkerTaskGuard {
@@ -97,6 +111,7 @@ impl Tray {
             control: Arc::new(Control {
                 connection: Mutex::new(None),
                 state: watch::channel(TrayState::Offline).0,
+                failed_at: Mutex::default(),
                 #[cfg(target_os = "macos")]
                 registered_types: Mutex::default(),
                 #[cfg(test)]
@@ -170,8 +185,13 @@ impl Tray {
                 panic!("Tray::connect requires a Tokio runtime");
             };
             let (stop, stopped) = oneshot::channel();
-            *connection =
-                Some(Connection { context: context.clone(), stop: Some(stop), ready: None, stopping_at: None });
+            *connection = Some(Connection {
+                context: context.clone(),
+                stop: Some(stop),
+                ready: None,
+                stopping_at: None,
+                stopped_now: false,
+            });
             self.control.state.send_replace(TrayState::Connecting { context: context.clone() });
             (runtime, stopped)
         };
@@ -254,11 +274,12 @@ impl Tray {
     /// flight, stays listed as running until it ends. In any other state, or while stopping a worker that was never
     /// ready, it does nothing. Release a borrow of [`Self::state`] first.
     pub fn stop_now(&self) {
-        let connection = self.control.connection.lock().expect("tray connection");
-        let Some(connection) = connection.as_ref() else { return };
+        let mut connection = self.control.connection.lock().expect("tray connection");
+        let Some(connection) = connection.as_mut() else { return };
         let (Some(_), Some(ready)) = (connection.stopping_at, connection.ready.as_ref()) else { return };
         let TrayState::Stopping { context, until } = self.control.state.borrow().clone() else { return };
         ready.stop_now.now();
+        connection.stopped_now = true;
         let until = Instant::now().checked_add(ready.cancel_timeout).map_or(until, |cut| until.min(cut));
         self.control.state.send_replace(TrayState::Stopping { context, until });
     }
@@ -289,7 +310,19 @@ impl Control {
     fn finish(&self, state: TrayState) {
         let mut connection = self.connection.lock().expect("tray connection");
         *connection = None;
+        let failed_at = matches!(state, TrayState::Failed { .. }).then(|| SystemTime::now().into());
+        *self.failed_at.lock().expect("tray failure time") = failed_at;
         self.state.send_replace(state);
+    }
+
+    /// The menu's data beside the state: the ready worker, when its stop began and whether Stop Now was used, and
+    /// when the last connection failed. Read it with the state, while holding the connection lock.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn details(&self, connection: &Option<Connection>) -> Details {
+        let ready = connection.as_ref().and_then(|connection| connection.ready.clone());
+        let stopping =
+            connection.as_ref().and_then(|connection| connection.stopping_at.map(|at| (at, connection.stopped_now)));
+        Details { ready, stopping, failed_at: *self.failed_at.lock().expect("tray failure time") }
     }
 }
 

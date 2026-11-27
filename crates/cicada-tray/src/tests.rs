@@ -118,10 +118,38 @@ async fn apply_while_online_restarts_the_worker_with_the_new_arguments() {
     assert_eq!(*types.lock().unwrap(), ["other"]);
     assert_eq!(*tray.control.args.lock().unwrap(), args(&["--types=other", "--concurrency=3"]));
 
+    let details = tray.control.details(&tray.control.connection.lock().unwrap());
+    assert_eq!(details.ready.map(|ready| ready.concurrency), Some(3), "the menu's \"N of M\"");
+    assert!(details.stopping.is_none() && details.failed_at.is_none());
+
     tray.disconnect();
+    tray.stop_now();
+    let details = tray.control.details(&tray.control.connection.lock().unwrap());
+    assert!(matches!(details.stopping, Some((_, true))), "the stop began and Stop Now was used");
     wait_for(&mut state, TrayState::Offline).await;
     serving.abort();
     drop(hold);
+}
+
+/// The menu's failure row: the tray records when a connection failed, until the next connection ends.
+#[tokio::test(start_paused = true)]
+async fn a_failed_connection_records_when_it_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[contexts.bad]\nserver = \"ftp://actors.internal\"\n").unwrap();
+    let env = Env::from([("CICADA_CONFIG".to_owned(), config.to_str().unwrap().to_owned())]);
+    let tray = Tray::new(|| App::new().host(WorkActor)).with_env(env);
+    let mut state = tray.state();
+    let before = std::time::SystemTime::now();
+    tray.connect("bad");
+    // Release the watch's borrow at once: `finish` below writes the state.
+    let failed = timeout(Duration::from_secs(10), state.wait_for(|s| matches!(s, TrayState::Failed { .. }))).await;
+    assert!(failed.is_ok_and(|failed| failed.is_ok()), "a server URL that is not http fails");
+    let details = tray.control.details(&tray.control.connection.lock().unwrap());
+    let failed_at = details.failed_at.expect("the time of the failure");
+    assert!(failed_at >= cicada::time::Timestamp::from(before));
+    tray.control.finish(TrayState::Offline);
+    assert!(tray.control.details(&tray.control.connection.lock().unwrap()).failed_at.is_none());
 }
 
 /// The worker command's arguments for context `prod` with `extra`.
