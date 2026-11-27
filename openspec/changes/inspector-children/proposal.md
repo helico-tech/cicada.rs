@@ -20,7 +20,7 @@ state kept across a reload by a stated rule.
 
 ## Order
 
-After `inspector-actors`, before `inspector-tables`.
+After `inspector-actors`, before `inspector-messages`.
 
 ## Impact
 

@@ -23,7 +23,7 @@ Mockup: https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Inspector, "Outc
 
 ## Order
 
-After `inspector-tables`, before `inspector-live`.
+After `inspector-types-watches`, before `inspector-live`.
 
 ## Impact
 

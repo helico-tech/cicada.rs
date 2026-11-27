@@ -1,42 +1,41 @@
 # Design
 
-The Messages, Types and Watches items of the sidebar still say "Coming soon". They were part of the owner's proposal for
-`inspector-actors` and split off from it. This change gives them their tables and panes, built on the Actors page's
-paging, search and generations.
+The Messages item of the sidebar still says "Coming soon". This change gives it its table and pane and adds Show Actor,
+from a message to its actor on the Actors page. Types and Watches follow in `inspector-types-watches` (design review:
+all three pages, the shared pager and the navigation did not fit five tasks). It builds after `inspector-children`,
+which changes the Actors list first.
 
 ## Decisions
 
-1. **One paged-list engine.** The Actors list's paging (the server's cursor passed back unchanged, at most one page in
-   flight, Retry keeping the cursor, the list generation bumped at the first key press with the request 300 ms after
-   the last, cancellation on a context switch or close) is factored into a generic list in the model, used by Actors and
-   by Messages and Watches. Actors' behaviour and tests stay as they are; the factoring is checked by them.
-2. **Messages.** `list_pending` under the search prefix, 100 a time: id, to, type, deliver at, attempt, and a "due"
-   mark when deliver at is not after the store time of the read. Pages are not a snapshot, so rows are kept unique by
-   message id within a list. Selecting a message fills the pane with the message itself from its row (id, to, from,
-   type, deliver at, correlation id, headers, attempt, failures, payload as highlighted JSON with the Actors pane's
-   formatter and its 256 KiB cut) and a "Show Actor" button that selects its actor in Actors. No extra read: the row
-   holds the message.
-3. **Types.** `types` once per refresh (the API answers them all, not paged): name, contract hash, and the number of
-   messages; the search field filters by name prefix locally. Selecting a type fills the pane with its state schema and
-   each message's schema as highlighted JSON, one section per message in name order, each cut at 256 KiB.
-4. **Watches.** `watches` with neither watcher nor target, 100 a time: target, watcher. The search field filters the
-   loaded rows by watcher prefix locally (the API filters by exact watcher or target only); the footer says so.
-   Selecting a watch shows its target and watcher in the pane, with "Show Actor" for the watcher and, when the target
-   is one actor, for it.
-5. **Show Actor and navigation.** "Show Actor" selects Actors in the sidebar (recorded in back and forward), sets the
-   search to the actor's exact address and selects its row once it is loaded; if it is not there, the pane shows "not
-   found".
-6. **Read only, and where it lives.** No action buttons until `inspector-actions`. Model code in `tables.rs` (the
-   generic list, the three pages' rows and panes) with tests against an in-process server; the `appkit` module gains
-   three `NSTableView` pages sharing the Actors page's search field, footer and pane toggle.
+1. **The root pager, factored out.** Only the Actors list's root paging is factored into a generic pager in the model:
+   the server's cursor passed back unchanged, at most one page in flight, Retry keeping the cursor, the generation
+   bumped at the first key press with the request 300 ms after the last, cancellation on a context switch or close.
+   Actors (with the children of `inspector-children` on top) and Messages use it; the Actors tests stay as they are and
+   check the factoring.
+2. **Messages.** `list_pending` under the search prefix, 100 a time: id, to, type, deliver at, attempt. Pages are not a
+   snapshot, so within a generation the first row per message id is kept and a later one dropped; the cursor advances
+   even when a page brings only duplicates, so paging goes on. No "due" mark: the answer has no store time to compare
+   with.
+3. **The pane, on demand.** Selecting a message fills the pane from its row (id, to, from, type, deliver at, correlation
+   id, headers, attempt, failures) and formats its payload as highlighted JSON only then, with the Actors pane's
+   formatter, its 256 KiB cut and its cap on style runs. No extra read.
+4. **Show Actor.** The pane's "Show Actor" button records a jump in back and forward (the Actors page with the message's
+   actor as its target), selects Actors in the sidebar, sets the search to the actor's exact address and, once that
+   first page has loaded successfully, selects the root row with exactly that address. If the page loaded and the row is
+   not there, the pane says "not found"; if the read failed, the footer shows the error with Retry and no row is
+   selected. Going back returns to the message.
+5. **Read only, and where it lives.** No action buttons until `inspector-actions`. Model code in `messages.rs` and the
+   pager in `pager.rs`, with tests against an in-process server; the `appkit` module gains the Messages page, an
+   `NSTableView` sharing the Actors page's search field, footer and pane toggle.
 
 ## Tests
 
-The generic list keeps the Actors tests passing unchanged. Messages: paging, the "due" mark, a duplicate id across
-pages kept once, the pane from the row, "Show Actor". Types: the list, the local name filter, the pane's schemas and
-the cut. Watches: paging, the local watcher filter and its footer, the pane and both "Show Actor" cases. Show Actor
-recorded in back and forward, and "not found" for a gone actor. The window gets a manual check list in the tasks.
+The Actors tests pass unchanged over the factored pager. Messages: paging; a duplicate id across pages kept once; a page
+of only duplicates still advances the cursor; the pane from the row, its payload formatted on selection only; Show
+Actor selecting the exact root row after a successful load, "not found" for a gone actor, and a failed read without a
+selection; the jump in back and forward. The window gets a manual check list in the tasks.
 
 ## Docs
 
-The handoff gives the app guide's Inspector section the three pages; the changelog's 0.26.0 section names them.
+The handoff gives the app guide's Inspector section the Messages page and Show Actor; the changelog's 0.26.0 section
+names them.
