@@ -295,8 +295,12 @@ pub type Context = ContextEntry;
 
 impl Config {
     /// Reads the file at `path`; a missing file is an empty config. A parse error names the line but not the text, as
-    /// the diagnostic of the parser can quote a token or server from the file.
+    /// the diagnostic of the parser can quote a token or server from the file. A path, or a link target on the way,
+    /// that ends in `/` or `/.` is refused, also when nothing is there, as the system refuses it for a file.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        refuse_folder_form(path)
+            .and_then(|()| link_target(path))
+            .with_context(|| format!("cannot read {}", path.display()))?;
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|error| {
                 let before = |at: usize| text.get(..at).map_or(0, |text| text.matches('\n').count());
@@ -995,6 +999,16 @@ mod tests {
             let env = Env::from([("CICADA_CONFIG".to_owned(), link.display().to_string())]);
             assert!(ContextFile::update(&env, |f| f.use_context("a")).is_err(), "link to {suffix}");
             assert!(ContextFile::load(&env).is_err(), "link to {suffix}");
+            let dangling = dir.path().join(format!("dangling{}", suffix.len()));
+            std::os::unix::fs::symlink(format!("{}{suffix}", dir.path().join("missing.toml").display()), &dangling)
+                .unwrap();
+            assert!(Config::load(&dangling).is_err(), "dangling link to {suffix}");
+            let env = Env::from([("CICADA_CONFIG".to_owned(), dangling.display().to_string())]);
+            assert!(Contexts::load(&env).is_err(), "dangling link to {suffix}");
+        }
+        for suffix in ["/", "/."] {
+            let missing = PathBuf::from(format!("{}{suffix}", dir.path().join("missing.toml").display()));
+            assert!(Config::load(&missing).is_err(), "missing {suffix}");
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
         let env = Env::from([("CICADA_CONFIG".to_owned(), file.display().to_string())]);
