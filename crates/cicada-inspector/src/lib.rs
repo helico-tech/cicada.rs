@@ -12,8 +12,10 @@
 //! counts. Actors lists the actors under the searched address prefix, 100 at a time as the table scrolls, with their
 //! type, version, created time and status (running from one sample of the first 200 running turns, paused from the
 //! actor); the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB),
-//! mailbox and watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at
-//! a time, each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's
+//! mailbox and watches. From the pane an operator can pause or resume the mailbox, ask to cancel the running turn,
+//! purge pending messages or delete the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask first.
+//! Messages lists the pending messages to the actors under the searched prefix, 100 at a time, each once, with
+//! their id, target, type, delivery time and attempt; the pane shows the selected message's
 //! envelope and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and
 //! forward. Outcomes lists the finished messages under the prefix by status (Failed by default, Cancelled, Done or
 //! All), 100 at a time, each once, and the sidebar shows the store's failed count; the pane shows the selected
@@ -25,8 +27,8 @@
 //! Refresh and after a context switch, and filtered by id prefix; the pane reads the selected node with its running
 //! turns, each with Show Actor. Types lists registered contracts and displays one schema at a time. Watches lists the
 //! stored watches, with a filter over the loaded rows and Show Actor for the watcher and any single-actor target. Every
-//! page is read only. The server comes from the contexts of `cicada config`, resolved as `cicada` resolves them. The
-//! page on screen follows the server's change hints (`GET /changes`) and refreshes in place, keeping its selection,
+//! other page is read only. The server comes from the contexts of `cicada config`, resolved as `cicada` resolves them.
+//! The page on screen follows the server's change hints (`GET /changes`) and refreshes in place, keeping its selection,
 //! scroll and open rows: at most about twice a second, and 30 s after its last refresh, as hints are best effort. The
 //! Live pill shows Live, Reconnecting or Paused; a click pauses or resumes. Refresh (⌘R) reloads the page by hand.
 

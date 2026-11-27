@@ -18,13 +18,17 @@ context in `tray.toml` next to the config file.
 reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
 health, the nodes, the running turns and the types with their actor counts, an Actors page that lists the actors
-under an address prefix with a read-only pane of the selected actor, a Messages page of the pending messages with
+under an address prefix with a pane for the selected actor, a Messages page of the pending messages with
 Show Actor, a Running Turns page with Show Actor, an Outcomes page of the finished messages by status with their
 cause chain and the failed count in the sidebar, a Nodes page with each node's running turns, a Types page with
 registered schemas, and a Watches page with a filter and Show Actor, for a context of `cicada config`. The page on
 screen updates live from the server's change hints, and its Live pill pauses and resumes the updates.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
+
+The inspector's actor pane can pause or resume a mailbox, cancel a running turn, purge pending messages, and delete
+the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask for confirmation. A successful action
+refreshes the Actors page even while Live is paused.
 
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare

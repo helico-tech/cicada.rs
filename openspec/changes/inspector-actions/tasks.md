@@ -24,7 +24,7 @@ reviews are `.reviews/inspector-actions.design.*`.
   with its reason, borrows released before AppKit calls (decision 7). Verify: `cargo build -p cicada-inspector`, `cargo
   clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done, run by code
   (not seen), or not done in the report.
-- [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the actor actions;
+- [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the actor actions;
   `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md` or the handwritten docs.
   Then `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace --all-targets`, `cargo test
   --workspace`, `cargo test -p cicada-examples --test docs` and `--doc`, `openspec validate inspector-actions

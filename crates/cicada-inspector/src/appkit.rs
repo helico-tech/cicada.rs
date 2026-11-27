@@ -1465,9 +1465,10 @@ impl Target {
         let shown = c.state_shown.borrow().clone();
         let shown = window.page.show_pane(&pane, shown.as_ref(), self.as_ref(), &controls);
         c.state_shown.replace(shown);
+        let same_selection = c.pane.borrow().borrow().generation == pane.generation;
         if let Some(Feedback::Alert(refusal)) = feedback
             && actions.serial != c.actor_alert_shown.get()
-            && c.pane.borrow().borrow().generation == pane.generation
+            && same_selection
         {
             c.actor_alert_shown.set(actions.serial);
             actor_dialog::Dialog::refusal(self, &refusal);

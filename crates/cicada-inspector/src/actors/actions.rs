@@ -82,7 +82,8 @@ impl Action {
                     _ => "children not read".into(),
                 };
                 Some(format!(
-                    "Delete {address} ({children})? This removes this actor and every descendant, with all their mailboxes."
+                    "Delete {address} ({children})? This removes this actor and every descendant, \
+                     with all their mailboxes."
                 ))
             }
         }
