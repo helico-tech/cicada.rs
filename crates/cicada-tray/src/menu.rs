@@ -222,6 +222,29 @@ impl MenuControl {
         }
     }
 
+    /// Apply and Reconnect: while the tray holds a connection to any context, disconnects (unless already stopping)
+    /// and connects to `name` once there is none, replacing a pending pick; with no connection only clears a pending
+    /// pick; during a quit does nothing.
+    pub fn apply(&mut self, state: &TrayState, name: String) -> Option<Action> {
+        if self.quitting() {
+            return None;
+        }
+        match state {
+            TrayState::Offline | TrayState::Failed { .. } => {
+                self.pending = None;
+                None
+            }
+            TrayState::Stopping { .. } => {
+                self.pending = Some(name);
+                None
+            }
+            TrayState::Online { .. } | TrayState::Connecting { .. } => {
+                self.pending = Some(name);
+                Some(Action::Disconnect)
+            }
+        }
+    }
+
     pub fn quit(&mut self, state: &TrayState) -> Option<Action> {
         if self.quitting() {
             return None;
@@ -515,6 +538,50 @@ mod tests {
         assert!(control.pending.is_none());
         assert_eq!(control.pick(&state, "other".into()), None);
         assert_eq!(control.toggle(&TrayState::Offline, true, Some("test")), None);
+        assert_eq!(control.tick(&TrayState::Offline), Some(Action::StopApp));
+    }
+
+    /// Scenario: Apply while connected.
+    #[test]
+    fn apply_while_online_reconnects_to_the_same_or_another_context() {
+        for name in ["prod", "test"] {
+            let mut control = MenuControl::default();
+            assert_eq!(control.apply(&online(), name.into()), Some(Action::Disconnect));
+            let state = stopping(Instant::now());
+            assert_eq!(control.tick(&state), None);
+            assert_eq!(control.tick(&TrayState::Offline), Some(Action::Connect(name.into())));
+        }
+        let mut control = MenuControl::default();
+        let connecting = TrayState::Connecting { context: "prod".into() };
+        assert_eq!(control.apply(&connecting, "prod".into()), Some(Action::Disconnect));
+    }
+
+    #[test]
+    fn apply_while_stopping_replaces_the_pending_pick() {
+        let mut control = MenuControl::default();
+        assert_eq!(control.pick(&online(), "test".into()), Some(Action::Disconnect));
+        let state = stopping(Instant::now());
+        assert_eq!(control.apply(&state, "prod".into()), None);
+        assert_eq!(control.tick(&failed()), Some(Action::Connect("prod".into())));
+    }
+
+    #[test]
+    fn apply_offline_only_clears_a_pending_pick() {
+        let mut control = MenuControl::default();
+        control.pending = Some("test".into());
+        assert_eq!(control.apply(&TrayState::Offline, "prod".into()), None);
+        assert!(control.pending.is_none());
+        assert_eq!(control.tick(&TrayState::Offline), None);
+        assert_eq!(control.apply(&failed(), "prod".into()), None);
+    }
+
+    #[test]
+    fn apply_during_a_quit_does_nothing() {
+        let mut control = MenuControl::default();
+        assert_eq!(control.quit(&online()), Some(Action::Disconnect));
+        let state = stopping(Instant::now());
+        assert_eq!(control.apply(&state, "prod".into()), None);
+        assert!(control.pending.is_none());
         assert_eq!(control.tick(&TrayState::Offline), Some(Action::StopApp));
     }
 }

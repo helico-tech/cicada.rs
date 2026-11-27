@@ -754,6 +754,7 @@ dependencies = [
 name = "cicada-tray"
 version = "0.26.0"
 dependencies = [
+ "anyhow",
  "axum",
  "cicada",
  "cicada-app",
@@ -766,6 +767,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

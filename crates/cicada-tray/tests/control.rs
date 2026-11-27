@@ -61,19 +61,26 @@ impl Actor for WorkActor {
     }
 }
 
+/// A config file with the context `prod`, in a folder of its own, so that `tray.toml` next to it is the test's.
 struct Config {
-    file: tempfile::NamedTempFile,
+    dir: tempfile::TempDir,
 }
 
 impl Config {
     fn new(address: std::net::SocketAddr) -> Self {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), format!("[contexts.prod]\nserver = \"http://{address}\"\n")).unwrap();
-        Self { file }
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!("[contexts.prod]\nserver = \"http://{address}\"\n");
+        std::fs::write(dir.path().join("config.toml"), text).unwrap();
+        Self { dir }
     }
 
     fn env(&self) -> Env {
-        Env::from([("CICADA_CONFIG".into(), self.file.path().to_str().unwrap().into())])
+        Env::from([("CICADA_CONFIG".into(), self.dir.path().join("config.toml").to_str().unwrap().into())])
+    }
+
+    /// Writes the tray's own file next to the config file.
+    fn tray(&self, text: &str) {
+        std::fs::write(self.dir.path().join("tray.toml"), text).unwrap();
     }
 }
 
@@ -568,4 +575,92 @@ async fn stop_now_does_nothing_unless_stopping_a_ready_worker() {
     fresh.stop_now();
     assert_eq!(*state.borrow(), stopping(until), "never ready");
     wait_for(&mut state, TrayState::Offline).await;
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Other {
+    id: String,
+}
+
+impl ActorRef for Other {
+    const TYPE: &'static str = "other";
+    type Message = WorkMsg;
+}
+
+struct OtherActor;
+
+impl Actor for OtherActor {
+    type Ref = Other;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: WorkMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// A tray over two types, `work` and `other`, with `env` added to the config's; the types of each ready worker.
+fn two_type_tray(
+    server: &Server,
+    actor: WorkActor,
+    env: &[(&str, &str)],
+) -> (Tray, Arc<std::sync::Mutex<Vec<String>>>) {
+    let types = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = types.clone();
+    let mut tray_env = server.config.env();
+    tray_env.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let tray = Tray::new(move || {
+        let seen = seen.clone();
+        App::new().host(actor.clone()).host(OtherActor).on_worker_ready(move |ready| {
+            *seen.lock().unwrap() = ready.types.iter().map(|t| t.to_string()).collect();
+        })
+    })
+    .with_env(tray_env);
+    (tray, types)
+}
+
+/// Scenario: Fewer types.
+#[tokio::test(start_paused = true)]
+async fn saved_settings_pick_the_types_of_the_worker() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    server.config.tray("[contexts.prod]\ntypes = [\"other\", \"gone\"]\nconcurrency = 2\n");
+    let (tray, types) = two_type_tray(&server, actor, &[]);
+    let mut state = tray.state();
+    tray.connect("prod");
+    wait_for(&mut state, online()).await;
+    assert_eq!(*types.lock().unwrap(), ["other"]);
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
+}
+
+/// Scenario: All types over the environment.
+#[tokio::test(start_paused = true)]
+async fn saved_settings_of_all_types_win_over_the_environment() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    let (tray, types) = two_type_tray(&server, actor, &[("CICADA_TYPES", "work"), ("CICADA_CONCURRENCY", "0")]);
+    let mut state = tray.state();
+    tray.connect("prod");
+    let error = failed(&mut state, "prod", TEST_TIMEOUT).await;
+    assert!(error.contains("concurrency must be at least 1"), "without saved settings the environment holds: {error}");
+
+    server.config.tray("[contexts.prod]\ntypes = [\"other\", \"work\"]\nconcurrency = 16\n");
+    tray.connect("prod");
+    wait_for(&mut state, online()).await;
+    assert_eq!(*types.lock().unwrap(), ["work", "other"]);
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
+}
+
+/// Scenario: No registered type left.
+#[tokio::test(start_paused = true)]
+async fn saved_settings_without_a_registered_type_fail_the_connect() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    server.config.tray("[contexts.prod]\ntypes = [\"gone\"]\nconcurrency = 2\n");
+    let (tray, types) = two_type_tray(&server, actor, &[]);
+    let mut state = tray.state();
+    tray.connect("prod");
+    assert_eq!(failed(&mut state, "prod", TEST_TIMEOUT).await, "no registered type selected for prod; open Settings");
+    assert!(types.lock().unwrap().is_empty(), "no worker started");
 }

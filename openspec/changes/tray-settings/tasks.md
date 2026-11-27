@@ -10,11 +10,11 @@ is `specs/menu-bar-tray/spec.md`. No ADR.
   the `config` operator commands on it, their output unchanged (decisions 1, 2, 8). Verify: its tests (two threads'
   updates both kept, a parse error without the token, `Debug`) and `cargo test -p cicada-app`; the CLI reference
   unchanged.
-- [ ] 2. **`tray.toml` and the worker's arguments.** Location rules (relative, symlink, a config named or resolving to
+- [x] 2. **`tray.toml` and the worker's arguments.** Location rules (relative, symlink, a config named or resolving to
   `tray.toml` or `tray.toml.lock` refused), its own lock, read and write; `connect` passes `--types` and
   `--concurrency` for a saved entry, `--types all` for every registered type, and fails for no registered type left or
   a lone literal `all`/`none` among others (decisions 3 and 4). Verify: the tray-file and argument tests of the design.
-- [ ] 3. **`SettingsForm` and `apply`.** Load, validate (URL, types, concurrency 1–1,000, the name rule), revert,
+- [x] 3. **`SettingsForm` and `apply`.** Load, validate (URL, types, concurrency 1–1,000, the name rule), revert,
   apply under both locks in order with only edited fields, the partial-save report and retry; the control's `apply`
   action (decisions 5 and 6). Verify: the form and `apply` tests of the design.
 - [ ] 4. **The window.** The `appkit` window of decision 7 and the enabled Settings… item; every `unsafe` with its

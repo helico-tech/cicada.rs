@@ -4,6 +4,9 @@
 mod appkit;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod menu;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod settings;
+mod tray_file;
 mod turns;
 
 use std::io;
@@ -138,6 +141,11 @@ impl Tray {
     /// Starts a worker using the named context on the caller's Tokio runtime. Calls while starting, online or
     /// stopping have no effect.
     ///
+    /// When `tray.toml` next to the config file has settings for the context, the worker gets `--types` with the
+    /// saved types the app still registers (`all` when that is every one) and `--concurrency`, which win over
+    /// `CICADA_TYPES` and `CICADA_CONCURRENCY`. A saved selection of which no registered type is left, or that
+    /// `--types` cannot express, ends [`TrayState::Failed`] with an error that says to open Settings.
+    ///
     /// # Panics
     ///
     /// Panics when starting a connection outside a Tokio runtime.
@@ -162,18 +170,24 @@ impl Tray {
         let factory = self.factory.clone();
         let ready = self.control.clone();
         let turns = self.turns.clone();
-        let args = vec![
+        let mut args = vec![
             std::env::args_os().next().unwrap_or_else(|| "cicada-tray".into()),
             "worker".into(),
             format!("--context={context}").into(),
         ];
         let env = self.environment();
+        let saved = (env.clone(), context.clone());
         // Capture the guard before spawning so even a task dropped before its first poll clears the connection.
         let task = WorkerTaskGuard { control: self.control.clone(), context: Some(context) };
-        let app = runtime.spawn_blocking(move || factory());
+        let app = runtime.spawn_blocking(move || {
+            let app = factory();
+            let (env, context) = saved;
+            let saved = tray_file::saved_args(&env, &context, &app.type_names());
+            (app, saved)
+        });
         runtime.spawn(async move {
-            let app = match app.await {
-                Ok(app) => app,
+            let (app, saved) = match app.await {
+                Ok(built) => built,
                 Err(error) => {
                     let message =
                         if error.is_panic() { "the App factory panicked" } else { "the App factory was cancelled" };
@@ -183,6 +197,13 @@ impl Tray {
             };
             #[cfg(target_os = "macos")]
             ready.set_registered_types(&app);
+            match saved {
+                Ok(saved) => args.extend(saved.into_iter().map(Into::into)),
+                Err(error) => {
+                    task.fail(error);
+                    return;
+                }
+            }
             let app = app.observe(turns).on_worker_ready(move |settings| ready.worker_ready(settings));
             let result = app
                 .run_with(args, env, io::sink(), async {
