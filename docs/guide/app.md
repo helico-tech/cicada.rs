@@ -385,6 +385,33 @@ outline at once, and selecting another actor before the reply keeps the newer pa
 - Purge counts the pending rows among the mailbox's first 50 as last read, and Delete counts the loaded direct children;
   the sheet says when a count is a lower bound or was not read.
 
+**Send Message…** opens a sheet that sends one message to the selected actor, through the same route and credentials as
+`cicada send`. Its pop-up lists the message types of the actor's type, from the Types page's list or one read of
+`/types`; a failed read shows its error with Retry, and "type not registered" or "this type takes no messages" leave the
+sheet without a Send button. The chosen type's JSON Schema is shown read only beside a plain-text JSON editor that starts
+with `{}`, with smart quotes, dashes, text replacement and spelling correction off. Return adds a line, ⌘Return sends and
+Escape cancels.
+
+The payload is checked 300 ms after the last edit, and Send stays off until it passes: the check refuses a payload over
+1 MiB of text, one that does not parse or is nested deeper than 64 levels, and one that does not match the schema as
+the server's HTTP door checks it (draft 2020-12, no `format` asserted, nothing loaded from outside the schema). A
+mismatch shows "does not match the schema" without naming a place in the payload; a schema the validator cannot compile
+shows "the server does not check this type's payloads" and leaves Send on.
+
+The sheet keeps one message id until another message type is chosen or the parsed payload changes, and locks the editor
+and pop-up while a send is out. After a timeout, Send again sends the same id, and the server's answer that it already
+has the message shows as "already sent <id>": it is delivered once; a payload edited after a lost answer goes as a new
+message. A success closes the sheet, shows "sent <id>" in the pane and reads the pane again. The server's 400 or 422
+text, and "actor not found", show in the sheet with the payload kept; any other refusal, such as a 413 for a body over
+the server's limit, shows in an alert over the sheet. While the sheet is open no other action runs. Cancel during a send
+closes the sheet and drops the answer, but the other actions stay disabled until that send answers or times out (10 s).
+
+- The local check is a convenience, not the server's: the server also refuses a NUL in the payload (400) and, on a node
+  hosting the type, a payload its decoder cannot read (422); both show in the sheet. The 1 MiB limit is on the editor's
+  text, not the server's body limit.
+- A send cancelled while out may still arrive; the pane is read again when it succeeds or times out.
+- The message is sent due now, without a correlation id, headers, retry or retention policy.
+
 - The running status is a sample: with more than 200 running turns under the prefix, an actor past them shows no
   `running` even when it runs. Search a narrower prefix to see it.
 - The turn's message type and attempt come from a separate read of the mailbox: a turn reclaimed between the two reads
