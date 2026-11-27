@@ -44,6 +44,11 @@ impl TurnsView {
     pub fn index(&self, actor: &ActorAddress) -> Option<usize> {
         self.rows.iter().position(|row| &row.actor == actor)
     }
+
+    /// The row the table selects for `pane`, from the latest list and pane, whichever changed last.
+    pub fn selection(&self, pane: &TurnPane) -> Option<usize> {
+        pane.selected.as_ref().and_then(|actor| self.index(actor))
+    }
 }
 
 /// Where the pane's turn comes from.
@@ -69,6 +74,9 @@ pub struct TurnPane {
     pub turn: Option<Arc<RunningTurnView>>,
     /// Whether it still runs.
     pub state: TurnState,
+    /// The actor whose row the table selects: a row the user picked, or the turn a return found running once its row
+    /// is loaded. Published with the pane whichever comes first, the fresh read or the page with the row.
+    pub selected: Option<ActorAddress>,
 }
 
 /// What a place of the history keeps of the Running Turns page.
@@ -102,8 +110,6 @@ struct State {
     pager: Pager,
     prefix: String,
     pane_generation: u64,
-    /// The actor of the selected row.
-    selected: Option<ActorAddress>,
     /// An actor whose row is selected once a page of this generation brings it: a return found its turn running.
     pending: Option<ActorAddress>,
     /// The fresh read of a restored turn's actor.
@@ -231,8 +237,9 @@ impl RunningTurns {
     }
 
     /// The actor of the selected row.
+    #[cfg(test)]
     pub fn selected(&self) -> Option<ActorAddress> {
-        self.shared.lock().selected.clone()
+        self.shared.pane.borrow().selected.clone()
     }
 
     /// The prefix and the turn the pane shows, as read, for the history to restore later.
@@ -343,9 +350,8 @@ impl Shared {
         let empty = items.is_empty();
         let rows: Vec<_> = items.into_iter().map(Arc::new).collect();
         // The row of a turn a return found running arrived: it is selected, and the pane keeps the turn as read.
-        if let Some(actor) = state.pending.take_if(|actor| rows.iter().any(|row| &row.actor == actor)) {
-            state.selected = Some(actor);
-        } else if !more {
+        let arrived = state.pending.take_if(|actor| rows.iter().any(|row| &row.actor == actor));
+        if arrived.is_none() && !more {
             state.pending = None;
         }
         self.list.send_modify(|list| {
@@ -353,6 +359,9 @@ impl Shared {
             list.paging = Paging::Idle;
             list.more = more;
         });
+        if let Some(actor) = arrived {
+            self.pane.send_modify(|pane| pane.selected = Some(actor));
+        }
         if empty && more {
             self.request_page(state);
         }
@@ -368,9 +377,8 @@ impl Shared {
         selected: Option<ActorAddress>,
     ) {
         state.supersede_pane();
-        state.selected = selected;
         let generation = state.pane_generation;
-        self.pane.send_replace(TurnPane { generation, turn, state: turn_state });
+        self.pane.send_replace(TurnPane { generation, turn, state: turn_state, selected });
     }
 
     /// Reads the turn of `saved`'s actor by its exact address, under the pane's generation: a turn running now is
@@ -388,22 +396,25 @@ impl Shared {
                 return;
             }
             state.check_task = None;
-            let (turn, turn_state) = match answer {
+            let (turn, turn_state, selected) = match answer {
                 Part::Ready(Some(turn)) => {
                     let actor = turn.actor.clone();
-                    if shared.list.borrow().index(&actor).is_some() {
-                        state.selected = Some(actor);
-                    } else if shared.list.borrow().more || shared.list.borrow().paging != Paging::Idle {
-                        state.pending = Some(actor);
+                    let (loaded, coming) = {
+                        let list = shared.list.borrow();
+                        (list.index(&actor).is_some(), list.more || list.paging != Paging::Idle)
+                    };
+                    if !loaded && coming {
+                        state.pending = Some(actor.clone());
                     }
-                    (Arc::new(turn), TurnState::Running)
+                    (Arc::new(turn), TurnState::Running, loaded.then_some(actor))
                 }
-                Part::Ready(None) => (saved, TurnState::Ended),
-                Part::Failed(error) => (saved, TurnState::Failed(error)),
+                Part::Ready(None) => (saved, TurnState::Ended, None),
+                Part::Failed(error) => (saved, TurnState::Failed(error), None),
             };
             shared.pane.send_modify(|pane| {
                 pane.turn = Some(turn);
                 pane.state = turn_state;
+                pane.selected = selected;
             });
         }));
     }

@@ -1404,7 +1404,7 @@ impl Target {
         let list = c.turns_list.borrow_mut().borrow_and_update().clone();
         let target_error = c.view.borrow().borrow().target_error.clone();
         page.show_footer(&list, target_error.as_deref());
-        let selected = c.session.turns().selected().and_then(|actor| list.index(&actor));
+        let selected = list.selection(&c.turns_pane.borrow().borrow());
         c.turns_shown.replace(list);
         self.reload_table(&page.list.table, selected);
         self.check_more_turns();
@@ -1429,7 +1429,11 @@ impl Target {
         let pane = c.turns_pane.borrow_mut().borrow_and_update().clone();
         let actions =
             turns::Actions { show_actor: sel!(inspectorTurnShowActor:), retry_check: sel!(inspectorRetryCheck:) };
-        self.window().turns.show_pane(&pane, self.as_ref(), &actions);
+        let page = &self.window().turns;
+        page.show_pane(&pane, self.as_ref(), &actions);
+        // A fresh read that answers after the table rendered selects its row now.
+        let selected = c.turns_shown.borrow().selection(&pane);
+        self.select_row(&page.list.table, selected);
     }
 
     /// Reloads the Nodes table and restores the selection by node id.
@@ -1582,6 +1586,18 @@ impl Target {
         let c = self.ivars();
         c.syncing.set(true);
         table.reloadData();
+        c.syncing.set(false);
+        self.select_row(table, selected);
+    }
+
+    /// Selects `selected` in `table`, or nothing, unless the table already shows that selection.
+    fn select_row(&self, table: &NSTableView, selected: Option<usize>) {
+        let c = self.ivars();
+        let row = selected.map_or(-1, |row| row as NSInteger);
+        if table.selectedRow() == row && table.numberOfSelectedRows() == NSInteger::from(selected.is_some()) {
+            return;
+        }
+        c.syncing.set(true);
         match selected {
             Some(row) => table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false),
             // SAFETY: A nil sender is allowed; the syncing guard ignores the selection callback.

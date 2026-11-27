@@ -16,7 +16,9 @@ use tokio::time::timeout;
 
 use super::{Counter, Fake, Rule, Server, actors, config, problem, serve};
 use crate::model::{Limits, Navigation, Section, Session, TIMED_OUT};
-use crate::nodes::{NodePane, NodeRead, Nodes, NodesRead, NodesView, health_text, hosted_text};
+use crate::nodes::{
+    NodePane, NodeRead, Nodes, NodesRead, NodesView, column_text, health_text, hosted_text, precise_time,
+};
 
 /// The longest a test waits for one change.
 const WAIT: Duration = Duration::from_secs(10);
@@ -39,7 +41,7 @@ async fn until<T: Clone>(view: &mut watch::Receiver<T>, done: impl FnMut(&T) -> 
 /// A served node.
 fn node(id: &str, status: &str) -> Value {
     json!({"id": id, "hosted": ["counter"], "startedAt": "2026-11-27T09:00:00.000Z",
-           "lastSeen": "2026-11-27T09:59:30.000Z", "status": status, "runningTurns": 0, "hostname": "box-1",
+           "lastSeen": "2026-11-27T09:59:30.123Z", "status": status, "runningTurns": 0, "hostname": "box-1",
            "label": "blue"})
 }
 
@@ -120,7 +122,10 @@ async fn the_cache_is_read_on_the_first_visit_its_refresh_and_a_context_switch_n
         (dead.status, dead.label.as_deref(), dead.hostname.as_deref()),
         (NodeHealth::Dead, Some("blue"), Some("box-1"))
     );
-    assert_eq!(dead.last_seen.to_rfc3339(), "2026-11-27T09:59:30+00:00");
+    assert_eq!(precise_time(dead.last_seen), "2026-11-27 09:59:30.123 UTC", "the heartbeat keeps its fraction");
+    assert_eq!(precise_time(dead.started_at), "2026-11-27 09:00:00 UTC");
+    let cells: Vec<_> = ["id", "status", "seen"].map(|column| column_text(dead, column)).into();
+    assert_eq!(cells, ["n2", "dead", "2026-11-27 09:59:30.123 UTC"], "the table's cells");
     assert_eq!(
         (health_text(dead.status), hosted_text(&dead.hosted), hosted_text(&[])),
         ("dead", "counter".into(), "sends only".into())

@@ -54,7 +54,8 @@ not in the inspector yet.
 **Text.** Nodes lists every node: its id, status (alive, suspect or dead), the types it hosts ("sends only" for none),
 its label, host name, last heartbeat and the number of its running turns. The status is computed by the server, in the
 store's clock: alive when the node was seen under 30 s ago, suspect under 2 minutes, dead after that. The last
-heartbeat shows as a time, not an age, as the Mac's clock may differ from the store's. The footer says the status is as
+heartbeat shows as a time with the fractional seconds the server sent, not an age, as the Mac's clock may differ from
+the store's. The footer says the status is as
 of the last read; its tooltip gives the time of that read on the Mac's clock. The search field filters the nodes read
 by id prefix, without a new read.
 

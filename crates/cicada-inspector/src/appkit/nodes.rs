@@ -9,7 +9,9 @@ use objc2_foundation::NSInteger;
 use super::actors::created;
 use super::browse::{BrowseTable, DetailPane};
 use super::content::Style;
-use crate::nodes::{AS_OF, NodePane, NodeRead, NodesRead, NodesView, health_text, hosted_text};
+use crate::nodes::{
+    AS_OF, NodePane, NodeRead, NodesRead, NodesView, column_text, health_text, hosted_text, precise_time,
+};
 
 /// The table's columns: identifier, title and width.
 const COLUMNS: [(&str, &str, f64); 7] = [
@@ -86,8 +88,8 @@ impl NodesPage {
             };
             let node = &detail.node;
             layout.text(&format!("Status {}, {AS_OF}", health_text(node.status)), Style::Plain);
-            layout.text(&format!("Last heartbeat {}", created(node.last_seen)), Style::Plain);
-            layout.text(&format!("Started {}", created(node.started_at)), Style::Plain);
+            layout.text(&format!("Last heartbeat {}", precise_time(node.last_seen)), Style::Plain);
+            layout.text(&format!("Started {}", precise_time(node.started_at)), Style::Plain);
             layout.text(&format!("Hosts {}", hosted_text(&node.hosted)), Style::Plain);
             for (name, value) in [("Label", &node.label), ("Host", &node.hostname), ("Cicada", &node.cicada_version)] {
                 if let Some(value) = value {
@@ -123,13 +125,5 @@ impl NodesPage {
 /// The text of a cell of the table.
 pub(super) fn cell_text(list: &NodesView, row: NSInteger, column: &str) -> Option<String> {
     let node = list.rows.get(usize::try_from(row).ok()?)?;
-    Some(match column {
-        "id" => node.id.to_string(),
-        "status" => health_text(node.status).to_owned(),
-        "hosted" => hosted_text(&node.hosted),
-        "label" => node.label.clone().unwrap_or_default(),
-        "host" => node.hostname.clone().unwrap_or_default(),
-        "seen" => created(node.last_seen),
-        _ => node.running_turns.to_string(),
-    })
+    Some(column_text(node, column))
 }

@@ -377,3 +377,23 @@ pub fn health_text(health: NodeHealth) -> &'static str {
 pub fn hosted_text(hosted: &[String]) -> String {
     if hosted.is_empty() { "sends only".to_owned() } else { hosted.join(", ") }
 }
+
+/// A time the server gave, in UTC with its fractional seconds as precise as they came (none when zero): a node's last
+/// heartbeat and start, which are not rounded to the second.
+pub fn precise_time(at: Timestamp) -> String {
+    at.format("%Y-%m-%d %H:%M:%S%.f UTC").to_string()
+}
+
+/// The text of `node` in the table's `column`: `id`, `status`, `hosted`, `label`, `host`, `seen` (the last heartbeat,
+/// as precise as the server gave it) or the running turns for any other.
+pub fn column_text(node: &NodeView, column: &str) -> String {
+    match column {
+        "id" => node.id.to_string(),
+        "status" => health_text(node.status).to_owned(),
+        "hosted" => hosted_text(&node.hosted),
+        "label" => node.label.clone().unwrap_or_default(),
+        "host" => node.hostname.clone().unwrap_or_default(),
+        "seen" => precise_time(node.last_seen),
+        _ => node.running_turns.to_string(),
+    }
+}
