@@ -372,7 +372,6 @@ pub(crate) fn replace_range<T, K: Ord + Hash>(
         Order::Key => fresh.last().map(&key),
         Order::Id => old.last().map(|row| key(row)),
     };
-    let read = fresh.len();
     let mut rows: Vec<_> = fresh.into_iter().filter(|row| seen.insert(key(row))).map(Arc::new).collect();
     let fresh_count = rows.len();
     if more {
@@ -381,10 +380,12 @@ pub(crate) fn replace_range<T, K: Ord + Hash>(
                 let key = key(row);
                 boundary.as_ref().is_none_or(|last| key > *last) && seen.insert(key)
             })),
-            // The server's sort fields are opaque. If we did not reach the old end, replace the positions we read,
-            // then remove any old tail id whose new position put it inside the refreshed range.
+            // The server's sort fields are opaque and new rows can sort ahead of old ones, so positions shift. If we
+            // did not reach the old end, keep the old rows after the last old row the range holds; old rows before it
+            // that the range does not hold have left the list.
             Order::Id if boundary.is_none_or(|last| !seen.contains(&last)) => {
-                rows.extend(old.into_iter().skip(read).filter(|row| seen.insert(key(row))));
+                let start = old.iter().rposition(|row| seen.contains(&key(row))).map_or(0, |index| index + 1);
+                rows.extend(old.into_iter().skip(start).filter(|row| seen.insert(key(row))));
             }
             Order::Id => {}
         }

@@ -122,6 +122,40 @@ async fn messages_refresh_to_three_pages_when_the_old_last_message_was_consumed(
 }
 
 #[tokio::test(start_paused = true)]
+async fn messages_refresh_keeps_old_rows_pushed_back_by_new_ones_ahead_of_them() {
+    with_clock(async {
+        let fresh = (0..5).map(|n| envelope(&format!("a{n:03}"), "counter/0", 1)).chain(messages(0..95));
+        let routes = Script::new([
+            (INBOX, vec![page(messages(0..100), Some("old1")), page(fresh, Some("new1"))]),
+            ("/messages?cursor=old1&limit=100", vec![page(messages(100..200), Some("old2"))]),
+            ("/messages?cursor=old2&limit=100", vec![page(messages(200..300), Some("old3"))]),
+            ("/messages?cursor=old3&limit=100", vec![page(messages(300..400), Some("old4"))]),
+            ("/messages?cursor=old4&limit=100", vec![page(messages(400..450), Some("old5"))]),
+            ("/messages?cursor=new1&limit=100", vec![page(messages(95..195), Some("new2"))]),
+            ("/messages?cursor=new2&limit=100", vec![page(messages(195..295), Some("new3"))]),
+        ]);
+        let server = serve(&actors().await, routes.rule(), Duration::ZERO).await;
+        let model = Messages::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let mut list = model.list();
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 100).await;
+        for count in [200, 300, 400, 450] {
+            model.more();
+            view_until(&mut list, |list| list.rows.len() == count).await;
+        }
+        model.soft_refresh();
+        let after = view_until(&mut list, |list| list.stale.is_some()).await;
+        assert_eq!(after.rows.len(), 455, "five new rows and every old one");
+        for n in 295..300 {
+            assert!(after.index(&id(&format!("m{n:03}"))).is_some(), "m{n:03} was pushed past the range and lost");
+        }
+        assert_eq!(after.index(&id("m295")), Some(300), "the old tail follows the refreshed range");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn messages_refresh_stops_on_the_old_last_id_and_uses_the_selection_at_apply_time() {
     with_clock(async {
         let (held, arrived, release) =
@@ -409,7 +443,8 @@ async fn soft_refresh_deadline_applies_the_pages_that_answered_and_keeps_their_c
         let partial = view_until(&mut list, |list| list.stale.is_some()).await;
         assert_eq!(Instant::now(), start + Duration::from_secs(10));
         assert_eq!(partial.stale.unwrap().error.as_deref(), Some(TIMED_OUT));
-        assert_eq!(partial.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["fresh", "tail"]);
+        // The range holds no old row, so nothing tells which old rows left the list: all are kept, not refreshed.
+        assert_eq!(partial.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["fresh", "gone", "tail"]);
         model.more();
         let paged = view_until(&mut list, |list| !list.more).await;
         assert!(paged.index(&id("next")).is_some());
