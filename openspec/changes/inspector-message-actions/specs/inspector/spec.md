@@ -2,10 +2,10 @@
 
 ### Requirement: Message actions in the inspector
 
-The message panes SHALL offer Retry for a failed or cancelled message, and Cancel and Deliver Now for a pending one that
-is not running, by the state last read. Retry and Cancel SHALL ask first, Retry naming how often the message was retried
-before, as last read. Refusals SHALL show as alerts with the server's message, and a success SHALL be followed by a
-fresh read.
+The message panes SHALL offer Retry for a failed or cancelled message, and Cancel and Deliver Now for a pending message
+(on the Messages pane for every row, as its listing does not say which one runs), by the state last read. Retry and
+Cancel SHALL ask first, Retry naming the message's retries still kept, as last read. Refusals SHALL show as alerts with
+the server's message, and a success SHALL be followed by a fresh read.
 
 #### Scenario: Retry a failed message
 
@@ -15,7 +15,7 @@ fresh read.
 #### Scenario: Retry asks with the count
 
 - **WHEN** the operator presses Retry on a failed outcome whose Caused list holds two messages
-- **THEN** the sheet says it was retried 2 times before and that a retry may repeat external work
+- **THEN** the sheet says 2 retries are still kept and that a retry may repeat external work
 
 #### Scenario: Cancel a message that started running
 
@@ -25,14 +25,14 @@ fresh read.
 ### Requirement: Actions on several messages
 
 The Messages and Outcomes tables SHALL allow several rows to be selected; Outcomes SHALL offer to retry the selected
-failed or cancelled rows and Messages to cancel the selected pending rows, at most 1,000 at once, asking first. A bulk
-retry SHALL skip rows already retried, as just read, and a bulk call whose result is unknown SHALL NOT be sent again on
-its own.
+failed or cancelled rows and Messages to cancel the selected rows, at most 1,000 at once, asking first, sent in chunks
+of 100. A bulk retry SHALL skip rows with a retry still kept, as just read, and a chunk whose result is unknown SHALL
+stop the run and SHALL NOT be sent again on its own.
 
 #### Scenario: Bulk retry skips retried rows
 
 - **WHEN** the operator selects three failed outcomes, one of which was already retried, and presses Retry
-- **THEN** the sheet offers to retry 2 of 3 and names the skipped one, and only those 2 are sent
+- **THEN** the sheet offers to retry 2 of 3 with 1 already retried skipped, and only those 2 are sent
 
 #### Scenario: Bulk cancel
 
@@ -46,5 +46,6 @@ its own.
 
 #### Scenario: A bulk call times out
 
-- **WHEN** a bulk retry times out
-- **THEN** the page says the result is unknown and asks to read the page again, and nothing is sent again by itself
+- **WHEN** the second chunk of a bulk retry times out
+- **THEN** the page says how many the first chunk retried, that the second chunk's result is unknown and the rest were
+  not sent, and nothing is sent again by itself
