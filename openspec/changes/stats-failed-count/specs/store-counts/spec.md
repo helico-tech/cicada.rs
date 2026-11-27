@@ -3,7 +3,8 @@
 ### Requirement: The number of failed outcomes
 
 `GET /stats?prefix=` SHALL also answer `failed`: the number of outcomes with status `failed` under the prefix that
-`GET /outcomes` would list at that moment, read in the same transaction as the other numbers.
+`GET /outcomes` would list at that moment, by its visibility rule, read in the same read transaction as the other
+numbers.
 
 #### Scenario: Failed outcomes under a prefix
 
@@ -19,3 +20,8 @@
 
 - **WHEN** the client reads `GET /stats` from a server that does not send `failed`
 - **THEN** `StatsView::failed` is `None` and `cicada stats` shows `-`
+
+#### Scenario: Hidden by its keep policy
+
+- **WHEN** a message whose policy keeps no outcome (`Keep::Remove`) fails, within the store's retention
+- **THEN** `GET /outcomes` does not list it and `failed` does not count it
