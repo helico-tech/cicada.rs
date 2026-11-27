@@ -20,25 +20,30 @@ actions use `cicada-client`'s calls, the same routes as `cicada`, so the server'
 3. **Cancel Turn asks too.** The server cancels the turn it finds running for the actor when the request arrives, which
    may be a newer turn than the one shown. So Cancel Turn… opens a sheet: "Cancel the turn running for <address>
    (message <id> as last read)? The server cancels whichever turn is running when it receives this." An answer of true
-   means the cancel was recorded ("cancel requested; the turn ends at its next check"); false means no turn was running
-   ("no turn was running").
+   means the cancel was recorded ("cancel requested", nothing more, as the handler may already have finished); false
+   means no turn was running ("no turn was running").
 4. **Asking first, with honest counts.** Purge Mailbox… names the actor's address and its pending messages as the pane
-   last read them ("N pending, as last read" or "at least 50, as last read" when the first page was full), and says the
-   running message, if any, is not purged. Delete… names the address, says it removes "this actor and every descendant,
-   with all their mailboxes", and gives the loaded children ("at least N children" when the list was paged, "children
-   not read" when the row was never opened). In every sheet Cancel is the default button: Return and Escape both cancel;
-   the destructive button has no key equivalent and must be clicked.
+   last read them (the pending rows among the mailbox's first 50 rows, the running one not counted: "N pending, as last
+   read", or "at least N pending, as last read" when that page had a next cursor, or "not read" when the mailbox read
+   failed or has not answered), and says the running message, if any, is not purged. Delete… names the address, says it
+   removes "this actor and every descendant, with all their mailboxes", and gives the loaded children ("at least N
+   children" when the list was paged, "children not read" when the row was never opened). In every sheet Cancel is the
+   default button: Return and Escape both cancel; the destructive button has no key equivalent and must be clicked.
 5. **Results, absence and refusals.** The client turns an expected 404 into false or `None`; the inspector maps it to
    local text: "actor not found" for pause, resume, purge and delete, "no turn was running" for cancel turn. Any other
-   error shows an alert with the server's problem title and detail, or the transport error's text, and leaves the pane
-   as it was. A success shows a short notice (purged N messages, deleted, paused, resumed, cancel requested).
-   Credentials never appear.
+   error shows an alert with the server's problem title and detail, or the transport error's text, with credentials
+   removed, and leaves the pane as it was. A success shows a short notice (purged N messages, deleted, paused, resumed,
+   cancel requested). Credentials never appear.
 6. **A fresh read after every write.** After a successful write the page asks for a soft refresh (from
    `inspector-soft-refresh-actors`), coalesced behind one already running and independent of live updates, so it runs
-   also with Live paused. When the soft refresh cannot run (a page in flight waits; failed paging skips it), the pane is
-   read again on its own, and the row follows at the next refresh. A deleted actor's row and everything under its path
-   are removed from the outline at once, inside or outside the refresh's bounds, and its pane says "not found" until the
-   user selects another row.
+   also with Live paused (pausing Live cancels only automatic refreshes, never this one). When the soft refresh cannot
+   run (a page in flight waits; failed paging skips it), the pane is read again on its own, by a read started after the
+   write's answer, never by a read that began before it. Delete goes further: when it answers, every cached occurrence
+   of the actor and its known descendants is removed from the outline at once, inside or outside the refresh's bounds,
+   and every root or children page read that began before the answer is fenced so it cannot bring them back. The pane
+   says "not found" only when it still shows the deleted actor; when the user selected another actor meanwhile, that
+   pane stays as it is and the Delete notice is not shown (the result is fenced by the pane's selection generation),
+   though the outline is still pruned.
 7. **Where it lives.** An `actions` module in the model (the calls, the targets and their checks, the sheet texts and
    counts, the result, absence and refusal mapping, the refresh request) with tests against an in-process server; the
    buttons, sheets and alerts in the `appkit` module. Nothing in the tray or the library changes.
@@ -50,9 +55,12 @@ count and leaves the running message; delete removes the actor and its children;
 another error mapped to an alert with the server's text and no pane change; one action at a time from sheet to answer,
 also across a reselection; a target that changed before sending or confirming sends nothing; a context switch dropping a
 pending result; the fresh read after a write, also with Live paused and while paging blocks the soft refresh; a deleted
-row removed with its subtree at once; the sheet texts with their counts (as last read, at least, not read). The buttons,
-sheets and alerts get a manual check list in the tasks (Cancel the default, Return and Escape cancel, the destructive
-button only by click, VoiceOver labels).
+actor's cached occurrences and known descendants removed at once and a page that began before the answer not bringing
+them back; a Delete answering after another actor was selected leaving that pane and showing no notice; the paging
+fallback reading the pane only after the write's answer; the sheet texts with their counts (a full first page with one
+running message counting 49 pending, "at least" from the cursor, "not read"); alert text without credentials. The
+buttons, sheets and alerts get a manual check list in the tasks (Cancel the default, Return and Escape cancel, the
+destructive button only by click, VoiceOver labels).
 
 ## Docs
 
