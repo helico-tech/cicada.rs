@@ -15,7 +15,7 @@ change. Follow `design.md`; the spec is `specs/change-feed-http/spec.md`; the de
   64 KiB line limit, `Idle`, `Lifetime` on the stream's own timer, `Transport`, `Malformed`, a clean end as `None`;
   `Change` and `ChangeStreamError` `#[non_exhaustive]`; `futures-core` as a dependency (decisions 3–5). Verify: the
   crafted-byte tests on virtual time, the real-time test with a short total timeout, and the in-process server tests.
-- [ ] 4. **Changelog and docs handoff.** The 0.26.0 section names `ActorClient::changes` under Added; `docs-handoff.md`
+- [x] 4. **Changelog and docs handoff.** The 0.26.0 section names `ActorClient::changes` under Added; `docs-handoff.md`
   carries the design's Docs section, including the line of `docs/architecture.md` to replace. No edit to `README.md`,
   `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, comments included), `cargo clippy --workspace

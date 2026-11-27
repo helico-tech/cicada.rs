@@ -34,6 +34,9 @@ directly or use `..` in matches.
 
 ### Added
 
+- `ActorClient::changes(prefix)` follows actor change hints over Server-Sent Events with the client's configured
+  headers and TLS settings. It yields changed addresses and resyncs, with typed opening and stream errors. A new
+  subscription starts with a resync. The caller decides when to reconnect after a clean end or an error.
 - `cicada-inspector`: a new crate, a native macOS inspector over the HTTP API. ADR 0076 allows the tray's optional
   dependency and supersedes ADR 0011 in part for a native macOS console. `Inspector::new().run()` owns the main
   thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
