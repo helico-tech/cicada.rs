@@ -11,8 +11,11 @@ moves: a correction is a new version.
 
 `Tray::run` opens a native menu bar app on macOS 14 or later. Use the switch or pick a configured context to
 connect, watch running and recent turns, and let the worker drain when you disconnect or quit. While it drains, Stop
-Now cancels its running turns at once instead of waiting out the grace period.
-`cicada_app::Contexts` reads the configured names and current selection for the menu.
+Now cancels its running turns at once instead of waiting out the grace period. Its Settings window picks or adds a
+context, sets its server and token, and chooses the types the worker runs and how many turns run at once, kept per
+context in `tray.toml` next to the config file.
+`cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
+reads and writes the config file with the code of `cicada config`.
 
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
@@ -39,6 +42,38 @@ the value.
   commit, also after a failed release, is listed as abandoned; one whose handler had ended may still commit; one whose
   release is still in flight stays listed as running until it ends. It does nothing in any other state. Covered by the
   `stop_now_…` tests in `crates/cicada-tray/tests/control.rs`.
+- `cicada-app`: `ContextFile`, the config file of `cicada config` with its path rules, parser and atomic save (mode
+  0600): `names`, `current`, `context` (a `ContextEntry` with `server`, `token` and `headers`), `set_context`,
+  `set_server_and_token` (keeps the headers), `use_context`, `save`, `path` and `resolved_path`.
+  `ContextFile::update` holds an exclusive lock on `<target>.lock` next to the file a save writes while it reads,
+  changes and saves that same file, so two writers keep each other's changes; `cicada config use-context` and
+  `set-context` use it. `check_server_url` is the URL check of a worker over HTTP. Covered by
+  `two_updates_from_two_threads_are_both_kept` and the `ContextFile` tests in `crates/cicada-app/src/config.rs`.
+- `cicada-tray`: Settings… (⌘,) opens a native Settings window: Connection (a context pop-up with Add…, the server,
+  the token in a secure field) and Worker (a switch per registered type, scrolling past eight, and the turns at
+  once from 1 to 1,000), with Revert and Apply and Reconnect. Apply writes only the fields the user changed, under the
+  config file's lock and then `tray.toml`'s, and reconnects while the tray holds a connection; a context without a
+  `tray.toml` entry gets the shown types and turns at once as its entry. Esc and ⌘W close the window. Covered by
+  the `SettingsForm` tests in `crates/cicada-tray/src/settings.rs`, the `apply_…` tests in
+  `crates/cicada-tray/src/menu.rs` and `apply_while_online_restarts_the_worker_with_the_new_arguments`.
+- `cicada-tray`: `tray.toml` next to the config file keeps, per context, `types` and `concurrency`. A context with
+  an entry connects with `--types` (`all` when every registered type is picked) and `--concurrency`, which win over
+  `CICADA_TYPES` and `CICADA_CONCURRENCY`; a context without one inherits them. No registered type, a saved selection
+  with no registered type left, or a lone type named `all` or `none` among others, ends the connection `Failed` with
+  an error that says to open Settings. Covered by the `saved_settings_…` tests in
+  `crates/cicada-tray/tests/control.rs` and the tests in `crates/cicada-tray/src/tray_file.rs`.
+
+### Changed
+
+- `cicada-app`: an unreadable config file is reported as `cannot read <path>: not a valid config file at line N` by
+  every command, the worker included, without the parser's text, which can quote a token. `ContextEntry`, the config
+  and `ContextFile` print the token, header values and a password in the server URL as `***` in `Debug`.
+- `cicada-app`: `cicada config use-context` and `set-context` create `<config>.lock` next to the config file (next to
+  its target when it is a symlink) and wait while another writer holds it. On a file system without file locks they
+  fail instead of writing unlocked.
+- `cicada-app`: `cicada config` and the menu bar app refuse a config path whose name, or whose symlink target's name,
+  is `tray.toml` or ends in `.lock`, in any letter case, so that a config write never replaces a lock file or the
+  tray's file.
 
 ## 0.25.0 — 2026-11-27
 

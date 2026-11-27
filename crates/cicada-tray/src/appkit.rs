@@ -1,6 +1,7 @@
 //! Main-thread AppKit lifecycle and actions.
 #![allow(unsafe_code)]
 
+mod settings;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -14,9 +15,9 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar,
-    NSSwitch,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSButton,
+    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSPopUpButton, NSStatusBar, NSStepper, NSSwitch, NSTextField,
 };
 use objc2_foundation::{
     NSBundle, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
@@ -26,7 +27,9 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::menu::{Action, MenuControl, MenuInput, Terminate, macos_subtitles, menu};
+use crate::settings::SettingsForm;
 use crate::{Tray, TrayState};
+use settings::SettingsWindow;
 use view::MenuView;
 
 pub(super) fn run(tray: Tray) -> ExitCode {
@@ -118,12 +121,14 @@ fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>, subt
             turns: RefCell::new(turns),
             contexts: RefCell::default(),
             control: RefCell::default(),
+            settings: RefCell::default(),
             menu_open: Cell::new(false),
             last_clock: Cell::new(Instant::now()),
         },
     );
 
     target.ivars().view.bind(&target);
+    app.setMainMenu(Some(&settings::edit_menu(mtm)));
     target.reload_contexts();
     target.render();
     app.setDelegate(Some(ProtocolObject::from_ref(&*target)));
@@ -153,6 +158,8 @@ struct Controller {
     turns: RefCell<watch::Receiver<u64>>,
     contexts: RefCell<Contexts>,
     control: RefCell<MenuControl>,
+    /// The Settings window, made at the first Settings….
+    settings: RefCell<Option<SettingsWindow>>,
     menu_open: Cell<bool>,
     last_clock: Cell<Instant>,
 }
@@ -265,6 +272,75 @@ define_class!(
         fn quit(&self, _: &NSMenuItem) {
             self.begin_quit();
         }
+
+        // SAFETY: Only the Settings… NSMenuItem is wired to this action.
+        #[unsafe(method(traySettings:))]
+        fn open_settings(&self, _: &NSMenuItem) {
+            let c = self.ivars();
+            let registered = c.tray.control.registered_types.lock().expect("tray registered types").clone();
+            // A later App can register other types: a closed window is made again with their switches.
+            let stale = c.settings.borrow().as_ref().is_none_or(|w| !w.is_visible() && w.registered() != registered);
+            if stale {
+                c.settings.replace(Some(SettingsWindow::new(self, &c.title, &registered)));
+            }
+            if let Some(window) = c.settings.borrow().as_ref() {
+                window.show(|| self.settings_form(window.registered()));
+            }
+        }
+
+        // SAFETY: Only the Settings window's context NSPopUpButton is wired to this action.
+        #[unsafe(method(settingsContext:))]
+        fn settings_context(&self, _: &NSPopUpButton) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.picked_context();
+            }
+        }
+
+        // SAFETY: Only the Settings window's NSStepper is wired to this action.
+        #[unsafe(method(settingsStep:))]
+        fn settings_step(&self, _: &NSStepper) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.stepped();
+            }
+        }
+
+        // SAFETY: Only the Settings window's concurrency NSTextField is wired to this action.
+        #[unsafe(method(settingsConcurrency:))]
+        fn settings_concurrency(&self, _: &NSTextField) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.typed_concurrency();
+            }
+        }
+
+        // SAFETY: Only the Settings window's Revert NSButton is wired to this action.
+        #[unsafe(method(settingsRevert:))]
+        fn settings_revert(&self, _: &NSButton) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.revert(|| self.settings_form(window.registered()));
+            }
+        }
+
+        // SAFETY: Only the Settings window's Apply and Reconnect NSButton is wired to this action.
+        #[unsafe(method(settingsApply:))]
+        fn settings_apply(&self, _: &NSButton) {
+            self.apply_settings();
+        }
+
+        // SAFETY: Only the Add sheet's Add NSButton is wired to this action.
+        #[unsafe(method(settingsAddOk:))]
+        fn settings_add_ok(&self, _: &NSButton) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.add();
+            }
+        }
+
+        // SAFETY: Only the Add sheet's Cancel NSButton is wired to this action.
+        #[unsafe(method(settingsAddCancel:))]
+        fn settings_add_cancel(&self, _: &NSButton) {
+            if let Some(window) = self.ivars().settings.borrow().as_ref() {
+                window.cancel_add();
+            }
+        }
     }
 );
 
@@ -326,6 +402,32 @@ impl Target {
             Some(Action::Disconnect) => tray.disconnect(),
             Some(Action::StopApp | Action::ReplyToTerminate) | None => {}
         }
+    }
+
+    /// The Settings form from the files on disk, showing the connected context, else the current one.
+    /// `registered` is the window's own snapshot, which its switches show, so the form never holds a type the window
+    /// has no switch for.
+    fn settings_form(&self, registered: &[&'static str]) -> Result<SettingsForm, String> {
+        let c = self.ivars();
+        let state = self.state();
+        SettingsForm::load(&c.tray.environment(), registered, state.connection())
+    }
+
+    /// Apply and Reconnect: saves the form and, while the tray holds a connection, reconnects to the applied context.
+    fn apply_settings(&self) {
+        let c = self.ivars();
+        let settings = c.settings.borrow();
+        let Some(window) = settings.as_ref() else { return };
+        let Some(name) = window.apply() else { return };
+        window.refill();
+        let state = self.state();
+        let action = c.control.borrow_mut().apply(&state, name);
+        let reconnecting = !c.control.borrow().quitting() && state.connection().is_some();
+        window.status(if reconnecting { "Saved. Reconnecting…" } else { "Saved." });
+        drop(settings);
+        self.act(action);
+        self.reload_contexts();
+        self.render();
     }
 
     fn begin_quit(&self) {

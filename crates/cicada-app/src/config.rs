@@ -5,6 +5,7 @@
 //! pure function of the three, so it is tested without touching the real environment.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,10 +27,7 @@ pub struct Contexts {
 impl Contexts {
     /// Loads the config file at the path resolved from `env`. A missing file has no contexts.
     pub fn load(env: &Env) -> anyhow::Result<Self> {
-        let Config { contexts, current_context } = Config::load(&path(env)?).map_err(|error| {
-            // A TOML parse diagnostic can quote a token or server from the file.
-            if error.is::<toml::de::Error>() { anyhow!("{error}") } else { error }
-        })?;
+        let Config { contexts, current_context } = Config::load(&path(env)?)?;
         Ok(Self { names: contexts.into_keys().collect(), current: current_context })
     }
 
@@ -44,7 +42,243 @@ impl Contexts {
     }
 }
 
-/// The config file.
+/// A context of the config file: a server with its credentials. Its `Debug` shows the token and the values of the
+/// headers as `***`, and the password of the server URL as `***`.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextEntry {
+    /// Base URL of the API, e.g. `http://localhost:8080`.
+    pub server: String,
+    /// Sent as `Authorization: Bearer <token>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Sent with every request.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for ContextEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextEntry")
+            .field("server", &redacted_url(&self.server))
+            .field("token", &self.token.as_ref().map(|_| "***"))
+            .field("headers", &self.headers.keys().map(|name| (name, "***")).collect::<BTreeMap<_, _>>())
+            .finish()
+    }
+}
+
+/// The config file that `cicada config` reads and writes, with the same path rules, parser and atomic save (mode 0600).
+///
+/// A parse error names the file and the line, never the text, which can hold a token. Writers that may run next to
+/// each other go through [`Self::update`], which holds an exclusive lock while it reads, changes and saves the file;
+/// readers take no lock. A config path whose name, or whose symlink target's name, is `tray.toml` (the menu bar app's
+/// own file) or ends in `.lock` (a lock file), in any letter case, is refused, so that no write replaces either. Its
+/// `Debug` hides the credentials as [`ContextEntry`] does.
+#[derive(Debug, Clone)]
+pub struct ContextFile {
+    path: PathBuf,
+    config: Config,
+    changed: bool,
+    /// The file [`Self::update`] locked and reads; its saves write this file, not what the link names by then.
+    pinned: Option<PathBuf>,
+}
+
+impl ContextFile {
+    /// Reads the config file at the path resolved from `env`: `$CICADA_CONFIG`, else
+    /// `$XDG_CONFIG_HOME/cicada/config.toml`, else `$HOME/.config/cicada/config.toml`. A missing file has no contexts.
+    pub fn load(env: &Env) -> anyhow::Result<Self> {
+        let path = path(env)?;
+        allowed_target(&path)?;
+        let config = Config::load(&path)?;
+        Ok(Self { path, config, changed: false, pinned: None })
+    }
+
+    /// Locks the config file, reads it again, applies `f` and, when `f` returns `Ok` and changed the file since it
+    /// last saved, saves it; then unlocks. Every writer that uses it, `cicada config use-context` and `set-context`
+    /// among them, keeps the others' changes. The lock is an exclusive OS lock on `<target>.lock` next to the file a
+    /// save writes: the path with every symlink followed, its folders' included, so every path to one file shares one
+    /// lock. It is held on this machine only. After locking, the whole path is resolved again: when it names another
+    /// file by then, the lock is dropped and taken on that one. The file read and saved is the resolved one locked,
+    /// named by a path without symlinks, so a link retargeted later does not move the write. A file system without
+    /// locks fails the update rather than risk losing another writer's change. `f` may call [`Self::save`] itself and
+    /// keep the lock for more work.
+    pub fn update<T>(env: &Env, f: impl FnOnce(&mut Self) -> anyhow::Result<T>) -> anyhow::Result<T> {
+        let path = path(env)?;
+        let mut tries = 0;
+        let (target, _lock) = loop {
+            let target = allowed_target(&path)?;
+            let lock = lock_next_to(&target)?;
+            if real_path(&path)? == target {
+                break (target, lock);
+            }
+            tries += 1;
+            if tries == 10 {
+                bail!("cannot lock {}: its symlink keeps changing", path.display());
+            }
+        };
+        let config = Config::load(&target)?;
+        let mut file = Self { config, path, changed: false, pinned: Some(target) };
+        let value = f(&mut file)?;
+        if file.changed {
+            file.save()?;
+        }
+        Ok(value)
+    }
+
+    /// The path of the config file, as `env` gives it.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The file a save writes: [`Self::path`] made absolute with every symlink followed, those of its folders
+    /// included. It need not exist.
+    pub fn resolved_path(&self) -> std::io::Result<PathBuf> {
+        resolve_path(&self.path)
+    }
+
+    /// The names of the contexts, in alphabetical order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.config.contexts.keys().map(String::as_str)
+    }
+
+    /// The `current-context` of the file, if set; it need not name a context of the file.
+    pub fn current(&self) -> Option<&str> {
+        self.config.current_context.as_deref()
+    }
+
+    /// The context `name`, if the file has it.
+    pub fn context(&self, name: &str) -> Option<ContextEntry> {
+        self.config.contexts.get(name).cloned()
+    }
+
+    /// Replaces the whole context `name`, or adds it, as `cicada config set-context` does: it becomes the current
+    /// context when none is.
+    pub fn set_context(&mut self, name: &str, entry: ContextEntry) {
+        self.config.contexts.insert(name.to_owned(), entry);
+        self.config.current_context.get_or_insert_with(|| name.to_owned());
+        self.changed = true;
+    }
+
+    /// Sets the server and token of context `name`, keeping its headers, or adds it without headers. Unlike
+    /// [`Self::set_context`], it leaves `current-context` alone.
+    pub fn set_server_and_token(&mut self, name: &str, server: String, token: Option<String>) {
+        let entry = self.config.contexts.entry(name.to_owned()).or_default();
+        entry.server = server;
+        entry.token = token;
+        self.changed = true;
+    }
+
+    /// Makes `name` the current context, as `cicada config use-context` does; an error when the file has no such
+    /// context.
+    pub fn use_context(&mut self, name: &str) -> anyhow::Result<()> {
+        if !self.config.contexts.contains_key(name) {
+            bail!("no context '{name}' in {}", self.path.display());
+        }
+        self.config.current_context = Some(name.to_owned());
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Writes the whole file atomically, with mode 0600 on Unix; comments in an existing file are not kept. Use it
+    /// within [`Self::update`] when another writer may run.
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        match &self.pinned {
+            Some(target) => self.config.write_to(target)?,
+            None => self.config.write_to(&allowed_target(&self.path)?)?,
+        }
+        self.changed = false;
+        Ok(())
+    }
+}
+
+/// [`resolve_path`] with an error that names `path`.
+fn real_path(path: &Path) -> anyhow::Result<PathBuf> {
+    resolve_path(path).with_context(|| format!("cannot follow {}", path.display()))
+}
+
+/// `path` made absolute with every symlink followed, its folders' included: the folder of the file, after the file's
+/// own links, is made canonical up to its deepest existing ancestor, and the file's name is checked again in the real
+/// folder. The file and some folders need not exist.
+fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
+    refuse_folder_form(path)?;
+    let mut path = std::path::absolute(path)?;
+    for _ in 0..40 {
+        let file = link_target(&path)?;
+        let name = file.file_name().ok_or_else(|| std::io::Error::other("the path names no file"))?;
+        let next = canonical_dir(file.parent().unwrap_or(Path::new("/")))?.join(name);
+        if next == path {
+            return Ok(next);
+        }
+        path = next;
+    }
+    Err(std::io::Error::other("too many levels of symbolic links"))
+}
+
+/// Refuses a path that ends in `/` or `/.`: `Path` drops them, but the system refuses such a path for a file
+/// (ENOTDIR), so the config code does too, for the path given and for every link target it follows.
+fn refuse_folder_form(path: &Path) -> std::io::Result<()> {
+    let text = path.as_os_str().as_encoded_bytes();
+    if text.ends_with(b"/") || text.ends_with(b"/.") {
+        return Err(std::io::Error::other("the path names a folder, not a file"));
+    }
+    Ok(())
+}
+
+/// `dir` made canonical: its deepest existing ancestor through `canonicalize`, with the missing folders after it.
+fn canonical_dir(dir: &Path) -> std::io::Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = dir;
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(real) => return Ok(missing.iter().rev().fold(real, |path, name| path.join(name))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else { return Err(e) };
+                missing.push(name);
+                existing = parent;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The target of the config path `path`, refused when its name or the target's is reserved: `tray.toml`, the menu bar
+/// app's file, or one ending in `.lock`, in any letter case, as a case-insensitive file system treats them alike.
+fn allowed_target(path: &Path) -> anyhow::Result<PathBuf> {
+    let target = real_path(path)?;
+    let reserved = |path: &Path| {
+        let name = path.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+        name == "tray.toml" || name.ends_with(".lock")
+    };
+    if reserved(path) || reserved(&target) {
+        bail!(
+            "the config file {} has a name kept for lock files or tray.toml; set CICADA_CONFIG to another file",
+            path.display()
+        );
+    }
+    Ok(target)
+}
+
+/// Takes an exclusive lock on `<file>.lock`, creating it and its folder when missing, and waits for another holder.
+/// The lock ends when the returned file is dropped. A file system without locks is an error.
+pub(crate) fn lock_next_to(file: &Path) -> anyhow::Result<File> {
+    let mut name = file.file_name().map(ToOwned::to_owned).unwrap_or_default();
+    name.push(".lock");
+    let lock = file.with_file_name(name);
+    let dir = lock.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let handle = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock)
+        .with_context(|| format!("cannot open {}", lock.display()))?;
+    handle
+        .lock()
+        .with_context(|| format!("cannot lock {}; its file system must support file locks", lock.display()))?;
+    Ok(handle)
+}
+
+/// The config file. Its `Debug` hides the credentials as [`ContextEntry`] does.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Config {
@@ -57,25 +291,32 @@ pub struct Config {
 }
 
 /// A named server with its credentials.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Context {
-    /// Base URL of the API, e.g. `http://localhost:8080`.
-    pub server: String,
-    /// Sent as `Authorization: Bearer <token>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    /// Sent with every request.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
-}
+pub type Context = ContextEntry;
 
 impl Config {
-    /// Reads the file at `path`; a missing file is an empty config.
+    /// Reads the file at `path`; a missing file is an empty config. A parse error names the line but not the text, as
+    /// the diagnostic of the parser can quote a token or server from the file. A path, or a link target on the way,
+    /// that ends in `/` or `/.` is refused, also when nothing is there, as the system refuses it for a file; the file
+    /// read is the link target that was checked.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).with_context(|| format!("cannot read {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+        // Read the target that was checked, so a link retargeted after the check cannot change what is read.
+        let target = refuse_folder_form(path)
+            .and_then(|()| link_target(path))
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        match std::fs::read_to_string(&target) {
+            Ok(text) => toml::from_str(&text).map_err(|error| {
+                let before = |at: usize| text.get(..at).map_or(0, |text| text.matches('\n').count());
+                let line = error.span().map(|span| before(span.start) + 1);
+                let at = line.map(|line| format!(" at line {line}")).unwrap_or_default();
+                anyhow!("cannot read {}: not a valid config file{at}", path.display())
+            }),
+            // Missing only if nothing is at the checked target now either: a link put there after the check, whose
+            // target is missing, is refused rather than read as an empty config.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::symlink_metadata(&target) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+                Ok(_) => bail!("cannot read {}: it changed while it was read; try again", path.display()),
+                Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+            },
             Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
         }
     }
@@ -87,8 +328,13 @@ impl Config {
     /// created with mode 0600 on Unix (`tempfile`'s default), because it holds tokens, and is removed when the save
     /// fails. When `path` is a symlink, all of this happens to the file it points to, which is created when it is not
     /// there yet, and the link stays a link.
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let target = link_target(path).with_context(|| format!("cannot follow {}", path.display()))?;
+        self.write_to(&real_path(path)?)
+    }
+
+    /// Writes the whole file to `target`, the resolved file of a config path, as [`Self::save`] describes.
+    fn write_to(&self, target: &Path) -> anyhow::Result<()> {
         let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let text = toml::to_string_pretty(self)?;
@@ -96,7 +342,7 @@ impl Config {
             let mut file = tempfile::Builder::new().prefix(".cicada-config").tempfile_in(dir)?;
             file.write_all(text.as_bytes())?;
             file.as_file().sync_all()?;
-            file.persist(&target)?;
+            file.persist(target)?;
             Ok(())
         };
         write().with_context(|| format!("cannot write {}", target.display()))
@@ -112,6 +358,7 @@ fn link_target(path: &Path) -> std::io::Result<PathBuf> {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 let link = std::fs::read_link(&path)?;
+                refuse_folder_form(&link)?;
                 path = match path.parent() {
                     Some(dir) if link.is_relative() => dir.join(link),
                     _ => link,
@@ -149,8 +396,8 @@ pub struct Overrides {
     pub token: Option<String>,
 }
 
-/// The server a command talks to, and how. Its `Debug` leaves out the token and the values of the headers, and hides the
-/// password of the URL.
+/// The server a command talks to, and how. Its `Debug` leaves out the token and the values of the headers, and hides
+/// the password of the URL.
 #[derive(Clone, PartialEq)]
 pub struct Target {
     /// The context it came from, if any.
@@ -225,6 +472,16 @@ fn redacted_url(url: &str) -> String {
 /// by the turn timeout of [`ActorClient`] (10 s) as well.
 pub(crate) const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Checks a server URL as a worker over HTTP does: it parses as a URL and uses `http` or `https`. The error does not
+/// quote the URL.
+pub fn check_server_url(server: &str) -> anyhow::Result<()> {
+    let server = reqwest::Url::parse(server).context("invalid server URL")?;
+    if !matches!(server.scheme(), "http" | "https") {
+        bail!("the server URL must use http or https");
+    }
+    Ok(())
+}
+
 impl Target {
     /// A client for this target whose requests carry the token and headers and give up after `timeout`.
     pub fn client(&self, timeout: Duration) -> anyhow::Result<ActorClient> {
@@ -236,10 +493,7 @@ impl Target {
     /// redirects, as a `307` or `308` would send a POST of a lease call again. Checks the URL and adds no retry of its
     /// own.
     pub(crate) fn worker_client(&self) -> anyhow::Result<ActorClient> {
-        let server = reqwest::Url::parse(&self.server).context("invalid server URL")?;
-        if !matches!(server.scheme(), "http" | "https") {
-            bail!("the server URL must use http or https");
-        }
+        check_server_url(&self.server)?;
         let http = reqwest::Client::builder()
             .default_headers(self.headers()?)
             .timeout(WORKER_TIMEOUT)
@@ -483,5 +737,289 @@ mod tests {
         let error = config().save(&file).unwrap_err().to_string();
         assert!(error.contains("cannot write"), "{error}");
         assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    fn file_env(file: &Path) -> Env {
+        env(&[("CICADA_CONFIG", file.to_str().unwrap())])
+    }
+
+    #[test]
+    fn a_context_file_sets_uses_and_saves_and_keeps_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let env = file_env(&file);
+        let mut contexts = ContextFile::load(&env).unwrap();
+        assert_eq!((contexts.names().count(), contexts.current()), (0, None), "a missing file");
+        assert_eq!(contexts.path(), file);
+        let headers = BTreeMap::from([("X-Tenant".to_owned(), "ops".to_owned())]);
+        contexts.set_context("a", ContextEntry { server: "http://a".into(), token: None, headers: headers.clone() });
+        contexts.set_context("b", ContextEntry { server: "http://b".into(), ..ContextEntry::default() });
+        assert_eq!(contexts.current(), Some("a"), "the first set context becomes current");
+        contexts.save().unwrap();
+
+        let mut contexts = ContextFile::load(&env).unwrap();
+        assert_eq!(contexts.names().collect::<Vec<_>>(), ["a", "b"]);
+        contexts.set_server_and_token("a", "http://a2".into(), Some("t".into()));
+        contexts.set_server_and_token("c", "http://c".into(), None);
+        contexts.use_context("b").unwrap();
+        let error = contexts.use_context("nope").unwrap_err().to_string();
+        assert!(error.contains("no context 'nope' in") && error.contains("config.toml"), "{error}");
+        contexts.save().unwrap();
+
+        let contexts = ContextFile::load(&env).unwrap();
+        assert_eq!(contexts.current(), Some("b"));
+        let a = contexts.context("a").unwrap();
+        assert_eq!((a.server.as_str(), a.token.as_deref(), &a.headers), ("http://a2", Some("t"), &headers));
+        assert_eq!(contexts.context("c").unwrap(), ContextEntry { server: "http://c".into(), ..Default::default() });
+        assert_eq!(contexts.context("nope"), None);
+    }
+
+    #[test]
+    fn two_updates_from_two_threads_are_both_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let env = file_env(&file);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for name in ["a", "b"] {
+                let (env, barrier) = (&env, &barrier);
+                scope.spawn(move || {
+                    for i in 0..20 {
+                        barrier.wait();
+                        ContextFile::update(env, |file| {
+                            // Hold the read copy a while, so that an unlocked writer would lose the other's change.
+                            std::thread::sleep(Duration::from_millis(1));
+                            file.set_server_and_token(&format!("{name}{i}"), format!("http://{name}"), None);
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(ContextFile::load(&env).unwrap().names().count(), 40);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_through_a_symlink_locks_next_to_its_target_and_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.toml");
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("real.toml", &link).unwrap();
+        ContextFile::update(&file_env(&link), |file| {
+            file.set_context("a", ContextEntry { server: "http://a".into(), ..ContextEntry::default() });
+            assert_eq!(file.resolved_path().unwrap(), dir.path().canonicalize().unwrap().join("real.toml"));
+            Ok(())
+        })
+        .unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(dir.path().join("real.toml.lock").exists() && !dir.path().join("config.toml.lock").exists());
+        assert_eq!(ContextFile::load(&file_env(&target)).unwrap().current(), Some("a"));
+    }
+
+    #[test]
+    fn a_failed_update_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        config().save(&file).unwrap();
+        let result: anyhow::Result<()> = ContextFile::update(&file_env(&file), |file| {
+            file.set_server_and_token("c", "http://c".into(), None);
+            bail!("refused")
+        });
+        assert!(result.is_err());
+        assert_eq!(Config::load(&file).unwrap(), config());
+    }
+
+    #[test]
+    fn a_parse_error_names_the_line_but_not_the_token_for_every_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[contexts.a]\nserver = \"http://a\"\nheaders = \"invalid-secret\"\n").unwrap();
+        let env = file_env(&file);
+        let errors = [
+            Config::load(&file).unwrap_err(),
+            ContextFile::load(&env).unwrap_err(),
+            ContextFile::update(&env, |_| Ok(())).unwrap_err(),
+            Contexts::load(&env).unwrap_err(),
+        ];
+        for error in errors {
+            let text = format!("{error:?} {error:#}");
+            assert!(!text.contains("invalid-secret"), "{text}");
+            assert!(text.contains("cannot read") && text.contains("line 3"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_debug_of_a_context_and_the_config_hides_credentials() {
+        let entry = ContextEntry {
+            server: "https://user:hunter2@actors.internal/api".into(),
+            token: Some("s3cret".into()),
+            headers: BTreeMap::from([("X-Api-Key".to_owned(), "k3y".to_owned())]),
+        };
+        let mut file =
+            ContextFile { path: "config.toml".into(), config: Config::default(), changed: false, pinned: None };
+        file.set_context("prod", entry.clone());
+        for text in [format!("{entry:?}"), format!("{:?}", file.config), format!("{file:?}")] {
+            for secret in ["hunter2", "s3cret", "k3y"] {
+                assert!(!text.contains(secret), "{text}");
+            }
+            assert!(text.contains("user:***@actors.internal") && text.contains("X-Api-Key"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_server_url_must_be_http_or_https() {
+        assert!(check_server_url("http://localhost:8080").is_ok());
+        assert!(check_server_url("https://actors.internal/api").is_ok());
+        let error = format!("{:#}", check_server_url("ftp://x").unwrap_err());
+        assert_eq!(error, "the server URL must use http or https");
+        let error = format!("{:#}", check_server_url("not a url").unwrap_err());
+        assert!(error.starts_with("invalid server URL") && !error.contains("not a url"), "{error}");
+    }
+
+    #[test]
+    fn a_config_named_like_a_lock_or_the_tray_file_is_refused_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["tray.toml", "TRAY.TOML", "Tray.Toml", "config.toml.lock", "x.LOCK", "tray.toml.lock"] {
+            let file = dir.path().join(name);
+            let env = file_env(&file);
+            let error = ContextFile::load(&env).unwrap_err().to_string();
+            assert!(error.contains("CICADA_CONFIG"), "{name}: {error}");
+            let error = ContextFile::update(&env, |file| {
+                file.set_server_and_token("a", "http://a".into(), None);
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("CICADA_CONFIG"), "{name}");
+        }
+        assert_eq!(names(dir.path()), Vec::<String>::new(), "nothing created, not even a lock file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_whose_symlink_names_a_reserved_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("TRAY.toml", &link).unwrap();
+        let error = ContextFile::update(&file_env(&link), |_| Ok(())).unwrap_err().to_string();
+        assert!(error.contains("CICADA_CONFIG"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_saves_the_file_it_locked_when_the_link_moves_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("first.toml", &link).unwrap();
+        ContextFile::update(&file_env(&link), |file| {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink("second.toml", &link).unwrap();
+            file.set_server_and_token("a", "http://a".into(), None);
+            Ok(())
+        })
+        .unwrap();
+        assert!(Config::load(&dir.path().join("first.toml")).unwrap().contexts.contains_key("a"));
+        assert!(!dir.path().join("second.toml").exists(), "not the file whose lock was never taken");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_writes_the_folder_it_locked_when_a_folder_link_moves_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, current) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("current"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink("a", &current).unwrap();
+        ContextFile::update(&file_env(&current.join("config.toml")), |file| {
+            std::fs::remove_file(&current).unwrap();
+            std::os::unix::fs::symlink("b", &current).unwrap();
+            file.set_server_and_token("x", "http://x".into(), None);
+            Ok(())
+        })
+        .unwrap();
+        assert!(Config::load(&a.join("config.toml")).unwrap().contexts.contains_key("x"));
+        assert!(!b.join("config.toml").exists(), "not the folder whose lock was never taken");
+    }
+
+    /// A writer waiting for the lock of folder `a` while the folder link moves to `b`, whose lock is held, writes `b`
+    /// only once it holds `b`'s lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_waiting_update_follows_a_moved_folder_link_and_takes_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, current) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("current"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink("a", &current).unwrap();
+        let held_a = lock_next_to(&a.join("config.toml")).unwrap();
+        let env = file_env(&current.join("config.toml"));
+        let writer = std::thread::spawn(move || {
+            ContextFile::update(&env, |file| {
+                file.set_server_and_token("x", "http://x".into(), None);
+                Ok(())
+            })
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink("b", &current).unwrap();
+        let held_b = lock_next_to(&b.join("config.toml")).unwrap();
+        drop(held_a);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!b.join("config.toml").exists(), "no write while b's lock is held elsewhere");
+        drop(held_b);
+        writer.join().unwrap().unwrap();
+        assert!(Config::load(&b.join("config.toml")).unwrap().contexts.contains_key("x"));
+        assert!(!a.join("config.toml").exists());
+    }
+
+    #[test]
+    fn a_resolved_path_follows_folder_links_and_keeps_missing_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir(dir.path().join("a")).unwrap();
+            std::os::unix::fs::symlink("a", dir.path().join("current")).unwrap();
+            let resolved = resolve_path(&dir.path().join("current/config.toml")).unwrap();
+            assert_eq!(resolved, real.join("a/config.toml"));
+        }
+        let resolved = resolve_path(&dir.path().join("new/sub/config.toml")).unwrap();
+        assert_eq!(resolved, real.join("new/sub/config.toml"));
+    }
+
+    #[test]
+    fn a_config_path_with_a_trailing_slash_or_dot_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let text = "[contexts.a]\nserver = \"http://a\"\n";
+        std::fs::write(&file, text).unwrap();
+        for suffix in ["/", "/."] {
+            let given = PathBuf::from(format!("{}{suffix}", file.display()));
+            assert!(resolve_path(&given).is_err(), "{suffix}");
+            let env = Env::from([("CICADA_CONFIG".to_owned(), given.display().to_string())]);
+            assert!(ContextFile::update(&env, |f| f.use_context("a")).is_err(), "{suffix}");
+        }
+        #[cfg(unix)]
+        for suffix in ["/", "/."] {
+            let link = dir.path().join(format!("link{}", suffix.len()));
+            std::os::unix::fs::symlink(format!("{}{suffix}", file.display()), &link).unwrap();
+            let env = Env::from([("CICADA_CONFIG".to_owned(), link.display().to_string())]);
+            assert!(ContextFile::update(&env, |f| f.use_context("a")).is_err(), "link to {suffix}");
+            assert!(ContextFile::load(&env).is_err(), "link to {suffix}");
+            let dangling = dir.path().join(format!("dangling{}", suffix.len()));
+            std::os::unix::fs::symlink(format!("{}{suffix}", dir.path().join("missing.toml").display()), &dangling)
+                .unwrap();
+            assert!(Config::load(&dangling).is_err(), "dangling link to {suffix}");
+            let env = Env::from([("CICADA_CONFIG".to_owned(), dangling.display().to_string())]);
+            assert!(Contexts::load(&env).is_err(), "dangling link to {suffix}");
+        }
+        for suffix in ["/", "/."] {
+            let missing = PathBuf::from(format!("{}{suffix}", dir.path().join("missing.toml").display()));
+            assert!(Config::load(&missing).is_err(), "missing {suffix}");
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let env = Env::from([("CICADA_CONFIG".to_owned(), file.display().to_string())]);
+        ContextFile::update(&env, |f| f.use_context("a")).unwrap();
     }
 }
