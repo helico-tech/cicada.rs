@@ -190,7 +190,8 @@ It has no node row or readiness endpoint. The [HTTP guide](http.md#run-a-worker-
 **When the worker is ready.** `App::on_worker_ready` (from 0.25.0) calls the host once the worker over HTTP has
 checked the server and registered its contracts. It gets a `WorkerReady` with the settled `grace_period` and
 `cancel_timeout`, and from 0.26.0 `types`, the types selected by `--types` or `CICADA_TYPES` in host order
-(`App::type_names()` lists every type the app hosts), and `stop_now`, a `StopNow` handle. From 0.26.0 `WorkerReady` is
+(`App::type_names()` lists every type the app hosts), `concurrency`, the most turns the worker runs at once, and
+`stop_now`, a `StopNow` handle. From 0.26.0 `WorkerReady` is
 `#[non_exhaustive]`: destructure it with `..` and get it only from the callback. Only a worker over HTTP reports it; `serve` and a worker on the store keep
 their signal-driven stop.
 
@@ -270,13 +271,26 @@ returns `std::process::ExitCode` calls `Tray::new(|| App::new().host(MyActor)).r
 `cargo run -p cicada-examples --example menu-bar-worker`. Configure and select a context with the
 [command line](#command-line-and-terminal-ui) before opening the menu.
 
-The app starts offline. Its switch connects to the config file's current context and disconnects gracefully; picking
-another context drains the current worker before starting the next, and the menu reloads the context names each time
-it opens (`Contexts::load` in code). Running shows each turn's actor, message type, attempt and time since claim;
-Registered Types marks the types the worker runs; Recent Turns shows the last 50 finished turns, with a badge for failed
-and abandoned ones. While the worker drains after a disconnect or a Quit, a Stop Now row under the header ends the
-grace period, and the countdown drops to the cancel timeout. Quit, Ctrl-C and logout drain the worker before the app
-exits.
+The app starts offline, with the config file's current context selected. Picking a context while not connected
+selects it without connecting; **Connect to <context>** (⌘K) or the switch connects to the selected one, and the switch
+disconnects gracefully. Picking another context while connected drains the current worker before starting the next.
+The pick is not saved: `cicada config use-context` still sets the CLI's default, and the tray starts from it again at
+the next launch. The menu reloads the context names each time it opens, and each context shows its server's host
+(`Contexts::load` and `Contexts::host` in code; the host and port only, never credentials, path or query).
+
+Rows carry an icon, a second line and a badge on the right. While connected, **Running** shows "N of M" (running turns
+of the worker's concurrency) and each turn's actor, message type, attempt and elapsed time; **Registered Types** shows
+"K of T" and, for each type, whether this worker runs it and how many of its turns run, with Choose Types… opening
+Settings; **Recent Turns** shows the last 50 finished turns and their outcomes, with "N failed" on its row. After a
+failed connection the menu shows "Couldn't reach <context>" with a fixed label, Connection refused, No answer or
+Connection failed, and the time, never the error text. While the worker drains after a disconnect or a Quit, the header
+shows a bar to the tray's deadline with "N s left", **Finishing** lists the running turns, and **Stop Now** ends the
+grace period. Quit, Ctrl-C and logout drain the worker before the app exits.
+
+- The bar's "N s left" counts to the end of the cancel timeout, not of the grace period alone; after Stop Now, or past
+  the deadline, it says "Cancelling turns…".
+- A worker over HTTP mostly shows "Connection failed" until its errors carry a typed kind.
+- A turn whose error mentions a URL or credential-like text shows only "failed" in Recent Turns.
 
 **Settings.** From 0.26.0, Settings… (⌘, while the menu is open) opens a Settings window. Pick a context, or Add… a new
 one (1 to 64 characters from `A-Z a-z 0-9 . _ -`), set its server and token, switch the types this worker runs (the
@@ -321,7 +335,7 @@ write that may run next to another: it re-reads the file under the lock and save
 `set_server_and_token` keeps the context's headers and leaves `current-context` alone; `set_context` replaces the whole
 context and makes it current when none is.
 
-- On macOS 14.0 to 14.3 the running turn's details go in its title.
+- On macOS 14.0 to 14.3 each row's second line joins its title.
 - For a distributed `.app`, build the binary with the intended `MACOSX_DEPLOYMENT_TARGET`, put it in `Contents/MacOS`,
   give `Contents/Info.plist` its executable and bundle metadata, and set `LSUIElement` to true for a menu bar agent;
   the app uses the accessory policy, so it has no Dock icon. Signing and notarizing belong to your build.
