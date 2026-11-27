@@ -1258,6 +1258,7 @@ impl Target {
             Some(RowKey::Outline(id)) => items.get(id).cloned(),
             _ => None,
         };
+        let more = list.more && !matches!(list.paging, Paging::Failed(_));
         c.items.replace(items);
         c.list_shown.replace(list);
         c.syncing.set(true);
@@ -1290,7 +1291,7 @@ impl Target {
             let row = anchor_item
                 .as_ref()
                 .and_then(|item| usize::try_from(unsafe { table.rowForItem(Some(item.as_ref())) }).ok());
-            anchor.restore(table, row);
+            self.restore_position(Section::Actors, table, anchor, row, more);
         }
         c.syncing.set(false);
         self.check_more();
@@ -1410,8 +1411,9 @@ impl Target {
             Some(RowKey::Message(id)) => list.index(id),
             _ => None,
         };
+        let more = list.more && !matches!(list.paging, Paging::Failed(_));
         c.messages_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::Messages, table, selected, anchor, row, more);
         self.check_more_messages();
     }
 
@@ -1459,8 +1461,9 @@ impl Target {
             Some(RowKey::Turn(id)) => list.index(id),
             _ => None,
         };
+        let more = list.more && !matches!(list.paging, Paging::Failed(_));
         c.turns_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::RunningTurns, table, selected, anchor, row, more);
         self.check_more_turns();
     }
 
@@ -1511,7 +1514,7 @@ impl Target {
             _ => None,
         };
         c.nodes_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::Nodes, table, selected, anchor, row, false);
     }
 
     /// Shows the selected node and its turns.
@@ -1548,8 +1551,9 @@ impl Target {
             Some(RowKey::Message(id)) => list.index(id),
             _ => None,
         };
+        let more = list.more && !matches!(list.paging, Paging::Failed(_));
         c.outcomes_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::Outcomes, table, selected, anchor, row, more);
         self.check_more_outcomes();
     }
 
@@ -1644,7 +1648,7 @@ impl Target {
             _ => None,
         };
         c.types_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::Types, table, selected, anchor, row, false);
     }
 
     /// Reloads the Watches table and restores selection by target and watcher.
@@ -1667,8 +1671,9 @@ impl Target {
             Some(RowKey::Watch(id)) => list.index(id),
             _ => None,
         };
+        let more = list.more && !matches!(list.paging, Paging::Failed(_));
         c.watches_shown.replace(list);
-        self.reload_table(table, selected, anchor, row);
+        self.reload_table(Section::Watches, table, selected, anchor, row, more);
         self.check_more_watches();
     }
 
@@ -1680,7 +1685,8 @@ impl Target {
         key: impl FnOnce(usize) -> Option<RowKey>,
     ) -> Option<scroll::Position<RowKey>> {
         let saved = self.ivars().scroll.borrow_mut().remove(&section);
-        let anchor = saved.or_else(|| scroll::Position::capture(table, key));
+        let anchor =
+            saved.filter(|anchor| anchor.still_waiting(table)).or_else(|| scroll::Position::capture(table, key));
         if loading {
             if let Some(anchor) = anchor {
                 self.ivars().scroll.borrow_mut().insert(section, anchor);
@@ -1693,10 +1699,12 @@ impl Target {
 
     fn reload_table(
         &self,
+        section: Section,
         table: &NSTableView,
         selected: Option<usize>,
         anchor: Option<scroll::Position<RowKey>>,
         row: Option<usize>,
+        more: bool,
     ) {
         let c = self.ivars();
         c.syncing.set(true);
@@ -1704,7 +1712,21 @@ impl Target {
         c.syncing.set(false);
         self.select_row(table, selected);
         if let Some(anchor) = anchor {
-            anchor.restore(table, row);
+            self.restore_position(section, table, anchor, row, more);
+        }
+    }
+
+    /// Keeps the saved offset while a hard refresh is still paging back to the visible row.
+    fn restore_position(
+        &self,
+        section: Section,
+        table: &NSTableView,
+        mut anchor: scroll::Position<RowKey>,
+        row: Option<usize>,
+        more: bool,
+    ) {
+        if anchor.restore(table, row) && more {
+            self.ivars().scroll.borrow_mut().insert(section, anchor);
         }
     }
 

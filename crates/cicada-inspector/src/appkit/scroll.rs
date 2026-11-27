@@ -8,6 +8,7 @@ pub(super) struct Position<K> {
     pub(super) key: Option<K>,
     offset: NSPoint,
     inset: f64,
+    clamped_at: Option<f64>,
 }
 
 impl<K> Position<K> {
@@ -22,12 +23,21 @@ impl<K> Position<K> {
         } else {
             (None, 0.0)
         };
-        Some(Self { key, offset: scroll.contentView().bounds().origin, inset })
+        Some(Self { key, offset: scroll.contentView().bounds().origin, inset, clamped_at: None })
     }
 
-    /// Restores the row if it survived, or the previous offset within the new scrollable area.
-    pub(super) fn restore(&self, table: &NSTableView, row: Option<usize>) {
-        let Some(scroll) = table.enclosingScrollView() else { return };
+    /// A user scroll after clamping takes precedence over the position saved for a later page.
+    pub(super) fn still_waiting(&self, table: &NSTableView) -> bool {
+        self.clamped_at.is_none_or(|y| {
+            table.enclosingScrollView().is_some_and(|scroll| (scroll.contentView().bounds().origin.y - y).abs() < 1.0)
+        })
+    }
+
+    /// Restores the row or the previous offset. Returns true if a later page may let the view reach that offset.
+    pub(super) fn restore(&mut self, table: &NSTableView, row: Option<usize>) -> bool {
+        let Some(scroll) = table.enclosingScrollView() else { return false };
+        // AppKit can defer the new document size until layout after reloadData.
+        scroll.layoutSubtreeIfNeeded();
         let clip = scroll.contentView();
         let mut bounds = clip.bounds();
         bounds.origin = self.offset;
@@ -38,5 +48,8 @@ impl<K> Position<K> {
         let bounds = clip.constrainBoundsRect(bounds);
         clip.scrollToPoint(bounds.origin);
         scroll.reflectScrolledClipView(&clip);
+        let y = clip.bounds().origin.y;
+        self.clamped_at = (row.is_none() && y + 1.0 < self.offset.y).then_some(y);
+        self.clamped_at.is_some()
     }
 }
