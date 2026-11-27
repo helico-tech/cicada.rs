@@ -14,8 +14,8 @@ page Inspector, "Actors".
 - Selecting an actor fills the inspector pane: its state as highlighted JSON, its running turn (message, attempt,
   time, node), its parent, created, pinned node and paused flag, and tabs for its mailbox (`/mailbox`) and its watches
   (`/watches`).
-- Messages (the pending messages under a prefix, `/messages`), Types (`/types` with their schemas) and Watches get
-  their tables with the same pane.
+- Messages, Types and Watches moved to the next change, `inspector-tables` (design, 2026-11-27: all four did not fit
+  five tasks).
 - A toolbar button shows and hides the pane.
 - Everything is read only. The buttons for actions are absent until `inspector-actions`.
 
@@ -26,7 +26,7 @@ page Inspector, "Actors".
 
 ## Order
 
-After `inspector-in-tray`, before `inspector-outcomes`.
+After `inspector-in-tray`, before `inspector-tables`.
 
 ## Impact
 

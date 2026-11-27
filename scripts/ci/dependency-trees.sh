@@ -47,6 +47,11 @@ for crate in cicada cicada-test cicada-axum cicada-client cicada-otel cicada-act
     done
 done
 
+cargo tree -p cicada-tray --target all --prefix none > "$trees/tray.txt"
+cargo tree -p cicada-tray --target all --prefix none --features inspector > "$trees/tray-inspector.txt"
+if grep -q '^cicada-inspector v' "$trees/tray.txt"; then echo "cicada-tray by default builds cicada-inspector"; exit 1; fi
+grep -q '^cicada-inspector v' "$trees/tray-inspector.txt" || { echo "inspector does not build cicada-inspector"; exit 1; }
+
 cargo tree -p cicada-containers -e normal --target all > "$trees/containers.txt"
 cargo tree -p cicada-containers -e normal --target all --features docker > "$trees/containers-docker.txt"
 grep -q 'bollard v' "$trees/containers-docker.txt" || { echo "docker does not build bollard"; exit 1; }

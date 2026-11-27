@@ -17,8 +17,9 @@ context in `tray.toml` next to the config file.
 `cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
 reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
-health, the nodes, the running turns and the types with their actor counts, for a context of `cicada config`;
-`cicada_app::context_client` makes the client for it.
+health, the nodes, the running turns and the types with their actor counts, for a context of `cicada config`.
+`cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
+its menu.
 
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
@@ -29,8 +30,8 @@ directly or use `..` in matches.
 
 ### Added
 
-- `cicada-inspector`: a new crate, a native macOS inspector over the HTTP API (ADR 0076, which supersedes in part ADR
-  0011 for a native macOS console only; no library crate depends on it). `Inspector::new().run()` owns the main
+- `cicada-inspector`: a new crate, a native macOS inspector over the HTTP API. ADR 0076 allows the tray's optional
+  dependency and supersedes ADR 0011 in part for a native macOS console. `Inspector::new().run()` owns the main
   thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
   elsewhere, or before macOS 14, it prints an error and returns exit code 1. The window has a sidebar (Overview;
   Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, which say "Coming soon" for now), a
@@ -41,6 +42,13 @@ directly or use `..` in matches.
   the 50 or the deadline shows as not counted, and a count still queued at the deadline never starts. A refresh
   superseded by another or by a context switch is cancelled, also while in flight, and its result discarded.
   Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual check list.
+- `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
+  on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
+  window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
+  the tray exits.
+- `cicada-inspector`: `Embedded::new(mtm, env, handle)` opens an inspector in a host's AppKit application with
+  `show(context)`. The host supplies its environment and Tokio runtime handle. `close()` and dropping the controller
+  close the window and request cancellation of its refresh. Reopening starts a fresh session.
 - `cicada-app`: `context_client(&Env, Option<&str>)`, a client for a context of the config file resolved as the
   operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
   the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL

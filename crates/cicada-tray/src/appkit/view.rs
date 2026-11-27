@@ -13,7 +13,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
-use crate::menu::{Choice, Header, MenuModel, RecentRow, RunningRow, running_row_text};
+use crate::menu::{Choice, Header, InspectorItem, MenuModel, RecentRow, RunningRow, running_row_text};
 
 pub(super) struct MenuView {
     pub root: Retained<NSMenu>,
@@ -26,6 +26,7 @@ pub(super) struct MenuView {
     recent: Retained<NSMenu>,
     recent_item: Retained<NSMenuItem>,
     settings: Retained<NSMenuItem>,
+    inspector: Option<Retained<NSMenuItem>>,
     quit: Retained<NSMenuItem>,
     subtitles: bool,
     running_rows: RefCell<Rows<RunningRow>>,
@@ -68,6 +69,9 @@ impl MenuView {
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
         let (recent, recent_item) = submenu(mtm, ns_string!("Recent Turns"));
         let settings = item(mtm, ns_string!("Settings…"), Some(sel!(traySettings:)), ns_string!(","));
+        let inspector = InspectorItem::entry(false).map(|entry| {
+            item(mtm, &NSString::from_str(entry.title), Some(sel!(trayOpenInspector:)), &NSString::from_str(entry.key))
+        });
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
         for row in [
             &header.item,
@@ -81,10 +85,13 @@ impl MenuView {
             &recent_item,
             &NSMenuItem::separatorItem(mtm),
             &settings,
-            &quit,
         ] {
             root.addItem(row);
         }
+        if let Some(inspector) = &inspector {
+            root.addItem(inspector);
+        }
+        root.addItem(&quit);
         status.setMenu(Some(&root));
         let view = Self {
             root,
@@ -97,6 +104,7 @@ impl MenuView {
             recent,
             recent_item,
             settings,
+            inspector,
             quit,
             // objc2 exposes these selectors without version attributes. The SDK declares section headers and badges
             // in 14.0, and subtitles in 14.4. The caller already checked for 14.0.
@@ -120,6 +128,9 @@ impl MenuView {
             self.header.item.setTarget(Some(target));
             self.stop_now.setTarget(Some(target));
             self.settings.setTarget(Some(target));
+            if let Some(inspector) = &self.inspector {
+                inspector.setTarget(Some(target));
+            }
             self.quit.setTarget(Some(target));
         }
     }
@@ -127,6 +138,9 @@ impl MenuView {
     pub fn render(&self, target: &Target, model: MenuModel) {
         let mtm = target.mtm();
         self.header.update(model.header);
+        if let (Some(item), Some(entry)) = (&self.inspector, model.inspector) {
+            item.setEnabled(entry.enabled);
+        }
         if self.stop_now.isHidden() == model.stop_now {
             self.stop_now.setHidden(!model.stop_now);
         }

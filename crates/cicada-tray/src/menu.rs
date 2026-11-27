@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::process::ExitCode;
 
 use cicada::store::TurnOutcome;
@@ -33,6 +34,31 @@ pub(crate) struct MenuModel {
     pub registered_types: Vec<Choice<&'static str>>,
     pub recent: Vec<RecentRow>,
     pub failures: usize,
+    pub inspector: Option<InspectorItem>,
+}
+
+/// The inspector menu item, when the feature is built in.
+#[derive(PartialEq, Eq)]
+pub(crate) struct InspectorItem {
+    pub title: &'static str,
+    pub key: &'static str,
+    pub enabled: bool,
+}
+
+impl InspectorItem {
+    /// Creates the item in feature-enabled builds. A quit in progress disables it.
+    pub fn entry(quitting: bool) -> Option<Self> {
+        cfg!(feature = "inspector").then_some(Self { title: "Open Inspector…", key: "i", enabled: !quitting })
+    }
+
+    /// Opens on the connected context, or lets the inspector resolve its own target when offline.
+    #[cfg(all(feature = "inspector", any(target_os = "macos", test)))]
+    pub fn show(control: &RefCell<MenuControl>, state: &TrayState, show: impl FnOnce(Option<&str>)) {
+        let enabled = !control.borrow().quitting();
+        if enabled {
+            show(state.connection());
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -155,6 +181,7 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
             .collect(),
         recent,
         failures,
+        inspector: InspectorItem::entry(input.quitting),
     }
 }
 
@@ -170,6 +197,27 @@ pub(crate) enum Action {
 pub(crate) enum Terminate {
     Now,
     Later(Option<Action>),
+}
+
+/// How the tray is asked to quit.
+#[derive(Clone, Copy)]
+pub(crate) enum QuitRequest {
+    /// The Quit item or Ctrl-C.
+    Local,
+    /// AppKit, including system logout.
+    System,
+}
+
+impl QuitRequest {
+    /// Marks the tray as quitting and closes its inspector before dispatching the decision.
+    pub fn begin(self, control: &RefCell<MenuControl>, state: &TrayState, close_inspector: impl FnOnce()) -> Terminate {
+        let decision = match self {
+            Self::Local => Terminate::Later(control.borrow_mut().quit(state)),
+            Self::System => control.borrow_mut().terminate(state),
+        };
+        close_inspector();
+        decision
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -257,6 +305,7 @@ impl MenuControl {
             return Terminate::Later(None);
         }
         if state.connection().is_none() {
+            self.begin_quit(state, Quit::Finishing);
             return Terminate::Now;
         }
         Terminate::Later(self.begin_quit(state, Quit::System))
@@ -300,7 +349,7 @@ mod tests {
     use super::*;
 
     fn model(state: &TrayState, now: Instant, turns: &TurnSnapshot, current: Option<&str>) -> MenuModel {
-        model_of(state, true, now, turns, current)
+        model_of(state, true, now, turns, current, false)
     }
 
     fn model_of(
@@ -309,6 +358,7 @@ mod tests {
         now: Instant,
         turns: &TurnSnapshot,
         current: Option<&str>,
+        quitting: bool,
     ) -> MenuModel {
         menu(&MenuInput {
             title: "Test Worker",
@@ -321,7 +371,7 @@ mod tests {
             current,
             now: from_micros(4_000_000),
             monotonic_now: now,
-            quitting: false,
+            quitting,
         })
     }
 
@@ -335,6 +385,40 @@ mod tests {
 
     fn stopping(until: Instant) -> TrayState {
         TrayState::Stopping { context: "prod".into(), until }
+    }
+
+    #[test]
+    fn open_inspector_is_feature_gated_and_disabled_during_quit() {
+        for quitting in [false, true] {
+            let menu = model_of(&TrayState::Offline, false, Instant::now(), &TurnSnapshot::default(), None, quitting);
+            if cfg!(feature = "inspector") {
+                let item = menu.inspector.expect("the feature adds the inspector item");
+                assert_eq!((item.title, item.key, item.enabled), ("Open Inspector…", "i", !quitting));
+            } else {
+                assert!(menu.inspector.is_none());
+            }
+        }
+    }
+
+    #[cfg(feature = "inspector")]
+    #[test]
+    fn the_inspector_uses_a_connection_in_any_phase_and_resolves_its_own_target_otherwise() {
+        let control = RefCell::new(MenuControl::default());
+        for (state, expected) in [
+            (TrayState::Offline, None),
+            (failed(), None),
+            (TrayState::Connecting { context: "starting".into() }, Some("starting")),
+            (online(), Some("prod")),
+            (stopping(Instant::now()), Some("prod")),
+        ] {
+            let mut opened = false;
+            InspectorItem::show(&control, &state, |context| {
+                assert!(control.try_borrow_mut().is_ok(), "the host can reenter while opening");
+                assert_eq!(context, expected);
+                opened = true;
+            });
+            assert!(opened, "{state:?}");
+        }
     }
 
     #[test]
@@ -367,7 +451,7 @@ mod tests {
         }
         let state = stopping(now + Duration::from_secs(3));
         assert!(model(&state, now, &turns, Some("prod")).stop_now);
-        assert!(!model_of(&state, false, now, &turns, Some("prod")).stop_now, "never ready");
+        assert!(!model_of(&state, false, now, &turns, Some("prod"), false).stop_now, "never ready");
     }
 
     #[test]
@@ -495,12 +579,34 @@ mod tests {
     #[test]
     fn system_termination_defers_until_the_connection_ends() {
         let mut control = MenuControl::default();
-        assert_eq!(control.terminate(&TrayState::Offline), Terminate::Now);
-        assert_eq!(control.terminate(&failed()), Terminate::Now);
         assert_eq!(control.terminate(&online()), Terminate::Later(Some(Action::Disconnect)));
         assert_eq!(control.terminate(&online()), Terminate::Later(None));
         assert_eq!(control.tick(&stopping(Instant::now())), None);
         assert_eq!(control.tick(&TrayState::Offline), Some(Action::ReplyToTerminate));
+    }
+
+    #[test]
+    fn every_quit_request_closes_the_inspector_before_letting_the_host_act() {
+        for (request, state, expected) in [
+            (QuitRequest::Local, online(), Terminate::Later(Some(Action::Disconnect))),
+            (QuitRequest::Local, TrayState::Offline, Terminate::Later(None)),
+            (QuitRequest::System, online(), Terminate::Later(Some(Action::Disconnect))),
+            (QuitRequest::System, stopping(Instant::now()), Terminate::Later(None)),
+            (QuitRequest::System, TrayState::Offline, Terminate::Now),
+            (QuitRequest::System, failed(), Terminate::Now),
+        ] {
+            let control = RefCell::new(MenuControl::default());
+            let mut inspector_open = true;
+            let decision = request.begin(&control, &state, || {
+                assert!(control.try_borrow_mut().is_ok(), "the host can reenter while closing");
+                assert!(control.borrow().quitting(), "quitting is set before close");
+                #[cfg(feature = "inspector")]
+                InspectorItem::show(&control, &state, |_| panic!("a reentrant show must be blocked"));
+                inspector_open = false;
+            });
+            assert!(!inspector_open);
+            assert_eq!(decision, expected);
+        }
     }
 
     #[test]

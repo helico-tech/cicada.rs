@@ -1,0 +1,10 @@
+Verdict: not yet
+
+- **Quit (§4).** Quit and Ctrl-C use `begin_quit`. AppKit can terminate immediately or defer and later reply. Mark quitting before closing at both entry points, block reopening, and preserve worker drain. Cover immediate and deferred system termination. System termination can bypass Rust `Drop`. [AppKit termination](https://developer.apple.com/documentation/appkit/nsapplication/terminate%28_%3A%29)
+- **Lifecycle (§1).** Pass `runtime.handle().clone()` from tray startup and spawn through it. Use idempotent, window-specific teardown for user close, explicit close and Drop. Invalidate the retaining timer and release mutable borrows before calling AppKit. Keep app exit in standalone. Fence stale results on reopen. Abort only requests cancellation. If quit promises completed cancellation, await the handles asynchronously before stopping or answering AppKit. [Tokio cancellation](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html#method.abort)
+- **Shortcuts (§§2–3).** Follow Settings’ activation and `makeKeyAndOrderFront`. Specify whether ⌘I is scoped to the open status menu. Route ⌘W and ⌘R through the key inspector exactly once, including toolbar overflow. Verify focus and Settings editing with both windows open. [AppKit key dispatch](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingKeyEvents/HandlingKeyEvents.html)
+- **Context (§3).** Use `TrayState::connection()` to define “connected,” including Connecting and Stopping. With `None`, the shared resolver can still use `CICADA_CONTEXT` or `CICADA_SERVER`, so define when “no context” actually appears.
+
+Five tasks fit if grouped by shared lifecycle, tray integration, shortcuts, gates, and handoff. Run feature-on tests alongside feature check/clippy on macOS. Check that ADR 0076’s edge appears only with the feature. Exercise close/reopen with an in-flight refresh.
+
+Strict OpenSpec validation passed. Standalone window code was unavailable. Builds and GUI checks were not run.
