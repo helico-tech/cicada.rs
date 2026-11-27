@@ -17,7 +17,8 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
   `reloadData` replaced it, re-open via `expandItem` under the guard, `render_list` re-selecting by path and
   `wants_more` counting root rows, keyboard folding; every `unsafe` with its reason (decisions 1 and 5). Verify:
   `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below,
-  each item noted as done or not done in the report.
+  each item noted as done or not done in the report. An uncommitted script drove the window by code; nothing was seen
+  on screen. The owner runs the list before 0.26.0 is released.
 - [x] 4. **Changelog and docs handoff.** The 0.26.0 section names the folding; `docs-handoff.md` carries the design's
   Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples
   --test docs` and `--doc`.
