@@ -45,10 +45,6 @@ pub(super) fn render(document: &FlippedView, scroll: &NSScrollView, section: Sec
     let mut layout = Layout { document, mtm: document.mtm(), y: MARGIN, width: size.width.max(480.0) };
     if section == Section::Overview {
         overview(&mut layout, view);
-    } else if !section.ready() {
-        layout.y = (size.height / 2.0 - 40.0).max(MARGIN);
-        layout.centered("Coming soon", 20.0, true);
-        layout.centered(&format!("{} comes in a later version of the inspector.", section.title()), 13.0, false);
     }
     document.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(layout.width, (layout.y + MARGIN).max(size.height))));
 }
@@ -251,14 +247,6 @@ impl<'a> Layout<'a> {
         button.setToolTip(Some(&label));
         button.setAccessibilityLabel(Some(&label));
         button
-    }
-
-    fn centered(&mut self, text: &str, size: f64, bold: bool) {
-        let font = if bold { NSFont::boldSystemFontOfSize(size) } else { NSFont::systemFontOfSize(size) };
-        let label = label(self.mtm, text, font, if bold { Style::Plain } else { Style::Secondary });
-        label.setAlignment(NSTextAlignment::Center);
-        self.add(&label, MARGIN, self.inner(), size + 10.0);
-        self.y += size + 14.0;
     }
 
     /// A line with a text on the left and a count on the right; `tip` explains the count.

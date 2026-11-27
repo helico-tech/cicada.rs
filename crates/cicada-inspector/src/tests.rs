@@ -6,7 +6,9 @@
 mod actors;
 mod json;
 mod messages;
+mod nodes;
 mod outcomes;
+mod turns;
 mod types;
 mod watches;
 
@@ -591,9 +593,6 @@ fn a_failed_stats_shows_its_error_on_the_tiles() {
     assert_eq!(error, "cannot connect: connection refused");
     let tiles = tiles(&Part::Failed(error.clone()), chrono::Utc::now());
     assert!(tiles.iter().all(|tile| tile.error && tile.value == "—" && tile.note == error));
-    let ready: Vec<_> = Section::BROWSE.into_iter().filter(|section| section.ready()).collect();
-    assert_eq!(ready, [Section::Actors, Section::Messages, Section::Outcomes, Section::Types, Section::Watches]);
-    assert!(Section::Overview.ready());
     assert_eq!(crate::model::check_macos((13, 6, 0)), Err(crate::model::NEEDS_MACOS));
     assert_eq!(crate::model::check_macos((14, 0, 0)), Ok(()));
 }

@@ -18,11 +18,15 @@
 //! Outcomes lists the finished messages under the prefix by status (Failed by default, Cancelled, Done or All), 100
 //! at a time, each once, and the sidebar shows the store's failed count; the pane shows the selected outcome's error,
 //! attempts, retry policy, envelope and payload, the message recorded as its cause and those that record it as theirs,
-//! each a link recorded in back and forward. Types lists registered contracts and displays one schema at a time.
-//! Watches lists the stored watches, with a filter over the loaded rows and Show Actor for the watcher and any
-//! single-actor target.
-//! The other items say "Coming soon". The server comes from the contexts of `cicada config`, resolved as `cicada`
-//! resolves them. Refresh is by hand.
+//! each a link recorded in back and forward. Running Turns lists the turns running under the prefix, 100 at a time,
+//! with their actor, message, node, lease end and a cancel request; the pane shows the selected turn with Show Actor,
+//! and back to it reads the actor's turn again, marking one that ended "no longer running". Nodes lists every node
+//! with its status and last heartbeat as the server gave them, read on the first visit, on the page's Refresh and
+//! after a context switch, and filtered by id prefix; the pane reads the selected node with its running turns, each
+//! with Show Actor. Types lists registered contracts and displays one schema at a time. Watches lists the stored
+//! watches, with a filter over the loaded rows and Show Actor for the watcher and any single-actor target. Every page
+//! is read only. The server comes from the contexts of `cicada config`, resolved as `cicada` resolves them. Refresh is
+//! by hand.
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod actors;
@@ -37,11 +41,15 @@ mod messages;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod model;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod nodes;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod outcomes;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod pager;
 #[cfg(test)]
 mod tests;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod turns;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod types;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

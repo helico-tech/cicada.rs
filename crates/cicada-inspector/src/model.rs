@@ -19,7 +19,9 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::actors::Actors;
 use crate::messages::Messages;
+use crate::nodes::{NodePlace, Nodes};
 use crate::outcomes::{OutcomePlace, Outcomes};
+use crate::turns::{RunningTurns, TurnPlace};
 use crate::types::Types;
 use crate::watches::{WatchPlace, Watches};
 
@@ -274,7 +276,9 @@ pub struct Session {
     shared: Arc<Shared>,
     actors: Actors,
     messages: Messages,
+    turns: RunningTurns,
     outcomes: Outcomes,
+    nodes: Nodes,
     types: Types,
     watches: Watches,
 }
@@ -301,10 +305,12 @@ impl Session {
         let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
         let actors = Actors::new(handle.clone(), limits);
         let messages = Messages::new(handle.clone(), limits);
+        let turns = RunningTurns::new(handle.clone(), limits);
         let outcomes = Outcomes::new(handle.clone(), limits);
+        let nodes = Nodes::new(handle.clone(), limits);
         let types = Types::new(handle.clone(), limits);
         let watches = Watches::new(handle.clone(), limits);
-        Self { env, limits, handle, shared, actors, messages, outcomes, types, watches }
+        Self { env, limits, handle, shared, actors, messages, turns, outcomes, nodes, types, watches }
     }
 
     /// The Actors page's reads, on the client of the context in use.
@@ -317,9 +323,19 @@ impl Session {
         &self.messages
     }
 
+    /// The Running Turns page's reads, on the client of the context in use.
+    pub fn turns(&self) -> &RunningTurns {
+        &self.turns
+    }
+
     /// The Outcomes page and the sidebar's failed count, on the client of the context in use.
     pub fn outcomes(&self) -> &Outcomes {
         &self.outcomes
+    }
+
+    /// The Nodes page's cache and pane, on the client of the context in use; the Overview's refresh leaves it alone.
+    pub fn nodes(&self) -> &Nodes {
+        &self.nodes
     }
 
     /// The Types page on the client of the context in use.
@@ -370,7 +386,9 @@ impl Session {
             });
             self.actors.use_client(current.client.clone());
             self.messages.use_client(current.client.clone());
+            self.turns.use_client(current.client.clone());
             self.outcomes.use_client(current.client.clone());
+            self.nodes.use_client(current.client.clone());
             self.types.use_client(current.client.clone());
             self.watches.use_client(current.client.clone());
         }
@@ -419,14 +437,16 @@ impl Session {
         navigation.forget();
     }
 
-    /// Applies `change` to the history, remembering the Messages, Outcomes or Watches place left and restoring the
-    /// place reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
+    /// Applies `change` to the history, remembering the Messages, Running Turns, Outcomes, Nodes or Watches place left
+    /// and restoring the place reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
     /// Returns what `change` returned.
     pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
         let left = navigation.current();
         let recorded = navigation.place().clone();
         match left {
             Section::Messages => navigation.current.messages = Some(self.messages.source()),
+            Section::RunningTurns => navigation.current.turns = Some(self.turns.source()),
+            Section::Nodes => navigation.current.nodes = Some(self.nodes.source()),
             // What the pane shows is kept; but a link place whose pane a status switch or a context switch emptied
             // keeps its message, read fresh on every return.
             Section::Outcomes => {
@@ -459,6 +479,12 @@ impl Session {
         if let Some(outcome) = &place.outcomes {
             self.outcomes.restore(outcome.clone());
         }
+        if let Some(turn) = &place.turns {
+            self.turns.restore(turn.clone());
+        }
+        if let Some(node) = &place.nodes {
+            self.nodes.restore(node.clone());
+        }
         true
     }
 
@@ -484,7 +510,9 @@ impl Session {
         self.shared.current.lock().expect("inspector session").supersede();
         self.actors.stop();
         self.messages.stop();
+        self.turns.stop();
         self.outcomes.stop();
+        self.nodes.stop();
         self.types.stop();
         self.watches.stop();
         self.shared.view.send_modify(|view| view.refreshing = false);
@@ -520,11 +548,11 @@ pub enum Section {
     Actors,
     /// Pending messages (`inspector-messages`).
     Messages,
-    /// Running turns.
+    /// Running turns (`inspector-nodes`).
     RunningTurns,
     /// Finished messages (`inspector-outcomes`).
     Outcomes,
-    /// Nodes.
+    /// Nodes (`inspector-nodes`).
     Nodes,
     /// Types.
     Types,
@@ -550,15 +578,10 @@ impl Section {
             Self::Watches => "Watches",
         }
     }
-
-    /// True for an item with a page; the others say "Coming soon" until their change lands.
-    pub fn ready(self) -> bool {
-        matches!(self, Self::Overview | Self::Actors | Self::Messages | Self::Outcomes | Self::Types | Self::Watches)
-    }
 }
 
-/// A place in the history: a sidebar item, with a Show Actor destination, a Messages or Watches selection, or what
-/// the Outcomes pane showed.
+/// A place in the history: a sidebar item, with a Show Actor destination, a Messages, Running Turns, Nodes or Watches
+/// selection, or what the Outcomes pane showed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Place {
     /// The item shown.
@@ -571,6 +594,10 @@ pub struct Place {
     pub watches: Option<WatchPlace>,
     /// What the Outcomes pane showed when this place was left, or the message a link of the cause chain reads.
     pub outcomes: Option<OutcomePlace>,
+    /// The Running Turns page's prefix and the turn its pane showed, as read, when this place was left.
+    pub turns: Option<TurnPlace>,
+    /// The Nodes page's filter and selected node when this place was left.
+    pub nodes: Option<NodePlace>,
 }
 
 /// The sidebar's selection with a back and forward history, as in a browser.
