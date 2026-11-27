@@ -40,3 +40,7 @@ None.
 
 The HTTP guide and operations edits above are proposed for the docs session. The docs link and guarantee checks
 passed (11 tests), and the example doctests passed (51 tests).
+
+The core suite with PostgreSQL, the HTTP, client and app suites, and both generated reference checks passed.
+The PostgreSQL-enabled workspace suite reported 3,853 passed and zero failed. Formatting, Clippy and strict OpenSpec
+validation passed.
