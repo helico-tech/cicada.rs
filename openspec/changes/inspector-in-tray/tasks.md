@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-window` (same 
 first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design reviews are
 `.reviews/inspector-in-tray.design.*`. No ADR (ADR 0076 already allows the edge).
 
-- [ ] 1. **The shared teardown and `Embedded`.** One teardown for the embedded and standalone window (timer, generation,
+- [x] 1. **The shared teardown and `Embedded`.** One teardown for the embedded and standalone window (timer, generation,
   aborted refreshes on the given handle); `Embedded::new`, `show`, `close` and its drop; the lifecycle as a plain state
   machine (decision 1). Verify: the lifecycle tests; `cargo test -p cicada-inspector`.
 - [ ] 2. **Focus and keys.** `show` activates and makes the window key and front; ⌘R, ⌘W, ⌘[ and ⌘] through the

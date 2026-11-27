@@ -360,6 +360,69 @@ fn config(dir: &tempfile::TempDir, contexts: &[(&str, &str)]) -> Env {
     Env::from([("CICADA_CONFIG".to_owned(), file.to_str().unwrap().to_owned())])
 }
 
+#[tokio::test]
+async fn a_window_keeps_its_context_until_close_and_reopens_with_a_fresh_session() {
+    use std::rc::Rc;
+
+    use crate::lifecycle::WindowSlot;
+
+    let slow_actors = actors().await;
+    slow_actors.create(&Counter { id: "old".into() }, &json!({})).await;
+    let fast_actors = actors().await;
+    let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let stall = Fake::Wait { arrived: arrived.clone(), release: release.clone() };
+    let slow = serve(&slow_actors, Arc::new(move |t| (t == "/stats").then(|| stall.clone())), Duration::ZERO).await;
+    let fast = serve(&fast_actors, no_rule(), Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = config(&dir, &[("prod", &fast.url), ("staging", &slow.url)]);
+    let windows = WindowSlot::default();
+    let make = |context: &str| {
+        let session = Rc::new(Session::new(env.clone(), tokio::runtime::Handle::current(), Limits::DEFAULT));
+        session.use_context(Some(context.into()));
+        session
+    };
+
+    assert!(windows.take().is_none());
+    let first = windows.show(|| make("prod"));
+    // The operator picks staging in the inspector; a tray reopen on prod must leave staging in use.
+    first.use_context(Some("staging".into()));
+    timeout(Duration::from_secs(10), arrived.notified()).await.expect("staging refresh in flight");
+    assert!(Rc::ptr_eq(&first, &windows.show(|| make("prod"))));
+    let mut old_view = first.view();
+    assert_eq!(old_view.borrow().context.as_deref(), Some("staging"));
+
+    first.stop();
+    windows.closed(|window| Rc::ptr_eq(window, &first));
+    old_view.borrow_and_update();
+    let second = windows.show(|| make("prod"));
+    assert!(!Rc::ptr_eq(&first, &second));
+    windows.closed(|window| Rc::ptr_eq(window, &first));
+    assert!(Rc::ptr_eq(&second, &windows.show(|| make("staging"))));
+    let mut view = second.view();
+    let done = timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some()))
+        .await
+        .expect("reopened window refreshed")
+        .unwrap();
+    assert_eq!(done.context.as_deref(), Some("prod"));
+    assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
+
+    release.notify_waiters();
+    let superseded = first.take_superseded();
+    assert_eq!(superseded.len(), 2, "the switch and the close each cancelled a refresh");
+    for task in superseded {
+        let ended = timeout(Duration::from_secs(10), task).await.expect("the old refresh ends");
+        assert!(ended.as_ref().is_err_and(|error| error.is_cancelled()) || ended.is_ok(), "{ended:?}");
+    }
+    assert!(!old_view.has_changed().unwrap(), "the closed window publishes no more results");
+    assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
+    drop(done);
+
+    let on_quit = windows.take().expect("the reopened window is still held");
+    assert!(Rc::ptr_eq(&second, &on_quit));
+    on_quit.stop();
+    assert!(windows.take().is_none());
+}
+
 /// A refresh of one context that is still in flight when the user switches to another is dropped: its `/stats` is
 /// stalled at the server when the switch happens, and after it is released only the new context's Overview shows.
 #[tokio::test]

@@ -13,12 +13,17 @@
 
 #[cfg(target_os = "macos")]
 mod appkit;
+#[cfg(any(target_os = "macos", test))]
+mod lifecycle;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod model;
 #[cfg(test)]
 mod tests;
 
 use std::process::ExitCode;
+
+#[cfg(target_os = "macos")]
+pub use appkit::Embedded;
 
 /// The inspector window as an app of its own: [`Self::run`] owns the main thread until the window closes.
 #[derive(Debug, Default)]

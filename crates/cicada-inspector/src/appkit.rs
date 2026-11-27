@@ -5,12 +5,13 @@ mod content;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::process::ExitCode;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use cicada_app::Env;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
     NSAutoresizingMaskOptions, NSBackingStoreType, NSControl, NSControlStateValueOn, NSControlTextEditingDelegate,
@@ -25,8 +26,9 @@ use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, ns_string,
 };
-use tokio::sync::watch;
+use tokio::{runtime::Handle, sync::watch};
 
+use crate::lifecycle::WindowSlot;
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
 use content::FlippedView;
 
@@ -52,6 +54,50 @@ const BACK: &str = "inspector.back";
 const FORWARD: &str = "inspector.forward";
 const CONTEXT: &str = "inspector.context";
 const REFRESH: &str = "inspector.refresh";
+
+/// A main-thread inspector in an existing macOS 14 or later AppKit application.
+///
+/// The host owns the application and Tokio runtime. Keep the controller alive for as long as the window may be open.
+pub struct Embedded {
+    mtm: MainThreadMarker,
+    env: Env,
+    handle: Handle,
+    windows: Rc<Windows>,
+}
+
+type Windows = WindowSlot<Retained<Target>>;
+
+impl Embedded {
+    /// Uses the host's main thread, environment and Tokio runtime.
+    pub fn new(mtm: MainThreadMarker, env: Env, handle: Handle) -> Self {
+        Self { mtm, env, handle, windows: Rc::default() }
+    }
+
+    /// Opens the inspector on `context` or resolves the target as `cicada` does when it is `None`.
+    /// If already open, brings the window forward and keeps its current context.
+    pub fn show(&self, context: Option<&str>) {
+        let target = self.windows.show(|| {
+            let session = Session::new(self.env.clone(), self.handle.clone(), Limits::DEFAULT);
+            let target = Target::new(self.mtm, session, Some(Rc::downgrade(&self.windows)));
+            target.start(context);
+            target
+        });
+        target.show();
+    }
+
+    /// Closes the window and requests cancellation of any refresh. A later show starts a fresh session.
+    pub fn close(&self) {
+        if let Some(target) = self.windows.take() {
+            target.close();
+        }
+    }
+}
+
+impl Drop for Embedded {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 pub(super) fn run(env: Env) -> ExitCode {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -80,56 +126,17 @@ pub(super) fn run(env: Env) -> ExitCode {
 fn run_app(mtm: MainThreadMarker, session: Session) {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let view = session.view();
-    let target = Target::new(
-        mtm,
-        Controller {
-            session,
-            view: RefCell::new(view),
-            navigation: RefCell::default(),
-            window: OnceCell::new(),
-            back: RefCell::default(),
-            forward: RefCell::default(),
-            refresh: RefCell::default(),
-            contexts_shown: RefCell::default(),
-            syncing: Cell::new(false),
-            timer: RefCell::default(),
-            finished: Cell::new(false),
-        },
-    );
-    let window = Window::new(&target);
-    let _ = target.ivars().window.set(window);
-    let window = target.window();
-    window.window.setToolbar(Some(&window.toolbar));
+    let target = Target::new(mtm, session, None);
     app.setMainMenu(Some(&main_menu(mtm, &target)));
     app.setDelegate(Some(ProtocolObject::from_ref(&*target)));
-    target.ivars().session.use_context(None);
-    target.render();
-    window.window.center();
-    window.window.makeKeyAndOrderFront(None);
-    app.activate();
-
-    // SAFETY: The target implements inspectorTick: with NSTimer's one-argument signature, and is retained by the timer.
-    let timer = unsafe {
-        NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(0.25, &target, sel!(inspectorTick:), None, true)
-    };
-    // SAFETY: This is the main thread's run loop and the timer is also invalidated on this thread.
-    unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
-    target.ivars().timer.replace(Some(timer));
+    target.start(None);
+    target.show();
 
     app.run();
 
-    target.finish();
+    target.close();
     app.setDelegate(None);
-    window.window.setDelegate(None);
-    if let Some(toolbar) = window.window.toolbar() {
-        toolbar.setDelegate(None);
-    }
-    // SAFETY: Clearing the table's weak references to the target, which is still alive.
-    unsafe {
-        window.sidebar.setDataSource(None);
-        window.sidebar.setDelegate(None);
-    }
+    app.setMainMenu(None);
 }
 
 /// The names, the selected context and the overrides that the context pop-up shows.
@@ -137,6 +144,8 @@ type ContextsShown = (Vec<String>, Option<String>, Vec<&'static str>);
 
 struct Controller {
     session: Session,
+    /// Only embedded windows return ownership to a host when closed.
+    owner: Option<Weak<Windows>>,
     view: RefCell<watch::Receiver<View>>,
     navigation: RefCell<Navigation>,
     window: OnceCell<Window>,
@@ -167,25 +176,35 @@ define_class!(
         /// Quit: the timer stops and pending refreshes are dropped before AppKit ends the process.
         #[unsafe(method(applicationShouldTerminate:))]
         fn application_should_terminate(&self, _: &NSApplication) -> NSApplicationTerminateReply {
-            self.finish();
+            self.close();
             NSApplicationTerminateReply::TerminateNow
         }
     }
 
     // SAFETY: These callbacks have the signatures required by NSWindowDelegate.
     unsafe impl NSWindowDelegate for Target {
-        /// Closing the window ends the app.
+        /// A native close releases the embedded window, or ends the standalone app.
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _: &NSNotification) {
-            self.finish();
-            stop_app(self.mtm());
+            let target = self.retain();
+            if target.teardown() {
+                match &target.ivars().owner {
+                    Some(owner) => {
+                        if let Some(windows) = owner.upgrade() {
+                            windows.closed(|window| std::ptr::eq(&**window, &*target));
+                        }
+                    }
+                    None => stop_app(target.mtm()),
+                }
+            }
         }
 
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _: &NSNotification) {
             if let Some(window) = self.ivars().window.get() {
                 let view = self.ivars().view.borrow().borrow().clone();
-                content::render(&window.document, &window.content, self.ivars().navigation.borrow().current(), &view);
+                let section = self.ivars().navigation.borrow().current();
+                content::render(&window.document, &window.content, section, &view);
             }
         }
     }
@@ -283,13 +302,18 @@ define_class!(
         // SAFETY: The Refresh toolbar item and menu item send this action with themselves as the sender.
         #[unsafe(method(inspectorRefresh:))]
         fn refresh(&self, _: Option<&AnyObject>) {
-            self.ivars().session.refresh();
-            self.render();
+            if !self.ivars().finished.get() {
+                self.ivars().session.refresh();
+                self.render();
+            }
         }
 
         // SAFETY: Only the context NSPopUpButton is wired to this action.
         #[unsafe(method(inspectorContext:))]
         fn pick_context(&self, sender: &NSPopUpButton) {
+            if self.ivars().finished.get() {
+                return;
+            }
             let Some(item) = sender.selectedItem() else { return };
             let name = item.title().to_string();
             self.ivars().session.use_context(Some(name));
@@ -300,8 +324,9 @@ define_class!(
         // SAFETY: The signature is NSMenuItemValidation's validateMenuItem:.
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
+            let action = item.action();
             let navigation = self.ivars().navigation.borrow();
-            match item.action() {
+            match action {
                 Some(action) if action == sel!(inspectorBack:) => navigation.can_back(),
                 Some(action) if action == sel!(inspectorForward:) => navigation.can_forward(),
                 Some(action) if action == sel!(inspectorRefresh:) => self.can_refresh(),
@@ -312,10 +337,54 @@ define_class!(
 );
 
 impl Target {
-    fn new(mtm: MainThreadMarker, controller: Controller) -> Retained<Self> {
-        let target = Self::alloc(mtm).set_ivars(controller);
+    fn new(mtm: MainThreadMarker, session: Session, owner: Option<Weak<Windows>>) -> Retained<Self> {
+        let view = session.view();
+        let allocated = Self::alloc(mtm).set_ivars(Controller {
+            session,
+            owner,
+            view: RefCell::new(view),
+            navigation: RefCell::default(),
+            window: OnceCell::new(),
+            back: RefCell::default(),
+            forward: RefCell::default(),
+            refresh: RefCell::default(),
+            contexts_shown: RefCell::default(),
+            syncing: Cell::new(false),
+            timer: RefCell::default(),
+            finished: Cell::new(false),
+        });
         // SAFETY: The ivars are set, and NSObject's init has no additional requirements.
-        unsafe { msg_send![super(target), init] }
+        let target: Retained<Self> = unsafe { msg_send![super(allocated), init] };
+        let _ = target.ivars().window.set(Window::new(&target));
+        let window = target.window();
+        window.window.setToolbar(Some(&window.toolbar));
+        target
+    }
+
+    fn start(&self, context: Option<&str>) {
+        self.ivars().session.use_context(context.map(str::to_owned));
+        self.render();
+        self.window().window.center();
+        // SAFETY: inspectorTick: has NSTimer's one-argument signature, and the timer retains the target until teardown.
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                0.25,
+                self,
+                sel!(inspectorTick:),
+                None,
+                true,
+            )
+        };
+        // SAFETY: This is the main thread's run loop and teardown also invalidates the timer on this thread.
+        unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
+        self.ivars().timer.replace(Some(timer));
+    }
+
+    fn show(&self) {
+        NSApplication::sharedApplication(self.mtm()).activate();
+        if !self.ivars().finished.get() {
+            self.window().window.makeKeyAndOrderFront(None);
+        }
     }
 
     fn window(&self) -> &Window {
@@ -329,6 +398,9 @@ impl Target {
     /// Shows the latest view: the title, the toolbar, the sidebar's selection and the content.
     fn render(&self) {
         let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
         let Some(window) = c.window.get() else { return };
         let view = c.view.borrow_mut().borrow_and_update().clone();
         let (section, can_back, can_forward) = {
@@ -340,7 +412,8 @@ impl Target {
         for (item, enabled) in
             [(&c.back, can_back), (&c.forward, can_forward), (&c.refresh, view.target_error.is_none())]
         {
-            if let Some(item) = item.borrow().as_ref() {
+            let item = item.borrow().clone();
+            if let Some(item) = item {
                 item.setEnabled(enabled);
             }
         }
@@ -437,16 +510,32 @@ impl Target {
         Some(item)
     }
 
-    /// Stops the timer and drops pending refreshes; once, for Close and for Quit.
-    fn finish(&self) {
+    fn close(&self) {
+        if self.teardown() {
+            self.window().window.close();
+        }
+    }
+
+    /// Ends this window's work once, on a native close, a host close or Quit.
+    fn teardown(&self) -> bool {
         let c = self.ivars();
         if c.finished.replace(true) {
-            return;
+            return false;
         }
-        if let Some(timer) = c.timer.take() {
+        let timer = c.timer.take();
+        if let Some(timer) = timer {
             timer.invalidate();
         }
         c.session.stop();
+        let window = self.window();
+        window.window.setDelegate(None);
+        window.toolbar.setDelegate(None);
+        // SAFETY: Clears the table's references to the target while it is still alive.
+        unsafe {
+            window.sidebar.setDataSource(None);
+            window.sidebar.setDelegate(None);
+        }
+        true
     }
 }
 
@@ -498,7 +587,7 @@ impl Window {
                 false,
             )
         };
-        // SAFETY: The window is kept in a Retained for the life of the app, so closing must not release it.
+        // SAFETY: The controller holds the window in a Retained, so closing must not release it.
         unsafe { window.setReleasedWhenClosed(false) };
 
         let sidebar = NSTableView::new(mtm);
@@ -512,7 +601,7 @@ impl Window {
         sidebar.setAllowsEmptySelection(false);
         sidebar.setRowHeight(28.0);
         sidebar.setAccessibilityLabel(Some(ns_string!("Sidebar")));
-        // SAFETY: The target implements both protocols and outlives the table; they are cleared when the app ends.
+        // SAFETY: The target implements both protocols and clears them during teardown.
         unsafe {
             sidebar.setDataSource(Some(ProtocolObject::from_ref(target)));
             sidebar.setDelegate(Some(ProtocolObject::from_ref(target)));
