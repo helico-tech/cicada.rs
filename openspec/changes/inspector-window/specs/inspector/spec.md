@@ -22,17 +22,21 @@ still show.
 - **WHEN** `/stats` answers without `failed`
 - **THEN** the failed tile shows "—"
 
-### Requirement: Navigation and the tray
+### Requirement: Navigation
 
-The sidebar selection SHALL keep a back and forward history, and the tray, built with its feature `inspector`, SHALL
-open the inspector in its own process on its connected or current context.
+The sidebar selection SHALL keep a back and forward history.
 
 #### Scenario: Back and forward
 
 - **WHEN** the user selects Overview, then Nodes, then goes back, then selects Types
 - **THEN** back leads to Overview and forward is empty
 
-#### Scenario: From the tray
+### Requirement: A bounded refresh
 
-- **WHEN** the tray is online with `prod` and the user picks Open Inspector… twice
-- **THEN** one inspector window shows `prod` and the second pick brings it to the front
+A refresh SHALL count the actors of at most 50 types, with at most 8 calls at a time and a deadline of 10 seconds, and
+SHALL show a type it did not count as not counted, not as failed.
+
+#### Scenario: Many types
+
+- **WHEN** the server registers 60 types and the inspector refreshes
+- **THEN** 50 types show their actor counts and 10 show as not counted
