@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Its crate is `cicada-client` only, so 
 change. Follow `design.md`; the spec is `specs/change-feed-http/spec.md`; the design reviews are
 `.reviews/client-change-stream.design.*`.
 
-- [ ] 1. **ADR 0077.** `docs/adr/0077-a-client-for-the-change-stream.md` (partly superseding ADR 0035's "no client
+- [x] 1. **ADR 0077.** `docs/adr/0077-a-client-for-the-change-stream.md` (partly superseding ADR 0035's "no client
   streaming API"), its row in `docs/adr/README.md` and ADR 0035's status line (decision 1). Verify: `cargo test -p
   cicada-examples --test docs`.
 - [ ] 2. **Opening the stream.** `ActorClient::changes`: the client's own HTTP client, the per-request timeout of 24 h

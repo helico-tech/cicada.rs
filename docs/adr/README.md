@@ -81,6 +81,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0074](0074-a-tray-crate-next-to-the-app.md) | A portable `cicada-tray` model starts an in-process HTTP worker from a host's `App` factory and tracks its state and turns. The macOS menu comes later. `App::type_names()` lists hosted types and `App::on_worker_ready` reports when the worker starts. |
 | [0075](0075-a-full-pool-says-so-once.md) | A full placement pool accepts and ignores a new node's offer instead of refusing it, keeps one pool-level `full` mark and sends one `full` notice per full period; the mark ends one silence time after the last ignored offer or when a node is added; extends ADR 0067. |
 | [0076](0076-a-native-macos-inspector.md) | A native macOS inspector crate; only the tray may depend on it. |
+| [0077](0077-a-client-for-the-change-stream.md) | `ActorClient::changes` reads change hints with deadlines for opening, idleness and lifetime. Partly supersedes ADR 0035. |
 
 ## Design questions
 
