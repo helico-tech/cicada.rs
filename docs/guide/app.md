@@ -341,9 +341,11 @@ The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns
 every item has a page. All but the Overview share the toolbar's search field and pane toggle; each page keeps its own
 filter text, and the field's placeholder says what to enter, such as "Address prefix" or "Node id prefix". Paging and
 Refresh keep the first visible row in place; if that row is gone, the table keeps the previous scroll offset as far as
-the new table allows. Refresh still clears the selection where a page's description says so. The Overview shows tiles for actors, pending
-messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
-registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
+the new table allows. Refresh (⌘R) still clears the selection where a page's description says so; the page also
+updates by itself, as [Live updates](#live-updates) describes.
+
+The Overview shows tiles for actors, pending messages, the oldest due message and failed outcomes, the health, the
+nodes, the first 20 running turns and the registered types with their actor counts. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
 and a type past the 50 or not counted in time shows "not counted". A new refresh or a context switch cancels the one
 before.
@@ -413,7 +415,7 @@ first line of the error, with the whole error in its tooltip; a message on two p
 Switching the status reads the first page again and clears the selection.
 
 The sidebar's Outcomes item shows the store's failed count: the failed outcomes that retention still keeps. It is read
-with the Overview's refresh, as soon as `/stats` answers, and with ⌘R on Outcomes; it is not live. It shows "…" until a
+with the Overview's refreshes, as soon as `/stats` answers, and with ⌘R on Outcomes. It shows "…" until a
 read answers and again after a context switch; when a read fails the last count stays, with the error in its tooltip;
 "—" means an older server sends no count, or the first read failed.
 
@@ -442,7 +444,7 @@ label, host name, last heartbeat and the number of its running turns. The server
 clock: alive when the node was seen under 30 s ago, suspect under 2 minutes, dead after that. The last heartbeat shows
 as a time, not an age, as the Mac's clock may differ from the store's, and the footer's tooltip gives the time of the
 last read on the Mac's clock. The search field filters the nodes read by id prefix, without a new read. The page reads
-the nodes on its first visit, on ⌘R and after a context switch, not on the Overview's refresh; the status is not live.
+the nodes on its first visit, on ⌘R, after a context switch and with its live updates, not on the Overview's refresh.
 A failed read shows its error with **Retry**, and no older list.
 
 Select a node to read it with its running turns, each with **Show Actor**; a node that is gone says "not found", and a
@@ -462,6 +464,48 @@ see its target and watcher in the pane. **Show Actor** goes to the watcher's row
 names one actor has its own **Show Actor**; Back returns to the watch and its filter, Forward repeats the jump. The
 rows stay as read until ⌘R, which clears the selection and starts from the first page, and a context switch drops the
 pages. The pane offers no watch actions other than navigation.
+
+#### Live updates
+
+From 0.26.0 the page on screen follows the server as it changes. The inspector listens to the server's change hints
+(`GET /changes`) for that page: for the actors under the search prefix on Actors, Messages, Running Turns and Outcomes,
+and for every actor on the Overview, Nodes, Types and Watches. When hints arrive it waits half a second for more, then
+refreshes the page in place: the selection, the scroll position and the open rows stay, and the pane is read again
+without "Loading". It refreshes at most about twice a second. On Actors, Messages, Running Turns and Outcomes, only a
+hint for an actor under the prefix, or for the actor in the pane, starts one. Hints are best effort: the server can miss
+one, and a child row outside the search prefix, or an Outcomes link to another actor's message, gets none. So the page
+also refreshes 30 s after its last refresh ended, with or without hints.
+
+The toolbar's pill shows the state of the updates:
+
+| Pill | Meaning |
+| --- | --- |
+| Live | The change stream is open and has answered |
+| Connecting | The stream is opening and has not answered yet |
+| Reconnecting | The stream ended or failed; its tooltip says why and when the next try is (after 1, 2, 4, 8 and 16 s, then every 30 s). The page still refreshes every 30 s, and a new stream refreshes it once as it starts |
+| Paused | You clicked the pill: nothing reloads by itself, and a refresh that was running is cancelled with none of its results shown. Click again to resume, which refreshes the page once |
+| Offline (greyed out) | No context is in use, such as when the picked context is not valid |
+
+Refresh (⌘R) reloads the page in every state, also while paused, and the next automatic refresh comes 30 s after that
+reload has ended.
+
+On Actors, a live refresh keeps open rows and the selection by path. It re-reads the loaded root rows (at most 300, in
+up to three requests), the running-turn sample, the selected actor's pane and the first children page of up to 20 open
+parents, those nearest the visible area first and ancestors before descendants. When a row goes away, its descendants
+and any selection under it go too. The pane keeps each previous answer until its replacement arrives, and shows a failed
+read beside the previous answer; the last good running-turn sample keeps the running badges when a new sample fails. A
+parent that was skipped, failed or has children past the first page shows "not refreshed" on its **more…** or status
+row, as do the cached children of closed rows, and so do the rows and parents a refresh cancelled by a pause, a page
+change or a Retry did not reach.
+
+- Each refresh uses up to four requests at once and has ten seconds. Rows beyond what it reads can be older than the
+  page's other rows.
+- The server returns full actor states for every root row it sends, up to 300 states per Actors refresh, although the
+  list shows only metadata: large states make those requests expensive.
+- On Types, when a refresh changes the selected type, the pane shows the type as it was, its schema menu included,
+  until the new schema is formatted.
+- Live updates need a server with `GET /changes`, 0.16.11 or later; an older one answers 404, and the pill stays on
+  Reconnecting while the page still refreshes every 30 s.
 
 The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
 a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
