@@ -920,10 +920,20 @@ impl Backend for InMemoryStore {
         self.locked(|s, now| {
             let rows = || s.actors.values().filter(|r| r.address.has_prefix(prefix));
             let oldest = rows().filter_map(|r| r.head().map(|(at, _, _)| *at)).min().filter(|at| *at <= now);
+            let failed = s
+                .outcomes
+                .values()
+                .filter(|r| {
+                    r.record.status == OutcomeStatus::Failed
+                        && r.record.actor.has_prefix(prefix)
+                        && self.is_visible(r, now)
+                })
+                .count() as u64;
             Ok(StoreStats {
                 actors: rows().count() as u64,
                 pending: rows().map(|r| r.mailbox.len() as u64).sum(),
                 oldest_due: oldest,
+                failed,
             })
         })
     }

@@ -1963,12 +1963,13 @@ impl Backend for PostgresStore {
 
     async fn stats(&self, prefix: &str) -> StoreResult<StoreStats> {
         transaction!(self, true, |tx| -> StoreStats {
-            let now = tx.now().await?;
+            let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
+            let upper = upper_bound(prefix);
             let actors: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM actors WHERE address >= $1 AND address < $2 AND starts_with(address, $3)",
             )
             .bind(prefix)
-            .bind(upper_bound(prefix))
+            .bind(&upper)
             .bind(prefix)
             .fetch_one(&mut *tx.c)
             .await?;
@@ -1977,12 +1978,24 @@ impl Backend for PostgresStore {
                  WHERE actor_address >= $1 AND actor_address < $2 AND starts_with(actor_address, $3)",
             )
             .bind(prefix)
-            .bind(upper_bound(prefix))
+            .bind(&upper)
             .bind(prefix)
             .fetch_one(&mut *tx.c)
             .await?;
+            let failed: i64 = sqlx::query_scalar(concat!(
+                "SELECT count(*) FROM outcomes WHERE status = 'failed'
+                 AND actor_address >= $1 AND actor_address < $2 AND starts_with(actor_address, $3) AND ",
+                visible!(4, 5),
+            ))
+            .bind(prefix)
+            .bind(&upper)
+            .bind(prefix)
+            .bind(cutoff)
+            .bind(now)
+            .fetch_one(&mut *tx.c)
+            .await?;
             let oldest_due = oldest.map(time::truncate).filter(|at| *at <= now);
-            commit(StoreStats { actors: actors as u64, pending: pending as u64, oldest_due })
+            commit(StoreStats { actors: actors as u64, pending: pending as u64, oldest_due, failed: failed as u64 })
         })
     }
 

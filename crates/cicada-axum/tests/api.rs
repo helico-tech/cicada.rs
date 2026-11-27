@@ -794,17 +794,21 @@ async fn the_outcome_of_a_message_keeps_its_lost_claims() {
 async fn stats_count_actors_and_pending_messages_and_name_the_oldest_due_one() {
     let app = app().await;
     let empty = get_json(&app, "/stats").await;
-    assert_eq!(empty, serde_json::json!({"actors": 0, "pending": 0, "oldestDue": null}));
+    assert_eq!(empty, json!({"actors": 0, "pending": 0, "oldestDue": null, "failed": 0}));
     put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
     put(&app, "/actors/counter/b", r#"{"state": {}}"#).await;
+    post(&app, "/actors/counter/b/messages", r#"{"type": "Fail", "payload": {"reason": "boom"}}"#).await;
+    eventually(async || items(&get_json(&app, "/outcomes?status=failed").await).len() == 1).await;
     send_id(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1}, "delay": "PT1H"}"#).await;
     send_id(&app, "/actors/counter/b/messages", r#"{"type": "Add", "payload": {"n": 1}, "delay": "PT2H"}"#).await;
 
     let all = get_json(&app, "/stats").await;
     assert_eq!((all["actors"].as_u64(), all["pending"].as_u64()), (Some(2), Some(2)));
     assert_eq!(all["oldestDue"], serde_json::Value::Null, "nothing is due yet");
+    assert_eq!(all["failed"], 1);
     let one = get_json(&app, "/stats?prefix=counter/a").await;
     assert_eq!((one["actors"].as_u64(), one["pending"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(one["failed"], 0);
     assert_eq!(get_json(&app, "/stats?prefix=other/").await["actors"], 0);
 }
 

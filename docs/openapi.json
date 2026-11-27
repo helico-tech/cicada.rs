@@ -786,7 +786,7 @@
     },
     "/stats": {
       "get": {
-        "summary": "The number of actors and pending messages, and the oldest due message.",
+        "summary": "Counts of actors, pending messages and visible failed outcomes, and the oldest due message.",
         "operationId": "getStats",
         "parameters": [
           {
@@ -3173,6 +3173,16 @@
               "null"
             ],
             "format": "date-time",
+            "default": null
+          },
+          "failed": {
+            "description": "The number of failed outcomes currently listed by `GET /outcomes` under the prefix.\n`None` when an older server omits the count.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
             "default": null
           }
         },

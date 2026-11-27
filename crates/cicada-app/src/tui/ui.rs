@@ -573,7 +573,7 @@ mod tests {
         let mut app = App::new(Some("local".into()), "http://localhost:8080".into());
         let seq = app.start().iter().find_map(|e| if let Effect::Fetch { seq, .. } = e { Some(*seq) } else { None });
         app.on_result(Fetched::Screen { seq: seq.unwrap(), data });
-        let stats = StatsView { actors: 11, pending: 4, oldest_due: None };
+        let stats: StatsView = serde_json::from_value(json!({"actors": 11, "pending": 4, "failed": 2})).unwrap();
         app.on_result(Fetched::Summary(Ok(Summary { stats, nodes: vec![] })));
         app
     }

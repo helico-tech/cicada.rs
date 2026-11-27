@@ -302,9 +302,10 @@ pub(crate) trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> StoreResult<Page<MessageStatus>>;
 
-    /// Counts the instances and the pending messages of instances whose URI starts with `prefix` (empty: all), and
-    /// finds the earliest `deliver_at` among those messages that is due at store now. The cost grows with the number
-    /// of rows under the prefix. The counts are read one after the other, not as one snapshot.
+    /// Counts instances, pending messages and visible failed outcomes whose actor URI starts with `prefix` (empty:
+    /// all), and finds the earliest `deliver_at` among those messages that is due at store now. The cost grows with
+    /// the number of rows under the prefix. The counts share a read transaction and its clock. On PostgreSQL each
+    /// query sees its own committed snapshot.
     async fn stats(&self, prefix: &str) -> StoreResult<StoreStats>;
 
     /// Removes outcomes past retention and strips hidden records; returns how many outcomes were removed.

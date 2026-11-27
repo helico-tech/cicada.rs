@@ -55,6 +55,72 @@ async fn failure_ids(store: &dyn Backend, since: Timestamp) -> Vec<crate::store:
     page.items.into_iter().map(|o| o.message_id).collect()
 }
 
+async fn check_failed_count(store: &dyn Backend, prefix: &str, expected: u64) {
+    let page = store
+        .outcomes(Some(OutcomeStatus::Failed), prefix, Timestamp::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE)
+        .await
+        .unwrap();
+    assert!(page.next.is_none(), "all failures fit in one page");
+    assert_eq!(page.items.len() as u64, expected, "listed failures for {prefix:?}");
+    assert_eq!(store.stats(prefix).await.unwrap().failed, expected, "counted failures for {prefix:?}");
+}
+
+/// Stats counts the visible failures under each prefix, including after a keep-last trim.
+pub async fn stats_count_only_visible_failed_outcomes_under_a_prefix<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
+        check_failed_count(&*store, "", 0).await;
+        for actor in [&a, &a, &b] {
+            let message = t.send(actor).await;
+            finish(t, &message, TurnOutcome::Failed("boom".into())).await;
+        }
+        let done = t.send(&a).await;
+        finish(t, &done, TurnOutcome::Done).await;
+        let cancelled = t.send(&a).await;
+        assert_matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_));
+        let removed = send_kept(t, &a, Some(Retention::REMOVE_ON_FAILED), Delivery::Now).await;
+        finish(t, &removed, TurnOutcome::Failed("removed".into())).await;
+        check_failed_count(&*store, "conformance/", 2).await;
+        check_failed_count(&*store, "other/", 1).await;
+        check_failed_count(&*store, "", 3).await;
+        check_failed_count(&*store, "absent/", 0).await;
+
+        let last = Retention { done: None, failed: Some(Keep::Last { count: 1 }) };
+        for _ in 0..2 {
+            let message = send_kept(t, &a, Some(last.clone()), Delivery::Now).await;
+            finish(t, &message, TurnOutcome::Failed("keep last".into())).await;
+            check_failed_count(&*store, "conformance/", 3).await;
+        }
+    })
+    .await
+}
+
+/// Stats excludes failures hidden before or at store retention and includes failures kept beyond it.
+pub async fn stats_failed_count_respects_outcome_expiry_without_a_sweep<B: FixtureFactory>(backend: &B) {
+    const RETENTION_TICKS: u32 = 12;
+    store_test_with(backend, backend.tick() * RETENTION_TICKS, DEFAULT_TIMEOUT, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
+        for (actor, age) in [(&a, None), (&a, Some(t.ticks(2))), (&b, Some(t.ticks(60)))] {
+            let retention = age.map(|age| Retention { done: None, failed: Some(Keep::For { age }) });
+            let message = send_kept(t, actor, retention, Delivery::Now).await;
+            finish(t, &message, TurnOutcome::Failed("boom".into())).await;
+        }
+        t.advance_ticks(3).await;
+        check_failed_count(&*store, "conformance/", 1).await;
+        check_failed_count(&*store, "", 2).await;
+
+        t.advance_ticks(RETENTION_TICKS - 3).await;
+        check_failed_count(&*store, "conformance/", 0).await;
+        check_failed_count(&*store, "other/", 1).await;
+        check_failed_count(&*store, "", 1).await;
+    })
+    .await
+}
+
 /// retention - the policy is stored with the message and kept in its envelope, across reschedule and reopen
 pub async fn retention_the_policy_is_stored_with_the_message_and_kept_in_its_envelope_across_reschedule_and_reopen<
     B: FixtureFactory,

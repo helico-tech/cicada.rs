@@ -197,6 +197,8 @@ macro_rules! for_each_case {
             retry_policy_stored_with_the_message_and_returned_everywhere_retained_in_the_outcome_envelope,
             retry_policy_survives_reschedule_and_reopen,
             // retention.rs
+            stats_count_only_visible_failed_outcomes_under_a_prefix,
+            stats_failed_count_respects_outcome_expiry_without_a_sweep,
             retention_the_policy_is_stored_with_the_message_and_kept_in_its_envelope_across_reschedule_and_reopen,
             retention_remove_on_done_hides_the_record_at_once_drops_its_content_and_keeps_it_a_duplicate,
             retention_a_removed_id_cannot_be_reused_by_a_commits_send,

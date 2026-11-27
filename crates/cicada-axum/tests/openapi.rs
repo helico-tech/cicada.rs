@@ -30,6 +30,17 @@ fn the_committed_document_is_current() {
     assert!(on_disk == current, "docs/openapi.json is out of date; run the tests with CICADA_UPDATE_OPENAPI=true");
 }
 
+#[test]
+fn stats_documents_an_optional_failed_count() {
+    let document = openapi_document();
+    let response = &document["paths"]["/stats"]["get"]["responses"]["200"];
+    assert_eq!(response["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/StatsView");
+    let stats = &document["components"]["schemas"]["StatsView"];
+    assert_eq!(stats["properties"]["failed"]["type"], serde_json::json!(["integer", "null"]));
+    assert_eq!(stats["properties"]["failed"]["minimum"], 0);
+    assert!(!stats["required"].as_array().unwrap().iter().any(|field| field == "failed"));
+}
+
 /// remote-turn-http, Scenarios: Documented limits match the checks; A limit changes without its documentation.
 #[test]
 fn the_lease_request_documents_the_limits_the_core_checks() {

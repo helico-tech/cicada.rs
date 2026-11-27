@@ -1178,7 +1178,7 @@ impl Side {
             }
             Op::Stats { prefix } => answer(
                 store.stats(PREFIXES[*prefix]).await,
-                |s| json!({"actors": s.actors, "pending": s.pending, "oldestDue": opt_instant(s.oldest_due)}),
+                |s| json!({"actors": s.actors, "pending": s.pending, "oldestDue": opt_instant(s.oldest_due), "failed": s.failed}),
             ),
             Op::SweepExpired => answer(store.sweep_expired().await, |n| json!(n)),
             Op::RunningTurns { node, prefix, limit } => {

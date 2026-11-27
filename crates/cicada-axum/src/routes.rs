@@ -404,9 +404,13 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
         .api_route(
             "/stats",
             get_with(handlers::stats, |op| {
-                described(op, "getStats", "The number of actors and pending messages, and the oldest due message.")
-                    .input::<Query<StatsQuery>>()
-                    .response::<200, Json<StatsView>>()
+                described(
+                    op,
+                    "getStats",
+                    "Counts of actors, pending messages and visible failed outcomes, and the oldest due message.",
+                )
+                .input::<Query<StatsQuery>>()
+                .response::<200, Json<StatsView>>()
             }),
         )
         .api_route(

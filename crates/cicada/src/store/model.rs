@@ -499,6 +499,7 @@ pub struct ActorRecord {
 
 /// What [`ActorSystem::stats`](crate::ActorSystem::stats) counts under an address prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StoreStats {
     /// The number of instances.
     pub actors: u64,
@@ -506,6 +507,8 @@ pub struct StoreStats {
     pub pending: u64,
     /// The earliest `deliver_at` of a pending message that is due at store now; `None` when none is due.
     pub oldest_due: Option<Timestamp>,
+    /// The number of failed outcomes visible in the outcome listing at store now.
+    pub failed: u64,
 }
 
 /// The row of one node in the node table: display only, never used to decide who runs what.

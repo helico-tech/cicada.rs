@@ -488,6 +488,7 @@ pub struct OutcomeView {
 /// Response of `GET /stats`: what is stored under an address prefix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct StatsView {
     /// The number of actors.
     pub actors: u64,
@@ -497,6 +498,10 @@ pub struct StatsView {
     #[schemars(with = "Option<Timestamp>")]
     #[serde(default, with = "serde_instant::option")]
     pub oldest_due: Option<Timestamp>,
+    /// The number of failed outcomes currently listed by `GET /outcomes` under the prefix.
+    /// `None` when an older server omits the count.
+    #[serde(default)]
+    pub failed: Option<u64>,
 }
 
 /// A registered type's contract, as served by `GET /types`.

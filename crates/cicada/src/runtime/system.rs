@@ -1660,8 +1660,8 @@ impl ActorSystem {
         Ok(self.inner.store.outcomes(status, prefix, since, cursor, limit).await?)
     }
 
-    /// The number of actors and pending messages under `prefix`, and the delivery time of the oldest due message
-    /// (`GET /stats?prefix=`).
+    /// The number of actors, pending messages and visible failed outcomes under `prefix`, and the delivery time of
+    /// the oldest due message (`GET /stats?prefix=`).
     pub async fn stats(&self, prefix: &str) -> Result<StoreStats, OpError> {
         Ok(self.inner.store.stats(prefix).await?)
     }

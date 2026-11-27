@@ -151,6 +151,13 @@ macro_rules! outcome_columns {
     };
 }
 
+/// The outcome row is visible to reads (parameters: cutoff, now).
+macro_rules! visible {
+    () => {
+        "(CASE WHEN visible_until IS NULL THEN finished_at > ? ELSE visible_until > ? END)"
+    };
+}
+
 /// The columns of an actor snapshot, which [`rows::actor_record`] decodes.
 macro_rules! actor_columns {
     () => {
@@ -1817,9 +1824,9 @@ impl Backend for SqliteStore {
                 "SELECT ",
                 outcome_columns!(),
                 " FROM outcomes
-             WHERE {}finished_at >= ?
-               AND (CASE WHEN visible_until IS NULL THEN finished_at > ? ELSE visible_until > ? END)
-               AND substr(actor_address, 1, ?) = ?
+             WHERE {}finished_at >= ? AND ",
+                visible!(),
+                " AND substr(actor_address, 1, ?) = ?
                AND (finished_at > ? OR (finished_at = ? AND message_id > ?))
              ORDER BY finished_at, message_id LIMIT ?"
             ),
@@ -1920,8 +1927,29 @@ impl Backend for SqliteStore {
                 .bind(prefix),
             )
             .await?;
+            let failed: i64 = col(
+                &fetch_one(
+                    tx.conn(),
+                    sqlx::query(concat!(
+                        "SELECT count(*) AS n FROM outcomes WHERE status = 'failed' AND ",
+                        visible!(),
+                        " AND substr(actor_address, 1, ?) = ?",
+                    ))
+                    .bind(self.cutoff(now))
+                    .bind(micros(now))
+                    .bind(prefix_len(prefix))
+                    .bind(prefix),
+                )
+                .await?,
+                "n",
+            )?;
             let oldest = col::<Option<i64>>(&row, "oldest")?.map(instant).filter(|at| *at <= now);
-            Ok(StoreStats { actors: actors as u64, pending: col::<i64>(&row, "n")? as u64, oldest_due: oldest })
+            Ok(StoreStats {
+                actors: actors as u64,
+                pending: col::<i64>(&row, "n")? as u64,
+                oldest_due: oldest,
+                failed: failed as u64,
+            })
         }
         .await;
         tx.end(result).await

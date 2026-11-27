@@ -104,7 +104,7 @@ impl From<MessageStatus> for MessageStatusView {
 
 impl From<StoreStats> for StatsView {
     fn from(s: StoreStats) -> Self {
-        Self { actors: s.actors, pending: s.pending, oldest_due: s.oldest_due }
+        Self { actors: s.actors, pending: s.pending, oldest_due: s.oldest_due, failed: Some(s.failed) }
     }
 }
 

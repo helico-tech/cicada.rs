@@ -1947,7 +1947,7 @@ pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let none = StoreStats { actors: 0, pending: 0, oldest_due: None };
+        let none = StoreStats { actors: 0, pending: 0, oldest_due: None, failed: 0 };
         assert_eq!(store.stats("").await.unwrap(), none);
         let a = t.new_actor(&TYPE, json!({})).await;
         let b = t.new_actor(&OTHER, json!({})).await;
@@ -1956,13 +1956,16 @@ pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the
         let second = t.send(&a).await;
         let later = t.send_at(&b, Delivery::After(t.ticks(10))).await;
         let oldest = Some(first.deliver_at);
-        assert_eq!(store.stats("").await.unwrap(), StoreStats { actors: 2, pending: 3, oldest_due: oldest });
+        assert_eq!(store.stats("").await.unwrap(), StoreStats { actors: 2, pending: 3, oldest_due: oldest, ..none });
         assert_eq!(
             store.stats("conformance/").await.unwrap(),
-            StoreStats { actors: 1, pending: 2, oldest_due: oldest }
+            StoreStats { actors: 1, pending: 2, oldest_due: oldest, ..none }
         );
-        assert_eq!(store.stats(a.as_str()).await.unwrap(), StoreStats { actors: 1, pending: 2, oldest_due: oldest });
-        assert_eq!(store.stats("other/").await.unwrap(), StoreStats { actors: 1, pending: 1, oldest_due: None });
+        assert_eq!(
+            store.stats(a.as_str()).await.unwrap(),
+            StoreStats { actors: 1, pending: 2, oldest_due: oldest, ..none }
+        );
+        assert_eq!(store.stats("other/").await.unwrap(), StoreStats { actors: 1, pending: 1, ..none });
         assert_eq!(store.stats("nothing/").await.unwrap(), none);
 
         // A message being handled is still pending; a finished one is not, and the next one is the oldest.
@@ -1971,19 +1974,19 @@ pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the
         t.commit_ok(done(&claim)).await;
         assert_eq!(
             store.stats("conformance/").await.unwrap(),
-            StoreStats { actors: 1, pending: 1, oldest_due: Some(second.deliver_at) }
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(second.deliver_at), ..none }
         );
 
         // A delayed message counts as due once its time came.
         t.advance(t.ticks(10)).await;
         assert_eq!(
             store.stats("other/").await.unwrap(),
-            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at), ..none }
         );
         assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
         assert_eq!(
             store.stats("").await.unwrap(),
-            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at), ..none }
         );
     })
     .await
