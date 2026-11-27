@@ -200,6 +200,11 @@ fn real_path(path: &Path) -> anyhow::Result<PathBuf> {
 /// own links, is made canonical up to its deepest existing ancestor, and the file's name is checked again in the real
 /// folder. The file and some folders need not exist.
 fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
+    // `Path` drops a trailing `/` or `/.`, which the system refuses for a file (ENOTDIR): refuse them too.
+    let text = path.as_os_str().as_encoded_bytes();
+    if text.ends_with(b"/") || text.ends_with(b"/.") {
+        return Err(std::io::Error::other("the path names a folder, not a file"));
+    }
     let mut path = std::path::absolute(path)?;
     for _ in 0..40 {
         let file = link_target(&path)?;
@@ -962,5 +967,22 @@ mod tests {
         }
         let resolved = resolve_path(&dir.path().join("new/sub/config.toml")).unwrap();
         assert_eq!(resolved, real.join("new/sub/config.toml"));
+    }
+
+    #[test]
+    fn a_config_path_with_a_trailing_slash_or_dot_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let text = "[contexts.a]\nserver = \"http://a\"\n";
+        std::fs::write(&file, text).unwrap();
+        for suffix in ["/", "/."] {
+            let given = PathBuf::from(format!("{}{suffix}", file.display()));
+            assert!(resolve_path(&given).is_err(), "{suffix}");
+            let env = Env::from([("CICADA_CONFIG".to_owned(), given.display().to_string())]);
+            assert!(ContextFile::update(&env, |f| f.use_context("a")).is_err(), "{suffix}");
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let env = Env::from([("CICADA_CONFIG".to_owned(), file.display().to_string())]);
+        ContextFile::update(&env, |f| f.use_context("a")).unwrap();
     }
 }
