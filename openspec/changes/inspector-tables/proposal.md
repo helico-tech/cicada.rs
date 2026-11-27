@@ -14,7 +14,8 @@ tasks (2026-11-27).
 - Watches: the watches (`/watches`), with watcher and target.
 - Read only, as `inspector-actors`.
 
-To decide in the design: what the pane shows for a type and a watch, and how much it shares with the Actors page.
+Decided in the design: one paged-list engine shared with Actors, the panes from the rows and schemas, local filters
+where the API has none, and Show Actor.
 
 ## Order
 
