@@ -8,7 +8,7 @@ Normal lane, no version bump (process only). Follow `design.md`; the spec is `sp
   boards; Land reads the live boards again and waits on a changed one (decisions 1, 2 and 4).
 - [x] 2. **The builder's brief.** `builder.md`: read the boards before building; never depart without asking; report
   departures (decision 2).
-- [ ] 3. **The review briefs.** `review-loop/design.md`: every screen named, every board element in the design or under
+- [x] 3. **The review briefs.** `review-loop/design.md`: every screen named, every board element in the design or under
   Departures, every addition under Departures. `review-loop/code.md`: compare the screen's code with the board in both
   directions and block on an unagreed departure (decision 3).
 - [ ] 4. **The OpenSpec rules.** `openspec/config.yaml`: the design and tasks rules for GUI changes (decision 5).

@@ -33,6 +33,11 @@ checkout of your own.
    diff is allowed only as owner fixes the handoff names (commit and paths): it equals that commit
    (`git diff <commit> <head> -- <paths>` is empty) and holds no code.
 7. **The builder's example and concepts** are true to the code.
+8. **Boards.** A GUI change: read each board in `openspec/changes/<change>/mockup/` at `head` and the screen's code.
+   Compare in both directions: an element of the board missing or changed in the code, or an element of the code the
+   board does not show (sections, columns and their order, controls, texts, states such as empty, offline and error),
+   is a fault unless the design lists it under `Departures from the board`. Sample data and the board's desktop
+   background do not count.
 
 Do not run the test suite: the builder ran the finishing checks and recorded gate evidence for its head (its report
 says which), and `scripts/gate.py` requires that evidence again before main or a tag is pushed (ADR 0046). To prove a finding you may run one targeted test in a checkout of your own:
@@ -41,8 +46,9 @@ says which), and `scripts/gate.py` requires that evidence again before main or a
 ## What blocks
 
 Only these start a fix round: wrong behaviour, a scenario without a test, a broken rule of `AGENTS.md`, a check that
-fails, a missing or untrue docs handoff. A failing check blocks also when the handoff lists it under Blocking.
-Everything else is a note, at most five: wording, style, a better name, something nice to have.
+fails, a missing or untrue docs handoff, a departure from a board that the design does not list. A failing check blocks
+also when the handoff lists it under Blocking. Everything else is a note, at most five: wording, style, a better name,
+something nice to have.
 
 ## Report
 

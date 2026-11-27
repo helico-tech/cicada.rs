@@ -8,7 +8,7 @@ reasoning, on purpose: judge what is written. The request (`.reviews/<id>.md`) n
 ## Read
 
 1. `AGENTS.md`, the parts of `docs/architecture.md` that the change touches, and the ADRs it names.
-2. The change: `proposal.md`, `design.md` and every `specs/**/spec.md`.
+2. The change: `proposal.md`, `design.md`, every `specs/**/spec.md`, and the boards in `mockup/` if it has any.
 3. The code the change touches. Check what the change says about the code against the code.
 4. The proposals of the changes before and after it. `python3 scripts/status.py` prints the order.
 
@@ -25,11 +25,15 @@ reasoning, on purpose: judge what is written. The request (`.reviews/<id>.md`) n
 - **Gaps.** An error path or an upgrade without a scenario.
 - **Docs.** A doc block, link, guarantee row or skill route the change breaks and does not name. The builder may not
   edit `README.md`, `AGENTS.md` or the handwritten docs: the prose goes into a docs handoff.
+- **Boards.** A change that adds or changes a screen: each such screen is named with its board in `mockup/` (with
+  `mockup/SOURCE.md`) or with an agreed "no board" and the board whose style it follows. Every element of each board
+  (sections, columns and their order, controls, texts, states) is in the design or under `Departures from the board`
+  with a reason, and so is everything the design adds to a screen beyond its board.
 
 ## What blocks
 
 Only what must be settled before the tasks are written: an open decision, a contradiction, a weaker guarantee, an
-error path without a scenario, a change that is too big. Everything else is a note, at most five.
+error path without a scenario, a change that is too big, a gap in Boards. Everything else is a note, at most five.
 
 ## Report
 
