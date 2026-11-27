@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-live` (the sof
 pause; rebase onto them when they landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design
 reviews are `.reviews/inspector-actions.design.*`.
 
-- [ ] 1. **The `actions` module: calls, targets and checks.** Pause, Resume, Cancel Turn, Purge Mailbox and Delete
+- [x] 1. **The `actions` module: calls, targets and checks.** Pause, Resume, Cancel Turn, Purge Mailbox and Delete
   through `cicada-client`; a target as the selected address with the pane's generation; one action at a time from the
   press (a sheet opening) to the answer, also across a reselection; the target checked before sending and on confirming
   ("selection changed; nothing done"); a context switch or closed window dropping a pending result (decisions 1 and

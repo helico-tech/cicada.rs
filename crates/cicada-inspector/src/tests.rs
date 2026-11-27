@@ -3,6 +3,7 @@
 //! These tests use real sockets and the real clock: Tokio's paused clock would advance through the client's timeouts
 //! while a socket waits. Deadlines are short to keep them fast.
 
+mod actions;
 mod actors;
 mod json;
 mod live;

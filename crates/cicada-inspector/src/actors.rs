@@ -3,6 +3,8 @@
 //! matches: the list's generation grows at every key press in the search field, on Refresh and on a context switch;
 //! the pane's at every selection, on Refresh and on a context switch.
 
+pub(crate) mod actions;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -501,6 +503,7 @@ struct Shared {
     limits: Limits,
     list: watch::Sender<ListView>,
     pane: watch::Sender<PaneView>,
+    actions: watch::Sender<actions::View>,
     state: Mutex<State>,
 }
 
@@ -532,6 +535,7 @@ struct State {
     pane_generation: u64,
     selected: Option<ActorPath>,
     pane_task: Option<JoinHandle<()>>,
+    actions: actions::State,
     jump: Option<Jump>,
     /// The tasks aborted so far, for tests that await their end.
     #[cfg(test)]
@@ -599,6 +603,7 @@ impl Actors {
             pane_generation: 0,
             selected: None,
             pane_task: None,
+            actions: actions::State::default(),
             jump: None,
             #[cfg(test)]
             aborted: Vec::new(),
@@ -608,6 +613,7 @@ impl Actors {
             limits,
             list: watch::channel(ListView::default()).0,
             pane: watch::channel(PaneView::default()).0,
+            actions: watch::channel(actions::View::default()).0,
             state: Mutex::new(state),
         };
         Self { shared: Arc::new(shared) }
@@ -627,6 +633,7 @@ impl Actors {
     /// the next [`Self::show`].
     pub fn use_client(&self, client: Option<ActorClient>) {
         let mut state = self.shared.lock();
+        self.shared.clear_actions(&mut state);
         state.supersede_list();
         state.supersede_pane();
         state.client = client;
@@ -847,7 +854,9 @@ impl Actors {
     /// The window closes: every read is dropped.
     pub fn stop(&self) {
         let mut state = self.shared.lock();
+        self.shared.clear_actions(&mut state);
         state.jump = None;
+        state.client = None;
         state.supersede_list();
         state.supersede_pane();
     }

@@ -26,7 +26,7 @@ use crate::watches::Watches;
 const INBOX: &str = "/messages?limit=100";
 const OUTCOMES: &str = "/outcomes?limit=100&status=failed";
 
-async fn with_clock(test: impl Future<Output = ()>) {
+pub(super) async fn with_clock(test: impl Future<Output = ()>) {
     let (release, hold) = std::sync::mpsc::channel();
     let mut watchdog = tokio::task::spawn_blocking(move || hold.recv_timeout(HOLD_LIMIT));
     tokio::select! {
