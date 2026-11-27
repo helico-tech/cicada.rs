@@ -629,11 +629,16 @@ impl Actors {
         self.shared.pane.subscribe()
     }
 
-    /// A context switch: drops every read, the rows, the prefix's rows and the selection. The list is read again at
-    /// the next [`Self::show`].
+    #[cfg(test)]
     pub fn use_client(&self, client: Option<ActorClient>) {
+        self.switch_client(client, actions::Redactions::default());
+    }
+
+    /// A context switch: drops reads, rows and the selection. The list is read again at the next [`Self::show`].
+    pub fn switch_client(&self, client: Option<ActorClient>, redactions: actions::Redactions) {
         let mut state = self.shared.lock();
         self.shared.clear_actions(&mut state);
+        state.actions.redactions = redactions;
         state.supersede_list();
         state.supersede_pane();
         state.client = client;

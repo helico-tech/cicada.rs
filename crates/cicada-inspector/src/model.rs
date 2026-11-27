@@ -9,7 +9,7 @@ use cicada::ActorAddress;
 use cicada::api::{NodeView, RunningTurnView, StatsView};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
-use cicada_app::{Contexts, Env};
+use cicada_app::{ContextFile, Contexts, Env};
 use cicada_client::{ActorClient, ClientError};
 use futures::{StreamExt, stream};
 use tokio::runtime::Handle;
@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
-use crate::actors::{Actors, OutlineViewport};
+use crate::actors::{Actors, OutlineViewport, actions::Redactions};
 use crate::live::Reloaded;
 use crate::messages::Messages;
 use crate::nodes::{NodePlace, Nodes, NodesRead};
@@ -392,7 +392,14 @@ impl Session {
     /// Overview and the lists and panes of the context before are dropped.
     pub fn use_context(&self, picked: Option<String>) {
         let contexts = Contexts::load(&self.env);
-        let target = cicada_app::context_client(&self.env, picked.as_deref());
+        let before = ContextFile::load(&self.env).ok();
+        let target = cicada_app::context_client(&self.env, picked.as_deref()).map(|(client, context)| {
+            let entry = context.as_deref().and_then(|name| before.as_ref()?.context(name));
+            let uncertain = context.as_deref().is_some_and(|name| {
+                entry.is_none() || ContextFile::load(&self.env).ok().and_then(|file| file.context(name)) != entry
+            });
+            (client, context, Redactions::for_context(&self.env, entry.as_ref(), uncertain))
+        });
         let overrides = OVERRIDES.into_iter().filter(|name| self.env.get(*name).is_some_and(|v| !v.is_empty()));
         {
             // A context switch is a new visit of the page: no live refresh of the context before starts after it.
@@ -401,6 +408,7 @@ impl Session {
             let mut current = self.shared.current.lock().expect("inspector session");
             current.supersede();
             current.context += 1;
+            let mut redactions = Redactions::default();
             self.shared.view.send_modify(|view| {
                 (view.contexts, view.contexts_error) = match contexts {
                     Ok(contexts) => (contexts, None),
@@ -412,10 +420,11 @@ impl Session {
                 view.stale = None;
                 view.refreshing = false;
                 match target {
-                    Ok((client, context)) => {
+                    Ok((client, context, credentials)) => {
                         view.context = context;
                         view.target_error = None;
                         current.client = Some(client);
+                        redactions = credentials;
                     }
                     Err(error) => {
                         view.context = None;
@@ -424,7 +433,7 @@ impl Session {
                     }
                 }
             });
-            self.actors.use_client(current.client.clone());
+            self.actors.switch_client(current.client.clone(), redactions);
             self.messages.use_client(current.client.clone());
             self.turns.use_client(current.client.clone());
             self.shared.outcomes.use_client(current.client.clone());

@@ -707,6 +707,7 @@ name = "cicada-inspector"
 version = "0.26.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "cicada",
  "cicada-app",
@@ -714,9 +715,13 @@ dependencies = [
  "cicada-client",
  "cicada-test",
  "futures",
+ "http",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "percent-encoding",
+ "regex",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",

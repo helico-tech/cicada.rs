@@ -9,7 +9,7 @@ reviews are `.reviews/inspector-actions.design.*`.
   press (a sheet opening) to the answer, also across a reselection; the target checked before sending and on confirming
   ("selection changed; nothing done"); a context switch or closed window dropping a pending result (decisions 1 and
   2). Verify: the in-process server tests of each call, one action at a time and a changed target sending nothing.
-- [ ] 2. **Sheets, results and alerts.** The sheet texts with their counts (pending rows among the mailbox's first 50
+- [x] 2. **Sheets, results and alerts.** The sheet texts with their counts (pending rows among the mailbox's first 50
   rows without the running one, "at least N" from the cursor, "not read"; children loaded, "at least N", "children not
   read"); Cancel Turn's sheet and its true and false answers; 404s mapped to local text; any other error as an alert
   with the problem's title and detail or "HTTP <status>", control characters and credentials removed, each part cut at
