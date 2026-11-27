@@ -28,12 +28,18 @@ on the target `cicada` would use. The inspector has its own context picker. A se
 same window forward on the context it is already showing. Closing it and opening it again picks the initial target
 from the tray's latest connection state.
 
+Run the `examples/menu-bar-worker.rs` example with the feature enabled.
+
+```sh
+cargo run -p cicada-examples --example menu-bar-worker --features cicada-tray/inspector
+```
+
 When the inspector is the key window, ⌘R refreshes, ⌘W closes and ⌘[ and ⌘] navigate the sidebar history. Quit,
 Ctrl-C and logout close the inspector and request cancellation of its refresh before the tray finishes quitting.
 
 **Caveats.** The tray and embedded inspector require macOS 14 or later. `CICADA_SERVER` and `CICADA_TOKEN` in the
-tray's environment take precedence over the picked context as they do for `cicada`. Refresh cancellation does
-not wait for the Tokio task to finish. A closed window discards late results.
+tray's environment take precedence over the picked context as they do for `cicada`. Refresh cancellation returns
+after requesting cancellation of the Tokio task. A closed window discards late results.
 
 ## Blocking
 
@@ -41,5 +47,6 @@ None.
 
 ## Status
 
-The app guide text is proposed. The docs link and guarantee tests and guide doctests passed. The feature builds,
-dependency-tree checks and gate policy tests passed. The manual AppKit checklist is pending.
+The app guide text is proposed. The docs link and guarantee tests, guide doctests, feature builds, dependency-tree
+checks and script tests passed. The workspace tests passed with PostgreSQL enabled. The menu bar worker example built
+with the feature enabled. The manual AppKit checklist is pending.
