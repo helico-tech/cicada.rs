@@ -11,7 +11,9 @@
 //! the nodes, the running turns and the types with their actor counts. The other items say "Coming soon". The server
 //! comes from the contexts of `cicada config`, resolved as `cicada` resolves them. Refresh is by hand.
 
-#[allow(dead_code)] // the window comes next
+#[cfg(target_os = "macos")]
+mod appkit;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod model;
 #[cfg(test)]
 mod tests;
@@ -34,7 +36,22 @@ impl Inspector {
     /// on the main thread on macOS 14 or later; it has a Dock icon and a main menu with Quit, Close (⌘W) and Refresh
     /// (⌘R). Elsewhere, or when startup fails, prints an error and returns exit code 1.
     pub fn run(self) -> ExitCode {
-        eprintln!("{}", model::NEEDS_MACOS);
-        ExitCode::FAILURE
+        #[cfg(target_os = "macos")]
+        {
+            appkit::run(environment())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            eprintln!("{}", model::NEEDS_MACOS);
+            ExitCode::FAILURE
+        }
     }
+}
+
+/// The process environment, without the variables whose name or value is not UTF-8.
+#[cfg(target_os = "macos")]
+fn environment() -> cicada_app::Env {
+    std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }

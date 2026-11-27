@@ -54,6 +54,7 @@ pub enum Part<T> {
     Failed(String),
 }
 
+#[cfg(test)]
 impl<T> Part<T> {
     /// The value, if the call answered.
     pub fn ready(&self) -> Option<&T> {
