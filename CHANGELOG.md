@@ -58,6 +58,10 @@ directly or use `..` in matches.
   matches the prefix, the selection or the context is dropped, a search that leaves out the selected actor unselects
   it, and a context switch or a closed window cancels the pending reads. Covered by the tests in
   `crates/cicada-inspector/src/tests/actors.rs` and `tests/json.rs`; the window has a manual check list.
+- `cicada-inspector`: Actors rows fold open to show their children. Open a row to read its first 100 children, then
+  choose `more…` for the next page. An actor shown both at the root and under its parent has separate selection and
+  fold state for each row. Refresh reopens surviving rows as their pages load. A different search prefix or context
+  starts with all rows folded.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
