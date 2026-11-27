@@ -338,9 +338,8 @@ owns the app until the window closes: a regular app with a Dock icon and a main 
 Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
-Overview, Actors, Messages, Outcomes, Types and Watches have pages; Running Turns and Nodes still say "Coming soon".
-Actors, Messages, Outcomes, Types and Watches share the toolbar's search field and pane toggle; each page keeps its own filter text, and the
-field's placeholder says which prefix to enter. The Overview shows tiles for actors, pending
+every item has a page. All but the Overview share the toolbar's search field and pane toggle; each page keeps its own
+filter text, and the field's placeholder says what to enter, such as "Address prefix" or "Node id prefix". The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
@@ -396,6 +395,15 @@ selection.
 - It shows no "due" mark, as the server's answer has no store time to compare with.
 - It is read only: no cancel, retry or deliver-now yet.
 
+**Running Turns** lists the turns running now on the actors under the address prefix, 100 at a time as you scroll: the
+actor, the message id, the node that holds the lease, the lease end, and "asked" when an operator asked to cancel the
+turn. The server pages turns by actor address, so an actor never shows twice, even while turns start and end as you
+scroll. Select a turn to see it in the pane, read only, from its row; **Show Actor** goes to its actor. Back from the
+actor reads the actor's turn again: the pane shows the turn running now, which may be another message, marks an ended
+one "no longer running", or shows a failed read with **Retry**. The list is a snapshot of when each page was read, so
+a turn may have ended by the time you see it; ⌘R reads it again from the top and clears the selection, and a failed
+page shows **Retry**. Cancelling a turn is not in the inspector yet.
+
 **Outcomes** lists the finished messages of the actors under the address prefix, 100 at a time as you scroll. A status
 switch in the toolbar, shown only on this page, picks Failed (the default), Cancelled, Done or All; All adds a status
 column and includes purged outcomes. Each row shows the message type, the actor, the attempt, the finished time and the
@@ -426,6 +434,18 @@ and shows "not found" past retention or the error with **Retry**. Back to an out
 when its row is no longer listed, and selects its row once it is listed; Forward to a link reads the message again. A
 context switch clears back and forward, and the chain is not a snapshot: messages caused later can appear when you
 return.
+
+**Nodes** lists every node: its id, status (alive, suspect or dead), the types it hosts ("sends only" for none), its
+label, host name, last heartbeat and the number of its running turns. The server computes the status in the store's
+clock: alive when the node was seen under 30 s ago, suspect under 2 minutes, dead after that. The last heartbeat shows
+as a time, not an age, as the Mac's clock may differ from the store's, and the footer's tooltip gives the time of the
+last read on the Mac's clock. The search field filters the nodes read by id prefix, without a new read. The page reads
+the nodes on its first visit, on ⌘R and after a context switch, not on the Overview's refresh; the status is not live.
+A failed read shows its error with **Retry**, and no older list.
+
+Select a node to read it with its running turns, each with **Show Actor**; a node that is gone says "not found", and a
+failed read shows **Retry**. Back to a Nodes place selects the node again and reads it fresh. ⌘R clears the selection,
+selecting another node or filtering the selected one out drops a read still out, and every read gives up after 10 s.
 
 **Types** lists the registered types by name, with the shortened contract hash (the full one in its tooltip) and the
 number of message types. The first visit and each ⌘R read the whole list, and the search field filters it by type
