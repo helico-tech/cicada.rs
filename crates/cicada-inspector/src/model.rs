@@ -395,6 +395,9 @@ impl Session {
         let target = cicada_app::context_client(&self.env, picked.as_deref());
         let overrides = OVERRIDES.into_iter().filter(|name| self.env.get(*name).is_some_and(|v| !v.is_empty()));
         {
+            // A context switch is a new visit of the page: no live refresh of the context before starts after it.
+            let mut shown = self.shown.lock().expect("inspector session");
+            shown.1 += 1;
             let mut current = self.shared.current.lock().expect("inspector session");
             current.supersede();
             current.context += 1;

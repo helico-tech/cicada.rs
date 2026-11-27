@@ -507,3 +507,72 @@ async fn the_timer_after_a_manual_reload_waits_for_its_pane_and_sample() {
     })
     .await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn no_live_refresh_of_the_context_before_reaches_the_new_server() {
+    with_clock(async {
+        let stats = || Fake::Answer(StatusCode::OK, json!({"actors": 1, "pending": 0, "failed": 0}));
+        let script = Script::new([("/stats", vec![stats(), stats(), stats()])]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, _nav, _live, mut opened) = live_session(&server.url, &dir, Section::Overview).await;
+        overview_read(&session).await;
+        let stream = opened.recv().await.unwrap();
+
+        // The user picks another context just as the old stream's batch falls due, before the live model hears of it.
+        stream.hints.send(Ok(Change::Resync)).unwrap();
+        settle().await;
+        session.use_context(None);
+        tokio::time::advance(GATHER).await;
+        settle().await;
+        overview_read(&session).await;
+        settle().await;
+        assert_eq!(script.remaining("/stats"), 1, "only the new context's own Overview read");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_gone_actor_ends_the_pane_reads_of_a_manual_reload() {
+    with_clock(async {
+        let gone = Fake::Answer(
+            StatusCode::NOT_FOUND,
+            json!({"type": "urn:cicada:problem:no-such-instance", "title": "Not Found", "status": 404}),
+        );
+        let (held, held_in, _never) = later(page([], None));
+        let three = |fake: Fake| vec![fake.clone(), fake.clone(), fake];
+        let script = Script::new([
+            (ROOTS, three(roots(&["a"]))),
+            (SAMPLE, three(page([], None))),
+            (DETAILS, vec![details(1), gone.clone(), gone]),
+            (TURN, three(Fake::Answer(StatusCode::OK, turns::turn("counter/a", "m")))),
+            (MAILBOX, vec![page([], None), held, page([], None)]),
+            (WATCHING, three(page([], None))),
+            (WATCHED_BY, three(page([], None))),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, _nav, live, _opened) = live_session(&server.url, &dir, Section::Actors).await;
+        overview_read(&session).await;
+        let model = session.actors();
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 1).await;
+        model.select(Some(root("a")));
+        view_until(&mut pane, |pane| version(pane) == Some(1)).await;
+
+        // ⌘R as the actor disappears: its mailbox read is held when the lookup answers 404.
+        model.refresh();
+        live.refreshed(Section::Actors);
+        held_in.notified().await;
+        view_until(&mut pane, |pane| pane.not_found()).await;
+        settle().await;
+        assert!(!model.pane_reading(), "the pane's other reads ended with the 404");
+        tokio::time::advance(FALLBACK).await;
+        settle().await;
+        while script.remaining(ROOTS) > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}

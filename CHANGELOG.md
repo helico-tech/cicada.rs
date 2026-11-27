@@ -146,10 +146,11 @@ directly or use `..` in matches.
   Offline without a context. A click pauses: the stream closes, the timer stops and a refresh in flight is cancelled at
   the click with its results dropped (on Types, the old pane shows until a changed schema is formatted, so a paused
   refresh shows nothing of it); a click resumes. Refresh (⌘R) works in every state, and the next automatic refresh comes
-  30 s after its reload ended. No live refresh starts on a page already left or after the window closed. An Actors
-  refresh cancelled by a pause, by leaving the page or by Retry marks the root rows and the open parents whose reads it
-  dropped "not refreshed". Covered by the tests in `crates/cicada-inspector/src/live/tests.rs`,
-  `src/tests/soft_refresh/live.rs` and `src/tests/live.rs`; the pill has a manual check list.
+  30 s after its reload ended. No live refresh starts on a page already left, for the context before a switch or after
+  the window closed. An Actors refresh cancelled by a pause, by leaving the page or by Retry marks the root rows and the
+  open parents whose reads it dropped "not refreshed". Covered by the tests in
+  `crates/cicada-inspector/src/live/tests.rs`, `src/tests/soft_refresh/live.rs` and `src/tests/live.rs`; the pill has a
+  manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before

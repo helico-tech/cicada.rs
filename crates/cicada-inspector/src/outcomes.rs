@@ -460,7 +460,7 @@ impl Outcomes {
                     }
                     || {
                         count.borrow_and_update();
-                        shared.lock().count_task.is_some()
+                        shared.lock().count_task.as_ref().is_some_and(|task| !task.is_finished())
                     };
                 if !busy {
                     return;

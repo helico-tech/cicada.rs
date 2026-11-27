@@ -57,10 +57,10 @@ None.
 ## Status
 
 The wording for the app guide is proposed; no protected file was edited. The changelog's 0.26.0 section names live
-updates. After code review round 2: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
-warnings` passed; `cargo test --workspace` with PostgreSQL passed 4,041 tests in 138 suites, none failed; `cargo test -p
-cicada-inspector` passed 156 tests and 1 doctest; `cicada-examples --test docs` passed 11; `openspec validate
-inspector-live --strict` passed. The manual AppKit checks of the pill are outstanding: a node following a change on the
-Actors page within about a second with the selection, scroll and open rows kept; Live, then Reconnecting when the server
-stops and Live again when it comes back; Paused stopping updates while ⌘R still reloads; one reload on resume; Offline
-with an invalid context; light and dark; VoiceOver reading the pill.
+updates. After code review round 3: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
+warnings` passed; `cargo test -p cicada-inspector` passed 158 tests and 1 doctest; `cicada-examples --test docs` passed
+11; `openspec validate inspector-live --strict` passed. After round 2, `cargo test --workspace` with PostgreSQL passed
+4,041 tests. The manual AppKit checks of the pill are outstanding: a node following a change on the Actors page within
+about a second with the selection, scroll and open rows kept; Live, then Reconnecting when the server stops and Live
+again when it comes back; Paused stopping updates while ⌘R still reloads; one reload on resume; Offline with an invalid
+context; light and dark; VoiceOver reading the pill.

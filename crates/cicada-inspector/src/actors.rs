@@ -863,6 +863,12 @@ impl Actors {
         self.shared.lock().sample_task.take()
     }
 
+    /// True while a read of the selected actor runs outside a soft refresh.
+    #[cfg(test)]
+    pub fn pane_reading(&self) -> bool {
+        self.shared.lock().pane_task.as_ref().is_some_and(|task| !task.is_finished())
+    }
+
     /// The tasks aborted so far; each ends once it has stopped.
     #[cfg(test)]
     pub fn take_aborted(&self) -> Vec<JoinHandle<()>> {
@@ -1387,14 +1393,16 @@ impl Shared {
         let missing = AtomicBool::new(false);
         let actor = async {
             let part = budget.read(client.get_actor(&address)).await.map(|view| view.map(details));
+            let gone = matches!(part, Part::Ready(None));
             self.apply_pane(read, &missing, |pane| {
-                if matches!(part, Part::Ready(None)) {
+                if gone {
                     pane.set_missing();
                     missing.store(true, Ordering::Relaxed);
                 } else {
                     pane.actor.land(&mut pane.errors.actor, part, keep);
                 }
             });
+            gone
         };
         let turn = async {
             let part = budget.read(client.turn(&address)).await;
@@ -1435,7 +1443,20 @@ impl Shared {
                 .map(|page| Watches { more: page.next.is_some(), items: page.items });
             self.apply_pane(read, &missing, |pane| pane.watched_by.land(&mut pane.errors.watched_by, part, keep));
         };
-        tokio::join!(actor, turn, mailbox, watching, watched_by);
+        // A gone actor ends the pane's other reads at once, so nothing of the pane is still read once it shows that.
+        let rest = async {
+            tokio::join!(turn, mailbox, watching, watched_by);
+        };
+        tokio::pin!(actor, rest);
+        // Biased, so the reads ask for their request slots in the order they always did: the lookup first.
+        let (gone, rest_done) = tokio::select! {
+            biased;
+            gone = &mut actor => (gone, false),
+            () = &mut rest => ((&mut actor).await, true),
+        };
+        if !gone && !rest_done {
+            rest.await;
+        }
     }
 
     fn apply_pane(&self, read: PaneRead, missing: &AtomicBool, change: impl FnOnce(&mut PaneView)) {
