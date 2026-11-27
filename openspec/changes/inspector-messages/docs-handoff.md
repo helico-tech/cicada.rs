@@ -11,7 +11,9 @@ recorded in back and forward. No public item changed: `Inspector` and `Embedded`
 
 The tests in `crates/cicada-inspector/src/tests/messages.rs` cover paging, a message shown once when two pages hold
 it, a page of only such messages still moving on, the pane from the row with its payload formatted only on selection,
-Show Actor selecting the exact row, "not found", a failed read with Retry, cancellation, and Back and Forward. The
+Show Actor selecting the exact row, "not found", a failed read with Retry, cancellation, Back and Forward restoring
+each Messages place's own prefix and message, a context switch clearing the history, a search clearing a message it no
+longer holds, and a formatting finished after a later selection being dropped. The
 Actors tests in `tests/actors.rs` pass unchanged over the shared pager. The window has a manual check list in
 `tasks.md`.
 
@@ -28,15 +30,19 @@ The footer shows how many messages are loaded, that none are pending under the p
 with **Retry**.
 
 Select a message to see its envelope in the pane: id, target, sender, type, delivery time, attempt and failures,
-correlation id and headers, and its payload as highlighted JSON. A payload longer than 256 KiB shows its start with a
-notice. The pane shows what the table read and makes no request of its own. ⌘R reloads the list from the top and
-clears the selection.
+correlation id and headers, and its payload as highlighted JSON. A long envelope scrolls on its own, so **Show Actor**
+and the payload stay in view. A payload longer than 256 KiB shows its start with a notice. The pane shows what the
+table read and makes no request of its own. If you search again and the new list, once fully loaded, no longer holds
+the selected message, the selection and the pane are cleared. ⌘R reloads the list from the top and clears the
+selection.
 
 **Show Actor** opens the Actors page with the message's target address in the search field and selects that actor's
 row once the first page has loaded. If the actor no longer exists, the pane says it is not found. If the page fails,
-the list shows the error with **Retry**, and Retry still selects the actor. Back (⌘[) returns to Messages with its
-prefix, the pages it had loaded and the message selected; Forward (⌘]) goes to the actor again. Leaving the Actors page
-or typing in the search field before the page loads cancels the selection.
+the list shows the error with **Retry**, and Retry still selects the actor. Back (⌘[) returns to Messages with the
+prefix and message it showed when you left it; if you searched another prefix since, it reads that prefix again and
+selects the message once it loads. Forward (⌘]) goes to the actor again. Picking another context clears back and
+forward, so no place of the old server is replayed against the new one. Leaving the Actors page or typing in the search
+field before the page loads cancels the selection.
 
 **Caveats.** The table is not a snapshot: messages handled or retried after a page was read stay as read until ⌘R.
 The page shows no "due" mark, as the server's answer has no store time to compare with. It is read only: no cancel,
@@ -48,13 +54,14 @@ None.
 
 ## Status
 
-Proposed app guide text. The inspector built and passed Clippy and its 45 model tests. Workspace formatting, Clippy
-with `-D warnings`, 3,911 workspace tests with PostgreSQL, the 11 documentation tests, the 54 doctests and strict
-OpenSpec validation passed. The change loop runs the gate at landing.
+Proposed app guide text. After the fixes of code review 1 the inspector's 49 model tests passed five runs in a row,
+and workspace Clippy with `-D warnings` and formatting passed. Before them, 3,911 workspace tests with PostgreSQL, the
+11 documentation tests, the 54 doctests and strict OpenSpec validation passed. The change loop runs the gate at
+landing.
 
 An uncommitted scratch script drove the real window by code against an in-process server: Messages picked in the
 sidebar, 120 messages loaded while scrolling, a message selected, Show Actor selecting its actor's row with the search
 field showing the address, Back restoring the message's row and the empty prefix, Forward selecting the actor again,
-and ⌘R's action clearing the selection. Nobody saw the window, so these count as run by code, not seen. The whole
-manual check list, light and dark, a gone actor, a stopped server, keyboard and VoiceOver included, still needs the
-owner's pass before 0.26.0 is released.
+and ⌘R's action clearing the selection; it passed again after the review's fixes. Nobody saw the window, so these
+count as run by code, not seen. The whole manual check list, light and dark, a gone actor, a stopped server, keyboard
+and VoiceOver included, still needs the owner's pass before 0.26.0 is released.

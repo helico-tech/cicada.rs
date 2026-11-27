@@ -301,7 +301,8 @@ define_class!(
                     self.render_pane();
                     self.check_more();
                 } else if section == Section::Messages {
-                    window.messages.show_footer(&c.messages_shown.borrow(), view.target_error.as_deref());
+                    let list = c.messages_shown.borrow().clone();
+                    window.messages.show_footer(&list, view.target_error.as_deref());
                     self.render_message_pane();
                     self.check_more_messages();
                 }
@@ -515,19 +516,25 @@ define_class!(
                 return;
             }
             // A field that sends the same text again reads nothing.
+            // Every borrow ends before AppKit renders, which can call back into the target.
             let prefix = sender.stringValue().to_string();
-            match c.navigation.borrow().current() {
-                Section::Actors if c.list.borrow().borrow().prefix != prefix => {
-                    c.session.actors().search(&prefix);
-                    self.render_list();
-                    self.render_pane();
-                }
-                Section::Messages if c.messages_list.borrow().borrow().prefix != prefix => {
-                    c.session.messages().search(&prefix);
-                    self.render_messages();
-                    self.render_message_pane();
-                }
-                _ => {}
+            let section = c.navigation.borrow().current();
+            let searched = match section {
+                Section::Actors => c.list.borrow().borrow().prefix.clone(),
+                Section::Messages => c.messages_list.borrow().borrow().prefix.clone(),
+                _ => return,
+            };
+            if searched == prefix {
+                return;
+            }
+            if section == Section::Actors {
+                c.session.actors().search(&prefix);
+                self.render_list();
+                self.render_pane();
+            } else {
+                c.session.messages().search(&prefix);
+                self.render_messages();
+                self.render_message_pane();
             }
         }
 
@@ -628,7 +635,8 @@ define_class!(
             }
             let Some(item) = sender.selectedItem() else { return };
             let name = item.title().to_string();
-            self.ivars().session.use_context(Some(name));
+            let c = self.ivars();
+            c.session.switch_context(&mut c.navigation.borrow_mut(), Some(name));
             self.render();
         }
 
@@ -637,15 +645,18 @@ define_class!(
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
             let action = item.action();
-            let navigation = self.ivars().navigation.borrow();
+            let (can_back, can_forward, section) = {
+                let navigation = self.ivars().navigation.borrow();
+                (navigation.can_back(), navigation.can_forward(), navigation.current())
+            };
             match action {
-                Some(action) if action == sel!(inspectorBack:) => navigation.can_back(),
-                Some(action) if action == sel!(inspectorForward:) => navigation.can_forward(),
+                Some(action) if action == sel!(inspectorBack:) => can_back,
+                Some(action) if action == sel!(inspectorForward:) => can_forward,
                 Some(action) if action == sel!(inspectorRefresh:) => self.can_refresh(),
                 Some(action) if action == sel!(inspectorTogglePane:) => {
                     let collapsed = self.window().pane_item.isCollapsed();
                     item.setTitle(if collapsed { ns_string!("Show Pane") } else { ns_string!("Hide Pane") });
-                    paged(navigation.current())
+                    paged(section)
                 }
                 _ => true,
             }
@@ -878,7 +889,8 @@ impl Target {
     /// The search field shows the prefix of the page it searches, and says what it searches.
     fn sync_search(&self) {
         let c = self.ivars();
-        let (prefix, tip) = match c.navigation.borrow().current() {
+        let section = c.navigation.borrow().current();
+        let (prefix, tip) = match section {
             Section::Actors => (c.list.borrow().borrow().prefix.clone(), "Search actors by address prefix"),
             Section::Messages => (
                 c.messages_list.borrow().borrow().prefix.clone(),

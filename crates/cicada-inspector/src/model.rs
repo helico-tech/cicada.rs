@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use cicada::ActorAddress;
 use cicada::api::{NodeView, RunningTurnView, StatsView};
+use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_app::{Contexts, Env};
 use cicada_client::{ActorClient, ClientError};
@@ -360,19 +361,37 @@ impl Session {
         std::mem::take(&mut self.shared.current.lock().expect("inspector session").superseded)
     }
 
-    /// Applies `change` to `navigation` and its effect on the pages: leaving the Actors page cancels a Show Actor
-    /// still waiting for its page, and arriving at a Show Actor's place, by the jump or by back or forward, starts it
-    /// again. Returns what `change` returned.
+    /// Picks a context as [`Self::use_context`] does and forgets `navigation`'s history, whose places belong to the
+    /// context before.
+    pub fn switch_context(&self, navigation: &mut Navigation, picked: Option<String>) {
+        self.use_context(picked);
+        navigation.forget();
+    }
+
+    /// Applies `change` to `navigation` and its effect on the pages. Leaving the Messages page records its prefix and
+    /// selection in the place left, and leaving the Actors page cancels a Show Actor still waiting for its page.
+    /// Arriving at a Show Actor's place, by the jump or by back or forward, starts it again; arriving at a Messages
+    /// place restores what it recorded. Returns what `change` returned.
     pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
-        let left_actors = navigation.current() == Section::Actors;
+        let left = navigation.current();
+        let recorded = navigation.place().messages.clone();
+        if left == Section::Messages {
+            navigation.remember(self.messages.source());
+        }
         if !change(navigation) {
+            // Nothing was left: the place keeps what it recorded before.
+            navigation.current.messages = recorded;
             return false;
         }
-        if left_actors {
+        if left == Section::Actors {
             self.actors.cancel_jump();
         }
-        if let Some(actor) = &navigation.place().actor {
+        let place = navigation.place();
+        if let Some(actor) = &place.actor {
             self.actors.jump(actor.clone());
+        }
+        if let Some((prefix, selected)) = &place.messages {
+            self.messages.restore(prefix, selected.clone());
         }
         true
     }
@@ -460,13 +479,16 @@ impl Section {
     }
 }
 
-/// A place in the history: an item of the sidebar, and for a Show Actor the actor it went to on the Actors page.
+/// A place in the history: an item of the sidebar, for a Show Actor the actor it went to on the Actors page, and for
+/// the Messages page what it showed when it was left.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Place {
     /// The item shown.
     pub section: Section,
     /// The actor a Show Actor selects on the Actors page, again whenever back or forward return here.
     pub actor: Option<ActorAddress>,
+    /// The Messages page's prefix and selected message when this place was left, restored on a return to it.
+    pub messages: Option<(String, Option<MessageId>)>,
 }
 
 /// The sidebar's selection with a back and forward history, as in a browser.
@@ -491,13 +513,26 @@ impl Navigation {
     /// Selects `section`; a new selection drops the forward list. Selecting the current item changes nothing.
     pub fn select(&mut self, section: Section) {
         if section != self.current.section {
-            self.go(Place { section, actor: None });
+            self.go(Place { section, ..Place::default() });
         }
     }
 
     /// Records a Show Actor: the Actors page with `actor` as its target, after the current place.
     pub fn jump(&mut self, actor: ActorAddress) {
-        self.go(Place { section: Section::Actors, actor: Some(actor) });
+        self.go(Place { section: Section::Actors, actor: Some(actor), messages: None });
+    }
+
+    /// Records what the Messages page shows in the current place, for a return to it.
+    pub fn remember(&mut self, messages: (String, Option<MessageId>)) {
+        self.current.messages = Some(messages);
+    }
+
+    /// Forgets the history and what the current place restores: after a context switch, a place of the context
+    /// before would jump to, or restore, a same-named actor or message of another server.
+    pub fn forget(&mut self) {
+        self.back.clear();
+        self.forward.clear();
+        self.current = Place { section: self.current.section, ..Place::default() };
     }
 
     fn go(&mut self, place: Place) {

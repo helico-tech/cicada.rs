@@ -69,12 +69,15 @@ directly or use `..` in matches.
   read, and a page of only such messages still moves on to the next. The footer shows the count, an empty prefix, or a
   failed page with Retry. Selecting a message fills the pane from its row, with no read of its own: the target,
   sender, type, delivery time, correlation id, headers, attempt and failures, and the payload as highlighted JSON
-  (cut at 256 KiB), formatted only then. ⌘R reloads the list from the top and clears the selection. Show Actor in the
+  (cut at 256 KiB), formatted only then; a long envelope scrolls above Show Actor and the payload. A selected
+  message that a new search's pages no longer hold, once all are read, is unselected. ⌘R reloads the list from the
+  top and clears the selection. Show Actor in the
   pane goes to the Actors page, searches for the message's exact target address and selects that root row once the
   first page has loaded; a gone actor shows "not found", and a failed page shows its Retry row with nothing
-  selected. The jump is recorded in back and forward: Back returns to Messages with its prefix, its loaded pages and
-  the message, and Forward goes to the actor again. Leaving the Actors page or typing a search cancels a jump still
-  waiting for its page. The Actors list's paging is now a pager the two pages share. Covered by the tests in
+  selected. The jump is recorded in back and forward: each Messages place keeps the prefix and message it had when
+  you left it, so Back returns to them (reading that prefix again when it changed since), and Forward goes to the
+  actor again. A context switch clears back and forward. Leaving the Actors page or typing a search cancels a jump
+  still waiting for its page. The Actors list's paging is now a pager the two pages share. Covered by the tests in
   `crates/cicada-inspector/src/tests/messages.rs` and, unchanged, `tests/actors.rs`; the window has a manual check
   list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens

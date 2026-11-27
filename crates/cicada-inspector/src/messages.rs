@@ -81,13 +81,25 @@ struct State {
     seen: HashSet<MessageId>,
     pane_generation: u64,
     selected: Option<MessageId>,
+    /// A message to select once a page of this generation brings it: Back to a Messages place.
+    pending: Option<MessageId>,
     format_task: Option<JoinHandle<()>>,
     /// The tasks aborted so far, for tests that await their end.
     #[cfg(test)]
     aborted: Vec<JoinHandle<()>>,
-    /// The payloads formatted so far.
+    /// The payloads formatted so far, also those whose result was dropped.
     #[cfg(test)]
     formatted: usize,
+    /// Holds for the next formattings, taken one per selection.
+    #[cfg(test)]
+    holds: Vec<Hold>,
+}
+
+/// A formatting held before it starts: it says so on `arrived` and waits for `release`.
+#[cfg(test)]
+struct Hold {
+    arrived: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 impl State {
@@ -143,6 +155,7 @@ impl Messages {
         state.supersede_list();
         state.client = client;
         state.loaded = false;
+        state.pending = None;
         let (generation, prefix) = (state.pager.generation(), state.prefix.clone());
         self.shared.list.send_replace(MessagesView { prefix, generation, ..MessagesView::default() });
         self.shared.select(&mut state, None);
@@ -162,15 +175,18 @@ impl Messages {
         if state.client.is_none() {
             return;
         }
+        state.pending = None;
         self.shared.select(&mut state, None);
         self.shared.reload(&mut state, false);
     }
 
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
-    /// still for `limits.debounce`. A selected message to an address outside the prefix is unselected.
+    /// still for `limits.debounce`. A selected message to an address outside the prefix is unselected, and one that
+    /// the new pages do not hold once they are all read.
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.lock();
         state.prefix = prefix.to_owned();
+        state.pending = None;
         let outside = self.shared.pane.borrow().message.as_ref().is_some_and(|m| !m.to.as_str().starts_with(prefix));
         if outside {
             self.shared.select(&mut state, None);
@@ -202,6 +218,7 @@ impl Messages {
     /// formatting of an earlier selection is dropped. `None`, or an id not among the rows, empties the pane.
     pub fn select(&self, id: Option<&MessageId>) {
         let mut state = self.shared.lock();
+        state.pending = None;
         self.shared.select(&mut state, id);
     }
 
@@ -210,9 +227,42 @@ impl Messages {
         self.shared.lock().selected.clone()
     }
 
+    /// The prefix and the message selected, or still to be selected, for the history to restore later.
+    pub fn source(&self) -> (String, Option<MessageId>) {
+        let state = self.shared.lock();
+        (state.prefix.clone(), state.selected.clone().or(state.pending.clone()))
+    }
+
+    /// Restores a place of the history: reads `prefix` again at once when it is not the current one, and selects
+    /// `selected` now when its row is loaded, or when a page of this generation brings it.
+    pub fn restore(&self, prefix: &str, selected: Option<MessageId>) {
+        let mut state = self.shared.lock();
+        state.pending = None;
+        if state.prefix != prefix {
+            state.prefix = prefix.to_owned();
+            self.shared.select(&mut state, None);
+            if state.client.is_none() {
+                self.shared.list.send_modify(|list| list.prefix = prefix.to_owned());
+                return;
+            }
+            self.shared.reload(&mut state, false);
+        }
+        if state.selected == selected {
+            return;
+        }
+        let loaded = selected.as_ref().is_some_and(|id| self.shared.list.borrow().index(id).is_some());
+        if loaded || selected.is_none() {
+            self.shared.select(&mut state, selected.as_ref());
+        } else {
+            self.shared.select(&mut state, None);
+            state.pending = selected;
+        }
+    }
+
     /// The window closes: every read and formatting is dropped.
     pub fn stop(&self) {
         let mut state = self.shared.lock();
+        state.pending = None;
         state.supersede_list();
         state.supersede_pane();
     }
@@ -223,10 +273,20 @@ impl Messages {
         std::mem::take(&mut self.shared.lock().aborted)
     }
 
-    /// How many payloads were formatted so far.
+    /// How many payloads were formatted so far, also those whose result was dropped.
     #[cfg(test)]
     pub fn formatted(&self) -> usize {
         self.shared.lock().formatted
+    }
+
+    /// Holds the formatting of the next selection before it starts: it sends on the first channel when it arrived,
+    /// and waits for a send on the second.
+    #[cfg(test)]
+    pub fn hold_next_format(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (arrived, arrival) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        self.shared.lock().holds.push(Hold { arrived, release: released });
+        (arrival, release)
     }
 }
 
@@ -286,17 +346,30 @@ impl Shared {
         };
         let fresh: Vec<_> = items.into_iter().filter(|m| state.seen.insert(m.id.clone())).map(Arc::new).collect();
         let added = !fresh.is_empty();
+        let pending = state.pending.take_if(|id| fresh.iter().any(|row| &row.id == id));
         self.list.send_modify(|list| {
             list.rows.extend(fresh);
             list.paging = Paging::Idle;
             list.more = more;
         });
+        if pending.is_some() {
+            self.select(state, pending.as_ref());
+        } else if !more {
+            // Every page is read: a message to select that none brought, or a selected one that is not among the
+            // rows, is gone from this list, and so is its pane.
+            state.pending = None;
+            let absent = state.selected.as_ref().is_some_and(|id| self.list.borrow().index(id).is_none());
+            if absent {
+                self.select(state, None);
+            }
+        }
         if !added && more {
             self.request_page(state);
         }
     }
 
-    /// Selects a row under a new pane generation and formats its payload, published only while it is still selected.
+    /// Selects a row under a new pane generation and formats its payload on a blocking thread; the result is published
+    /// only while that row is still the selection, so one that finishes after a later selection is dropped.
     fn select(self: &Arc<Self>, state: &mut State, id: Option<&MessageId>) {
         state.supersede_pane();
         let generation = state.pane_generation;
@@ -308,7 +381,14 @@ impl Shared {
         self.pane.send_replace(MessagePane { generation, message: row.clone(), payload: None });
         let Some(row) = row else { return };
         let shared = self.clone();
-        state.format_task = Some(self.handle.spawn(async move {
+        #[cfg(test)]
+        let hold = state.holds.pop();
+        state.format_task = Some(self.handle.spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                let _ = hold.arrived.send(());
+                let _ = hold.release.recv();
+            }
             let payload = Arc::new(json::format(&row.payload));
             let mut state = shared.lock();
             #[cfg(test)]

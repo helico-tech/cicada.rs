@@ -32,6 +32,10 @@ const COLUMNS: [(&str, &str, f64); 5] = [
 const FOOTER: f64 = 26.0;
 const PANE_MARGIN: f64 = 16.0;
 const BUTTON: NSSize = NSSize::new(110.0, 24.0);
+/// The least height the payload keeps under Show Actor; the envelope scrolls in what is left above it.
+const MIN_PAYLOAD: f64 = 160.0;
+/// The least height of the envelope, also in a short pane.
+const MIN_ENVELOPE: f64 = 80.0;
 
 /// The views of the Messages page and its pane.
 pub(super) struct MessagesPage {
@@ -42,7 +46,9 @@ pub(super) struct MessagesPage {
     retry: Retained<NSButton>,
     /// The pane's root, laid out from the top.
     pub pane: Retained<FlippedView>,
+    /// The envelope, in a scroll view of its own so that Show Actor and the payload stay in the pane.
     header: Retained<FlippedView>,
+    header_scroll: Retained<NSScrollView>,
     show_actor: Retained<NSButton>,
     payload: JsonText,
 }
@@ -102,7 +108,14 @@ impl MessagesPage {
         let header: Retained<FlippedView> =
             unsafe { msg_send![FlippedView::alloc(mtm), initWithFrame: NSRect::new(NSPoint::ZERO, pane_size)] };
         header.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        pane.addSubview(&header);
+        let header_scroll =
+            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), NSRect::new(NSPoint::ZERO, pane_size));
+        header_scroll.setHasVerticalScroller(true);
+        header_scroll.setAutohidesScrollers(true);
+        header_scroll.setDrawsBackground(false);
+        header_scroll.setDocumentView(Some(&header));
+        header_scroll.setAccessibilityLabel(Some(ns_string!("Envelope")));
+        pane.addSubview(&header_scroll);
         // SAFETY: The target implements the action with the button as the sender, and clears it during teardown.
         let show_actor = unsafe {
             NSButton::buttonWithTitle_target_action(ns_string!("Show Actor"), Some(target), Some(show_actor), mtm)
@@ -113,7 +126,7 @@ impl MessagesPage {
         let payload = JsonText::new(mtm, pane_size, "Payload", "payload");
         payload.root.setHidden(true);
         pane.addSubview(&payload.root);
-        Self { root, table, footer, retry, pane, header, show_actor, payload }
+        Self { root, table, footer, retry, pane, header, header_scroll, show_actor, payload }
     }
 
     /// The footer: why there is no server; or the paging's state, with Retry after a failed page.
@@ -154,16 +167,20 @@ impl MessagesPage {
         let height = self.pane.frame().size.height;
         let mut layout = Layout::new(&self.header, width, PANE_MARGIN);
         header(&mut layout, pane);
-        let top = layout.finish(0.0);
-        self.header.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, top)));
+        let content = layout.finish(0.0);
+        self.header.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, content)));
         let shown = pane.message.is_some();
+        // Show Actor and the payload keep their place; a long envelope scrolls above them.
+        let room = if shown { (height - BUTTON.height - 12.0 - MIN_PAYLOAD).max(MIN_ENVELOPE) } else { height };
+        let top = content.min(room);
+        self.header_scroll.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, top)));
         self.show_actor.setHidden(!shown);
         self.payload.root.setHidden(!shown);
         self.show_actor.setFrame(NSRect::new(NSPoint::new(PANE_MARGIN + 8.0, top), BUTTON));
         let below = top + BUTTON.height + 12.0;
         self.payload
             .root
-            .setFrame(NSRect::new(NSPoint::new(0.0, below), NSSize::new(width, (height - below).max(120.0))));
+            .setFrame(NSRect::new(NSPoint::new(0.0, below), NSSize::new(width, (height - below).max(60.0))));
         if let Some(message) = &pane.message {
             let to = NSString::from_str(&format!("Show Actor {}", message.to));
             self.show_actor.setAccessibilityLabel(Some(&to));
