@@ -71,7 +71,8 @@ menu match the boards, and follows `gui-mockup-boards`.
 
 ## Departures from the board
 
-For the owner to agree:
+All eight agreed by the owner on 2026-11-27 (DEP-BADGE, DEP-OLDMAC, DEP-ROWS, DEP-BAR, DEP-TRIES, DEP-INSPECTOR,
+DEP-ICON, DEP-CONNECTING, in this order):
 
 1. **Right-side text as a badge.** Native menus draw text on the right only as a badge, a small capsule, not plain
    grey text as the boards show.
