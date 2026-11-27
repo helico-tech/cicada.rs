@@ -73,6 +73,9 @@ struct Control {
     state: watch::Sender<TrayState>,
     /// When the last connection failed, by the wall clock; written with the state, under the connection lock.
     failed_at: Mutex<Option<Timestamp>>,
+    /// The innermost cause of the last connection's failure, for the menu: usually "Connection refused (os error 61)",
+    /// with no URL. [`TrayState::Failed`] keeps the whole error. Written with the state, under the connection lock.
+    failure_cause: Mutex<Option<String>>,
     #[cfg(target_os = "macos")]
     registered_types: Mutex<Vec<&'static str>>,
     /// The arguments of the last worker command, for tests.
@@ -95,6 +98,7 @@ struct Details {
     ready: Option<WorkerReady>,
     stopping: Option<(Instant, bool)>,
     failed_at: Option<Timestamp>,
+    failure_cause: Option<String>,
 }
 
 struct WorkerTaskGuard {
@@ -112,6 +116,7 @@ impl Tray {
                 connection: Mutex::new(None),
                 state: watch::channel(TrayState::Offline).0,
                 failed_at: Mutex::default(),
+                failure_cause: Mutex::default(),
                 #[cfg(target_os = "macos")]
                 registered_types: Mutex::default(),
                 #[cfg(test)]
@@ -307,11 +312,13 @@ impl Control {
         });
     }
 
-    fn finish(&self, state: TrayState) {
+    /// Ends the connection with `state`; `cause` is the innermost cause of a failure, for the menu.
+    fn finish(&self, state: TrayState, cause: Option<String>) {
         let mut connection = self.connection.lock().expect("tray connection");
         *connection = None;
-        let failed_at = matches!(state, TrayState::Failed { .. }).then(|| SystemTime::now().into());
-        *self.failed_at.lock().expect("tray failure time") = failed_at;
+        let failed = matches!(state, TrayState::Failed { .. });
+        *self.failed_at.lock().expect("tray failure time") = failed.then(|| SystemTime::now().into());
+        *self.failure_cause.lock().expect("tray failure cause") = cause.filter(|_| failed);
         self.state.send_replace(state);
     }
 
@@ -322,22 +329,30 @@ impl Control {
         let ready = connection.as_ref().and_then(|connection| connection.ready.clone());
         let stopping =
             connection.as_ref().and_then(|connection| connection.stopping_at.map(|at| (at, connection.stopped_now)));
-        Details { ready, stopping, failed_at: *self.failed_at.lock().expect("tray failure time") }
+        Details {
+            ready,
+            stopping,
+            failed_at: *self.failed_at.lock().expect("tray failure time"),
+            failure_cause: self.failure_cause.lock().expect("tray failure cause").clone(),
+        }
     }
 }
 
 impl WorkerTaskGuard {
     fn fail(mut self, error: String) {
         let context = self.context.take().expect("the worker task has a context");
-        self.control.finish(TrayState::Failed { context, error });
+        self.control.finish(TrayState::Failed { context, error: error.clone() }, Some(error));
     }
 
     fn complete(mut self, result: Result<(), AppError>) {
         let context = self.context.take().expect("the worker task has a context");
-        self.control.finish(match result {
-            Ok(()) => TrayState::Offline,
-            Err(error) => TrayState::Failed { context, error: error.to_string() },
-        });
+        match result {
+            Ok(()) => self.control.finish(TrayState::Offline, None),
+            Err(error) => {
+                let cause = root_cause(&error);
+                self.control.finish(TrayState::Failed { context, error: error.to_string() }, Some(cause));
+            }
+        }
     }
 }
 
@@ -349,7 +364,16 @@ impl Drop for WorkerTaskGuard {
         } else {
             "the HTTP worker task was cancelled before it returned"
         };
-        self.control.finish(TrayState::Failed { context, error: error.to_owned() });
+        self.control.finish(TrayState::Failed { context, error: error.to_owned() }, Some(error.to_owned()));
+    }
+}
+
+/// The innermost cause of a failed command: the end of its `source()` chain, such as "Connection refused (os error
+/// 61)" under "the server is not ready" and the request that failed.
+fn root_cause(error: &AppError) -> String {
+    match error {
+        AppError::Usage(message) => message.clone(),
+        AppError::Failed(error) => error.root_cause().to_string(),
     }
 }
 

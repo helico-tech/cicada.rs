@@ -36,6 +36,8 @@ pub(crate) struct MenuInput<'a> {
     pub stopping: Option<(Instant, bool)>,
     /// When the last connection failed, by the wall clock.
     pub failed_at: Option<Timestamp>,
+    /// The innermost cause of that failure; the state's whole error when it is unknown.
+    pub failure_cause: Option<&'a str>,
     /// Each context's name and its server's host.
     pub contexts: &'a [(String, Option<String>)],
     /// The context Connect targets while not connected.
@@ -222,42 +224,34 @@ impl TrayState {
     }
 }
 
-/// `text` as the menu shows it: tabs and line breaks removed, as the URL parser removes them, so none splits a URL;
-/// then split on white space, each word that holds `://` replaced whole by what comes before
-/// its scheme and `<scheme>://<host>[:<port>]` as the `url` crate parses the rest of the word, or `<url>` when it does
-/// not parse or has no host, so nothing after the host survives; control characters made spaces; the words joined by
-/// one space and cut at `limit` characters, the last an ellipsis when cut. URLs are replaced before the cut.
-pub(crate) fn display_text(text: &str, limit: usize) -> String {
-    let text: String = text.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
-    let words: Vec<String> = text.split_whitespace().map(redacted_word).collect();
-    let cleaned: String = words.join(" ").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+/// What the failure row says when the cause might hold an address or credentials.
+pub(crate) const HIDDEN_FAILURE: &str = "Connection failed";
+
+/// The failure row's text: the failure's innermost cause, cut at [`FAILURE_LENGTH`], unless it might hold an address
+/// or credentials. Redacting inside free text cannot be made safe, as the URL parser accepts many forms and white
+/// space inside a URL, so a doubtful cause is not shown at all: one that, without its control characters, holds `@`, a
+/// `:` directly followed by `/` or `\`, or `http`, `https`, `ws` or `wss` (any case) directly followed by `:`.
+pub(crate) fn failure_text(cause: &str) -> String {
+    let bare: String = cause.chars().filter(|c| !c.is_control()).collect();
+    let lower = bare.to_lowercase();
+    let doubtful = bare.contains('@')
+        || bare.contains(":/")
+        || bare.contains(":\\")
+        || ["http:", "https:", "ws:", "wss:"].iter().any(|scheme| lower.contains(scheme));
+    if doubtful { HIDDEN_FAILURE.to_owned() } else { plain_text(cause, FAILURE_LENGTH) }
+}
+
+/// `text` with each run of control characters and white space made one space, cut at `limit` characters, the last an
+/// ellipsis when cut.
+pub(crate) fn plain_text(text: &str, limit: usize) -> String {
+    let words = text.split(|c: char| c.is_whitespace() || c.is_control()).filter(|word| !word.is_empty());
+    let joined = words.collect::<Vec<_>>().join(" ");
     if joined.chars().count() <= limit {
         return joined;
     }
     let mut cut: String = joined.chars().take(limit.saturating_sub(1)).collect();
     cut.push('…');
     cut
-}
-
-/// A word with its URL, if any, reduced to the text before the scheme and the scheme, host and port.
-fn redacted_word(word: &str) -> String {
-    let Some(at) = word.find("://") else { return word.to_owned() };
-    let scheme = word[..at]
-        .char_indices()
-        .rev()
-        .take_while(|&(_, c)| c.is_ascii_alphanumeric() || "+-.".contains(c))
-        .last()
-        .map_or(at, |(start, _)| start);
-    let url = url::Url::parse(&word[scheme..]).ok();
-    let shown = url.as_ref().and_then(|url| {
-        let host = url.host_str().filter(|host| !host.is_empty())?;
-        Some(match url.port() {
-            Some(port) => format!("{}://{host}:{port}", url.scheme()),
-            None => format!("{}://{host}", url.scheme()),
-        })
-    });
-    format!("{}{}", &word[..scheme], shown.as_deref().unwrap_or("<url>"))
 }
 
 /// The boards' row geometry, in points: the menu's padding, a row's padding (rich rows and plain ones), the icon or the
@@ -343,7 +337,7 @@ fn running_row(turn: &RunningTurn, icon: Icon, now: Timestamp) -> RunningRow {
 /// A finished turn's row, and whether it counts as failed.
 fn recent_row(turn: &FinishedTurn, zone: FixedOffset) -> (RecentRow, bool) {
     let kind = &turn.turn.message_type;
-    let error = |error: &str| display_text(error.lines().next().unwrap_or_default(), TURN_ERROR_LENGTH);
+    let error = |error: &str| plain_text(error.lines().next().unwrap_or_default(), TURN_ERROR_LENGTH);
     let (icon, line, failed) = match &turn.outcome {
         TurnResult::Committed(TurnOutcome::Done) => {
             (Icon::Done, format!("done in {}", minutes(between(turn.turn.claimed_at, turn.finished_at))), false)
@@ -434,7 +428,7 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
                 if input.contexts.is_empty() { "Not connected · Run cicada config" } else { "Not connected" };
             model.header = header(subtitle.to_owned(), false, selected.is_some());
             if let TrayState::Failed { context, error } = input.state {
-                let error = display_text(error, FAILURE_LENGTH);
+                let error = failure_text(input.failure_cause.unwrap_or(error));
                 let subtitle = match input.failed_at {
                     Some(at) => format!("{error} at {}", clock(at, input.zone)),
                     None => error,
@@ -700,6 +694,7 @@ mod tests {
         stopping: Option<(Instant, bool)>,
         grace: Duration,
         failed_at: Option<Timestamp>,
+        failure_cause: Option<&'static str>,
         contexts: Vec<(String, Option<String>)>,
         selected: Option<&'static str>,
         monotonic_now: Instant,
@@ -720,6 +715,7 @@ mod tests {
                 stopping: None,
                 grace: Duration::from_secs(30),
                 failed_at: None,
+                failure_cause: None,
                 contexts: vec![
                     ("local".into(), Some("127.0.0.1:8080".into())),
                     ("prod".into(), Some("actors.internal".into())),
@@ -744,6 +740,7 @@ mod tests {
                 }),
                 stopping: self.stopping,
                 failed_at: self.failed_at,
+                failure_cause: self.failure_cause,
                 contexts: &self.contexts,
                 selected: self.selected,
                 now: at(14, 32, 0),
@@ -965,43 +962,54 @@ mod tests {
     }
 
     #[test]
-    fn the_failure_row_shows_no_credentials_queries_or_control_characters() {
-        let error = "error sending request for url (https://user:secret@actors.internal:8443/api/v1?token=hidden#x):\n\
-                     connection\trefused\u{7}";
+    fn the_failure_row_shows_the_root_cause_not_the_whole_error() {
+        let error = "the server is not ready: error sending request for url \
+                     (https://user:secret@actors.internal/api?token=hidden): Connection refused (os error 61)";
         let mut fixture = Fixture::new(TrayState::Failed { context: "prod".into(), error: error.into() });
         fixture.failed_at = Some(at(9, 1, 0));
-        let failure = fixture.model().failure.unwrap();
+        fixture.failure_cause = Some("Connection refused (os error 61)");
+        assert_eq!(fixture.model().failure.unwrap().subtitle, "Connection refused (os error 61) at 09:01");
+        fixture.failure_cause = None;
         assert_eq!(
-            failure.subtitle, "error sending request for url (https://actors.internal:8443 at 09:01",
-            "the line break joins the next word to the URL's, and both go"
+            fixture.model().failure.unwrap().subtitle,
+            "Connection failed at 09:01",
+            "no cause: the whole error"
         );
-        let long = format!("http://a@b/x {}", "y".repeat(400));
-        let shown = display_text(&long, FAILURE_LENGTH);
-        assert_eq!(shown.chars().count(), FAILURE_LENGTH);
-        assert!(shown.starts_with("http://b yyy") && shown.ends_with('…'));
-        for (text, shown) in [
-            ("a://u@h?q b://h#f ok", "a://h b://h ok"),
-            ("for url (https://user:sec(ret)@host/path?token=abc(def)): refused", "for url (https://host refused"),
-            ("https://host?token=abc@secret", "https://host"),
-            ("https://user:sec)ret@host/path?token=hidden", "https://host"),
-            ("https://u:pa'ssword@host/path?token=hidden", "https://host"),
-            ("https://host/#abc'def", "https://host"),
-            ("(https://[::1]): refused", "(<url> refused"),
-            ("at https://[::1]/x?token=y", "at https://[::1]"),
-            ("\"https://host:8443/a?b\"", "\"https://host:8443"),
-            ("see https://u:p?a#b@host/x?q=1.", "see <url>"),
-            ("at ://user:secret@host and http://[bad", "at <url> and <url>"),
-            ("'ftp://u:p@h/x'", "'ftp://h"),
-            ("no\u{7}bell", "no bell"),
-            ("https://user:pa\tss@host/private?token=hidden#frag", "https://host"),
-            ("https:\t//user:pass@host/private", "https://host"),
-            ("at https://user:pa\nss@host/p?q=1\r\nnext", "at https://host"),
-            ("one\ntwo three", "onetwo three"),
+    }
+
+    #[test]
+    fn a_plain_cause_shows_as_is_with_control_characters_as_spaces_and_cut() {
+        for (cause, shown) in [
+            ("Connection refused (os error 61)", "Connection refused (os error 61)"),
+            ("operation timed out: no answer\nafter\u{7}30 s", "operation timed out: no answer after 30 s"),
+            ("dns error: failed to lookup address information", "dns error: failed to lookup address information"),
         ] {
-            assert_eq!(display_text(text, 200), shown, "{text}");
+            assert_eq!(failure_text(cause), shown, "{cause}");
         }
-        let cut = display_text(&format!("{} https://user:secret@host?token=abc", "z".repeat(190)), 200);
-        assert!(!cut.contains("user") && !cut.contains("secret") && !cut.contains("tok"), "{cut}");
+        let long = failure_text(&"y".repeat(400));
+        assert_eq!(long.chars().count(), FAILURE_LENGTH);
+        assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_cause_that_might_hold_an_address_or_credentials_is_hidden() {
+        for cause in [
+            "https://user:pa\u{a0}ss@host/private?token=hidden#frag",
+            "https:/\\user:pass@host/private",
+            "https:user:pass@host/private",
+            "https://user:pa\tss@host/private?token=hidden#frag",
+            "https:\t//user:pass@host/private",
+            "connect to HTTP:host failed",
+            "Wss:relay closed",
+            "ws:x",
+            "for url (https://[::1]): refused",
+            "login as admin@host refused",
+            "file at C:\\secrets\\token",
+            "ftp://h/x refused",
+            "x:/y",
+        ] {
+            assert_eq!(failure_text(cause), HIDDEN_FAILURE, "{cause:?}");
+        }
     }
 
     #[test]

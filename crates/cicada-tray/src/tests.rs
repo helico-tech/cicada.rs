@@ -131,7 +131,8 @@ async fn apply_while_online_restarts_the_worker_with_the_new_arguments() {
     drop(hold);
 }
 
-/// The menu's failure row: the tray records when a connection failed, until the next connection ends.
+/// The menu's failure row: the tray records when a connection failed and its innermost cause, until the next
+/// connection ends.
 #[tokio::test(start_paused = true)]
 async fn a_failed_connection_records_when_it_failed() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,8 +148,11 @@ async fn a_failed_connection_records_when_it_failed() {
     assert!(failed.is_ok_and(|failed| failed.is_ok()), "a server URL that is not http fails");
     let details = tray.control.details(&tray.control.connection.lock().unwrap());
     let failed_at = details.failed_at.expect("the time of the failure");
+    let TrayState::Failed { error, .. } = state.borrow().clone() else { unreachable!() };
+    let cause = details.failure_cause.expect("the innermost cause");
+    assert!(!cause.is_empty() && error.ends_with(&cause), "{cause:?} is the end of {error:?}");
     assert!(failed_at >= cicada::time::Timestamp::from(before));
-    tray.control.finish(TrayState::Offline);
+    tray.control.finish(TrayState::Offline, None);
     assert!(tray.control.details(&tray.control.connection.lock().unwrap()).failed_at.is_none());
 }
 
@@ -156,4 +160,15 @@ async fn a_failed_connection_records_when_it_failed() {
 fn args(extra: &[&str]) -> Vec<String> {
     let bin = std::env::args_os().next().unwrap().to_string_lossy().into_owned();
     [bin.as_str(), "worker", "--context=prod"].iter().chain(extra).map(|arg| arg.to_string()).collect()
+}
+
+/// The failure row's cause is the end of the error's `source()` chain, without the request and its URL above it.
+#[test]
+fn the_root_cause_is_the_innermost_source() {
+    let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "Connection refused (os error 61)");
+    let error = anyhow::Error::new(refused)
+        .context("error sending request for url (https://user:secret@actors.internal/api?token=hidden)")
+        .context("the server is not ready");
+    assert_eq!(crate::root_cause(&cicada_app::AppError::Failed(error)), "Connection refused (os error 61)");
+    assert_eq!(crate::root_cause(&cicada_app::AppError::Usage("bad flag".into())), "bad flag");
 }
