@@ -274,7 +274,8 @@ impl<O: SoftPaged> RefreshPage for O {
             (read, self.rows(&state))
         };
         let read = |cursor| Self::read_page(client.clone(), query.clone(), cursor);
-        let old_last = old.last().map(|row| Self::sort(row));
+        // The furthest old row, not the last: after kept rows and paging on, the list need not be in server order.
+        let old_last = old.iter().map(|row| Self::sort(row)).max();
         let range = read_range(&budget, read, old_last.as_ref(), Self::sort).await;
         {
             let mut state = self.lock();

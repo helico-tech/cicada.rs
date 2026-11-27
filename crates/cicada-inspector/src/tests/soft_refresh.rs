@@ -192,7 +192,7 @@ async fn messages_refresh_does_not_let_a_row_moved_ahead_set_the_seam() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn messages_refresh_stops_on_the_old_last_id_and_uses_the_selection_at_apply_time() {
+async fn messages_refresh_stops_at_the_old_last_place_and_uses_the_selection_at_apply_time() {
     with_clock(async {
         let (held, arrived, release) =
             later(page([envelope("m2", "counter/a", 9), envelope("m3", "counter/a", 2)], Some("new")));

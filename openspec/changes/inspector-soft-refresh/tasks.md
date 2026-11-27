@@ -4,11 +4,11 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-nodes` (its Ru
 it when it landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design reviews are
 `.reviews/inspector-soft-refresh.design.*`. No ADR.
 
-- [x] 1. **The re-read range and the seam.** A `soft_refresh` on the pager's lists: the range ending at the old last key
-  (Running Turns, Watches) or at the page holding the old last id (Messages, Outcomes), at most 300 rows; new rows
-  replacing the range; rows past it kept and marked, duplicates removed, Messages' and Outcomes' seen sets rebuilt; the
-  surviving cursor; a range with no more dropping the rows past it (decisions 1 and 2). Verify: the range and seam
-  tests of the design, including an old last message that was consumed (the read runs to 300).
+- [x] 1. **The re-read range and the seam.** A `soft_refresh` on the pager's lists: the range ending at the old rows'
+  furthest place in the server's order (revised in code review from the old last id for Messages and Outcomes), at most
+  300 rows; new rows replacing the range; rows past it kept and marked, duplicates removed, Messages' and Outcomes' seen
+  sets rebuilt; the surviving cursor; a range with no more dropping the rows past it (decisions 1 and 2). Verify: the
+  range and seam tests of the design, including an old last message that was consumed (the read runs to 300).
 - [x] 2. **Generation, timing and bounds.** The list generation unchanged (its rustdoc updated), the soft refresh's own
   counter, waiting while a page or Retry is in flight, skipped while paging failed, one at a time with one remembered
   request, cancelled by Refresh, prefix, status, page and context; 4 requests at a time and the 10 s deadline (decisions
