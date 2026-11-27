@@ -2,9 +2,9 @@
 
 ### Requirement: The inspector inside the tray
 
-With its feature `inspector`, the tray SHALL open the inspector in its own process on its connected context, else its
-current one, SHALL bring an open inspector to the front without changing its context, and SHALL close the inspector,
-with its pending refreshes, before it quits.
+With its feature `inspector`, the tray SHALL open the inspector in its own process on its connected context, else on
+the target `cicada` would use, SHALL bring an open inspector to the front without changing its context, and SHALL close
+the inspector, with its pending refreshes, on every quit path before it quits, and not open it while quitting.
 
 #### Scenario: Open twice
 
