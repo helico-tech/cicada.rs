@@ -20,7 +20,7 @@ Normal lane, version 0.26.0 (unreleased). Builds on `inspector-in-tray` (landed)
   toggle and Refresh; every `unsafe` with its reason (decisions 5–7). Verify: `cargo build -p cicada-inspector`,
   `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done or not
   done in the report.
-- [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Actors page and the pane;
+- [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Actors page and the pane;
   `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md` or the handwritten docs.
   Then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, `cargo test -p
   cicada-examples --test docs` and `--doc`, `openspec validate inspector-actors --strict`, commit. The change loop runs

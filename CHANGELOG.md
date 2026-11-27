@@ -17,7 +17,8 @@ context in `tray.toml` next to the config file.
 `cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
 reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
-health, the nodes, the running turns and the types with their actor counts, for a context of `cicada config`.
+health, the nodes, the running turns and the types with their actor counts, and an Actors page that lists the actors
+under an address prefix with a read-only pane of the selected actor, for a context of `cicada config`.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
 
@@ -42,6 +43,20 @@ directly or use `..` in matches.
   the 50 or the deadline shows as not counted, and a count still queued at the deadline never starts. A refresh
   superseded by another or by a context switch is cancelled, also while in flight, and its result discarded.
   Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual check list.
+- `cicada-inspector`: the Actors page. Its table lists the actors under the prefix typed in the toolbar's search field,
+  100 at a time as it scrolls, by the server's cursor, with their address, type, version, created time and status:
+  running when the actor is among one sample of the first 200 running turns under the prefix, read once per reload,
+  and paused from the actor, both when both hold. The footer says when the status covers only the first 200 running
+  turns, or that it is unknown when that read failed. A failed page keeps its place and shows a Retry row. Typing drops
+  the rows at once and reads the new prefix 300 ms after the last key. Selecting an actor fills the inspector pane,
+  read only: its type, version, created time, parent, pinned node and paused flag, its running turn (message, node,
+  lease, cancel requested) with the message's type and attempt when it is among the first 50 of the mailbox, the
+  state as highlighted JSON (cut at 256 KiB with a notice), and tabs for the pending messages among the mailbox's
+  first 50 and for the watches where it is the watcher and where it is the exact target. A missing actor shows "not
+  found", an idle one "idle", and each part shows its own error. A toolbar button and View › Hide Pane show and hide
+  the pane; ⌘R reloads the list from the top and the pane. A read that no longer matches the prefix, the selection or
+  the context is dropped, and a context switch or a closed window cancels the pending ones. Covered by the tests in
+  `crates/cicada-inspector/src/tests/actors.rs` and `tests/json.rs`; the window has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
