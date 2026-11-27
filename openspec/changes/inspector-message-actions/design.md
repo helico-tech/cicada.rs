@@ -71,7 +71,11 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    usual. `MessagePane` gains that state. On the Outcomes pane the same hold covers the row refill and a followed link's
    read; Retry leaves the original outcome as it was and adds a child, so after a successful Retry the pane's Caused is
    read again from its first page under a new generation that drops older Caused reads, also when paging blocks the soft
-   refresh. The Overview's and sidebar's failed count follow from the soft refresh.
+   refresh. Selecting another row, a manual Refresh, a new prefix or status and a context switch end the hold and the
+   kept pane, as each grows the pane's generation and drops a late answer. Caused's re-read after a Retry has its own
+   counter and does not grow the pane's generation, so it never drops the `status` read; on the selected outcome, whose
+   message a Retry does not change, the `status` answer only ends the hold. The Overview's and sidebar's failed count
+   follow from the soft refresh.
 8. **Where it lives.** A `message_actions` module in the model (the state rules, targets and checks, the selected-id
    sets' rules, the chunked bulk runs and the Caused checks, the sheet texts and counts, the result mapping) using the
    `actions` module's alert text and refresh request; the tables' multiple selection, buttons, sheets and alerts in the
