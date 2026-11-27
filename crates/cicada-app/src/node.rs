@@ -446,6 +446,7 @@ pub(crate) async fn http_worker(
         types: settings.types,
         grace_period: worker.config().shutdown_grace_period,
         cancel_timeout: worker.config().shutdown_cancel_timeout,
+        concurrency: worker.config().concurrency,
         stop_now: stop_now.clone(),
     };
     for f in parts.on_worker_ready {
@@ -1238,11 +1239,12 @@ mod worker_tests {
             .into_parts();
         let mut settings = settings();
         settings.worker.shutdown_cancel_timeout = Duration::from_secs(3);
+        settings.worker.concurrency = 7;
         let worker = tokio::spawn(http_worker(parts, settings, fake, stopped));
         let ready: WorkerReady = rx.await.unwrap();
         assert_eq!(
-            (ready.types, ready.grace_period, ready.cancel_timeout),
-            (vec!["tick"], Duration::from_secs(1), Duration::from_secs(3))
+            (ready.types, ready.grace_period, ready.cancel_timeout, ready.concurrency),
+            (vec!["tick"], Duration::from_secs(1), Duration::from_secs(3), 7)
         );
         stop.send(()).unwrap();
         worker.await.unwrap().unwrap();

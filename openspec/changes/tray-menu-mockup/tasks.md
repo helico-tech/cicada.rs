@@ -5,7 +5,7 @@ reviews are `.reviews/tray-menu-mockup.design.*`. GUI change: match the boards i
 Disconnecting, Running, Registered; `mockup/SOURCE.md`), with only the departures the design lists (all agreed). A
 departure you find necessary is a question for the owner: stop and report it.
 
-- [ ] 1. **The app's two additions.** `cicada_app::Contexts::host(name)`: host and port of the context's server, parsed
+- [x] 1. **The app's two additions.** `cicada_app::Contexts::host(name)`: host and port of the context's server, parsed
   when loaded, never the URL, user, password, path or query; `WorkerReady::concurrency` from the started worker's
   config (decisions 2 and 6). Verify: their tests, with a server URL that holds a user, password, path and query.
 - [ ] 2. **The tray's data and the menu model.** Crate-private: when stopping began, the grace period, whether Stop Now

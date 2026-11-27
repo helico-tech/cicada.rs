@@ -22,6 +22,8 @@ use crate::Env;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Contexts {
     names: Vec<String>,
+    /// The host and port of each context's server, by position in `names`; never the whole URL.
+    hosts: Vec<Option<String>>,
     current: Option<String>,
 }
 
@@ -29,7 +31,15 @@ impl Contexts {
     /// Loads the config file at the path resolved from `env`. A missing file has no contexts.
     pub fn load(env: &Env) -> anyhow::Result<Self> {
         let Config { contexts, current_context } = Config::load(&path(env)?)?;
-        Ok(Self { names: contexts.into_keys().collect(), current: current_context })
+        let (names, hosts) = contexts.into_iter().map(|(name, entry)| (name, server_host(&entry.server))).unzip();
+        Ok(Self { names, hosts, current: current_context })
+    }
+
+    /// Returns the host of the named context's server URL, with its port when the URL names one, such as
+    /// `127.0.0.1:8080`: never its user, password, path or query. `None` for an unknown name or a URL without a host.
+    pub fn host(&self, name: &str) -> Option<&str> {
+        let index = self.names.iter().position(|known| known == name)?;
+        self.hosts.get(index)?.as_deref()
     }
 
     /// Returns the configured context names in alphabetical order.
@@ -451,6 +461,13 @@ impl std::fmt::Debug for Target {
 /// `url` with its password, if any, as `***`, read as a URL rather than scanned as text, so that no character of a
 /// password ends it early. A value that is not a URL with a host (`user:pw@host` reads as the scheme `user`) keeps
 /// only its scheme: `scheme://***`, else `***`.
+/// The host of `server`, with its port when the URL names one.
+fn server_host(server: &str) -> Option<String> {
+    let url = reqwest::Url::parse(server).ok()?;
+    let host = url.host_str().filter(|host| !host.is_empty())?;
+    Some(url.port().map_or_else(|| host.to_owned(), |port| format!("{host}:{port}")))
+}
+
 fn redacted_url(url: &str) -> String {
     match reqwest::Url::parse(url) {
         Ok(mut parsed) if parsed.has_host() => {
@@ -709,6 +726,33 @@ mod tests {
         let contexts = Contexts::load(&env).unwrap();
         assert_eq!(contexts.names(), ["a", "b"]);
         assert_eq!(contexts.current(), Some("a"));
+    }
+
+    #[test]
+    fn contexts_keep_only_the_host_and_port_of_each_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let env = env(&[("CICADA_CONFIG", file.to_str().unwrap())]);
+        let mut config = Config::default();
+        for (name, server) in [
+            ("prod", "https://user:secret@actors.internal/api?token=hidden#part"),
+            ("local", "http://127.0.0.1:8080"),
+            ("v6", "http://u@[::1]:9000/x"),
+            ("broken", "not a url"),
+        ] {
+            config.contexts.insert(name.into(), Context { server: server.into(), ..Context::default() });
+        }
+        config.save(&file).unwrap();
+        let contexts = Contexts::load(&env).unwrap();
+        assert_eq!(contexts.host("prod"), Some("actors.internal"));
+        assert_eq!(contexts.host("local"), Some("127.0.0.1:8080"));
+        assert_eq!(contexts.host("v6"), Some("[::1]:9000"));
+        assert_eq!(contexts.host("broken"), None);
+        assert_eq!(contexts.host("missing"), None);
+        let shown = format!("{contexts:?}");
+        for secret in ["user", "secret", "/api", "token", "hidden", "part", "https"] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
     }
 
     #[test]

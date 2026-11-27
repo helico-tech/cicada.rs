@@ -96,6 +96,8 @@ pub struct WorkerReady {
     pub grace_period: Duration,
     /// How long the worker waits for its polling loop and cancelled turns to end.
     pub cancel_timeout: Duration,
+    /// The most turns the worker runs at once, from its config.
+    pub concurrency: usize,
     /// Ends the grace period of the worker's stop: a request before the stop begins is kept until it does.
     pub stop_now: StopNow,
 }
