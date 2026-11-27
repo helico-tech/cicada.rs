@@ -21,10 +21,11 @@ while let Some(change) = changes.next().await {
 2. **Opening the stream: errors from the call.** `ActorClient::changes(&self, prefix: &str) ->
    ClientResult<ChangeStream>` sends its request through the `ActorClient`'s `reqwest::Client`, so its default headers
    (the token, the context's headers) and TLS settings apply unchanged. The call waits at most 10 s for the response
-   headers: past that it returns `ClientError::Http` with a timeout, as other calls report a timeout. A status other
-   than 200 returns `ClientError::Api` with the problem (or one made from the status), as every other call does, so a
-   caller tells a 401 from a 404. A 200 whose content type is not `text/event-stream` (a proxy page, a wrong base URL)
-   returns `ClientError::Body`.
+   headers (a `tokio::time::timeout` around `send()`): past that it returns `ClientError::Body` with "no response
+   headers within 10 s" (a new variant would break the exhaustive `ClientError`; its rustdoc names this case). A status
+   other than 200 returns `ClientError::Api` with the problem (or one made from the status), as every other call does,
+   so a caller tells a 401 from a 404. A 200 whose content type is not `text/event-stream` (a proxy page, a wrong base
+   URL) returns `ClientError::Body`.
 3. **Reading it: errors in the stream.** The request sets its own timeout of 24 hours and 1 minute, which replaces the
    client's total timeout for this request only. The stream itself ends with `Lifetime` after 24 hours on its own Tokio
    timer, and the caller opens a new one. It ends with `Idle` when no byte at all, keep-alive comments included, has

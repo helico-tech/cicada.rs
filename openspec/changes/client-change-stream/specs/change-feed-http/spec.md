@@ -42,3 +42,8 @@ itself.
 
 - **WHEN** the server ends the body after a `resync` event
 - **THEN** the stream yields `Resync` and then ends without an error
+
+#### Scenario: No answer
+
+- **WHEN** the server accepts the connection but sends no response headers for 10 s
+- **THEN** `changes` returns a body error saying no response headers came within 10 s
