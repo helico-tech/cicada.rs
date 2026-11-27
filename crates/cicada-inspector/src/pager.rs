@@ -3,7 +3,7 @@
 //! waits 300 ms after the last key. The page keeps the pager under its state lock and cancels it on context switch
 //! or close. Tasks find it through [`Paged`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::{Arc, MutexGuard};
@@ -194,29 +194,21 @@ impl Pager {
     }
 }
 
-/// Whether the client can compare the server's order, or can only look for the last loaded id.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Order {
-    /// The server sorts by a key known to the client.
-    Key,
-    /// The server sorts by fields the client cannot use as a key.
-    Id,
-}
-
 /// A paged list with a soft refresh. The range reader can also be used independently for an address-ordered tree.
 pub(crate) trait SoftPaged: Paged {
     /// A server row.
     type Row: Send + Sync;
     /// The row's identity.
     type Key: Ord + Hash + Send + Sync;
+    /// The server's order of the rows, as documented by the store, compared like the server does.
+    type Sort: Ord + Send + Sync;
     /// The query, apart from the cursor.
     type Query: Clone + Send + Sync;
 
-    /// The range and seam rule for these rows.
-    const ORDER: Order;
-
-    /// The row's key or id.
+    /// The row's identity.
     fn key(row: &Self::Row) -> Self::Key;
+    /// The row's place in the server's order.
+    fn sort(row: &Self::Row) -> Self::Sort;
     /// The loaded rows, including those hidden by a local filter.
     fn rows(&self, state: &Self::State) -> Vec<Arc<Self::Row>>;
     /// The current paging status.
@@ -282,8 +274,8 @@ impl<O: SoftPaged> RefreshPage for O {
             (read, self.rows(&state))
         };
         let read = |cursor| Self::read_page(client.clone(), query.clone(), cursor);
-        let old_last = old.last().map(|row| Self::key(row));
-        let range = read_range(&budget, read, old_last.as_ref(), Self::ORDER, Self::key).await;
+        let old_last = old.last().map(|row| Self::sort(row));
+        let range = read_range(&budget, read, old_last.as_ref(), Self::sort).await;
         {
             let mut state = self.lock();
             let pager = Self::pager(&mut state);
@@ -294,7 +286,7 @@ impl<O: SoftPaged> RefreshPage for O {
             let (rows, kept) = if let Some(page) = range.page {
                 pager.cursor = page.next.map_or(Cursor::End, Cursor::Next);
                 pager.read_at = Some(chrono::Utc::now());
-                let (rows, kept) = replace_range(old, page.items, pager.cursor != Cursor::End, Self::ORDER, Self::key);
+                let (rows, kept) = replace_range(old, page.items, pager.cursor != Cursor::End, Self::key, Self::sort);
                 (Some(rows), kept)
             } else {
                 (None, false)
@@ -326,15 +318,14 @@ pub(crate) struct Range<T> {
 }
 
 /// Re-reads from the start until the old last row is covered, the cursor ends or three pages have answered.
-pub(crate) async fn read_range<T, K, Fut>(
+pub(crate) async fn read_range<T, S, Fut>(
     budget: &Budget,
     read: impl Fn(Option<String>) -> Fut,
-    old_last: Option<&K>,
-    order: Order,
-    key: impl Fn(&T) -> K,
+    old_last: Option<&S>,
+    sort: impl Fn(&T) -> S,
 ) -> Range<T>
 where
-    K: Ord,
+    S: Ord,
     Fut: Future<Output = Result<PageView<T>, ClientError>>,
 {
     let mut range: Option<PageView<T>> = None;
@@ -344,10 +335,7 @@ where
             Part::Ready(page) => page,
             Part::Failed(error) => return Range { page: range, error: Some(error) },
         };
-        let covered = old_last.is_none_or(|last| match order {
-            Order::Key => page.items.last().is_some_and(|row| key(row) >= *last),
-            Order::Id => page.items.iter().any(|row| key(row) == *last),
-        });
+        let covered = old_last.is_none_or(|last| page.items.last().is_some_and(|row| sort(row) >= *last));
         let end = page.next.is_none();
         let all = range.get_or_insert_with(|| PageView { items: Vec::new(), next: None });
         all.items.extend(page.items);
@@ -359,58 +347,26 @@ where
     Range { page: range, error: None }
 }
 
-/// Replaces the covered range, keeping any old tail past it and dropping duplicate identities.
-pub(crate) fn replace_range<T, K: Ord + Hash>(
+/// Replaces the covered range, keeping the old rows that sort after its last row and dropping duplicate identities.
+pub(crate) fn replace_range<T, K: Ord + Hash, S: Ord>(
     old: Vec<Arc<T>>,
     fresh: Vec<T>,
     more: bool,
-    order: Order,
     key: impl Fn(&T) -> K,
+    sort: impl Fn(&T) -> S,
 ) -> (Vec<Arc<T>>, bool) {
     let mut seen = HashSet::new();
-    let boundary = match order {
-        Order::Key => fresh.last().map(&key),
-        Order::Id => old.last().map(|row| key(row)),
-    };
+    let boundary = fresh.last().map(&sort);
     let mut rows: Vec<_> = fresh.into_iter().filter(|row| seen.insert(key(row))).map(Arc::new).collect();
     let fresh_count = rows.len();
     if more {
-        match order {
-            Order::Key => rows.extend(old.into_iter().filter(|row| {
-                let key = key(row);
-                boundary.as_ref().is_none_or(|last| key > *last) && seen.insert(key)
-            })),
-            // The server's sort fields are opaque: new rows can sort ahead of old ones, and a row can move (Deliver Now,
-            // a reschedule). If we did not reach the old end, keep the old rows after the seam; old rows before it
-            // that the range does not hold have left the list.
-            Order::Id if boundary.is_none_or(|last| !seen.contains(&last)) => {
-                let start = seam(&old, &rows, &key);
-                rows.extend(old.into_iter().skip(start).filter(|row| seen.insert(key(row))));
-            }
-            Order::Id => {}
-        }
+        rows.extend(
+            old.into_iter()
+                .filter(|row| boundary.as_ref().is_none_or(|last| sort(row) > *last) && seen.insert(key(row))),
+        );
     }
     let kept = rows.len() > fresh_count;
     (rows, kept)
-}
-
-/// The index of the first old row past the refreshed range: after the last old row of the longest run of old rows that
-/// kept their order in the range, so a row that moved cannot set the seam; 0 when the range holds no old row.
-fn seam<T, K: Hash + Eq>(old: &[Arc<T>], fresh: &[Arc<T>], key: impl Fn(&T) -> K) -> usize {
-    let position: HashMap<K, usize> = fresh.iter().enumerate().map(|(at, row)| (key(row), at)).collect();
-    // Patience sorting over the fresh positions in old order: `tails[n]` ends a longest run of n + 1 rows, as its fresh
-    // position and old index.
-    let mut tails: Vec<(usize, usize)> = Vec::new();
-    for (index, row) in old.iter().enumerate() {
-        let Some(&at) = position.get(&key(row)) else { continue };
-        let slot = tails.partition_point(|&(other, _)| other < at);
-        if slot == tails.len() {
-            tails.push((at, index));
-        } else {
-            tails[slot] = (at, index);
-        }
-    }
-    tails.last().map_or(0, |&(_, index)| index + 1)
 }
 
 /// Inserts an ordered page among the held rows and ignores keys the list already has.
@@ -423,4 +379,48 @@ pub(crate) fn insert_ordered<T, K: Ord>(rows: &mut Vec<Arc<T>>, fresh: Vec<T>, k
         }
     }
     rows.len() - before
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::replace_range;
+
+    /// A pending message as `(actor, place in its mailbox, id)`, sorted like the server.
+    type Row = (&'static str, u32, String);
+
+    fn rows(actor: &'static str, ids: std::ops::Range<u32>) -> Vec<Row> {
+        ids.map(|n| (actor, 1000 + n, format!("{actor}{n:03}"))).collect()
+    }
+
+    fn refresh(old: Vec<Row>, fresh: Vec<Row>) -> Vec<String> {
+        let old = old.into_iter().map(Arc::new).collect();
+        let (rows, _) =
+            replace_range(old, fresh, true, |row: &Row| row.2.clone(), |row: &Row| (row.0, row.1, row.2.clone()));
+        rows.iter().map(|row| row.2.clone()).collect()
+    }
+
+    #[test]
+    fn a_row_moved_to_the_end_of_the_range_keeps_the_rows_after_it() {
+        // Actor a has 299 rows and c 150; Deliver Now puts c140 first in c's block, the range's last place.
+        let old = [rows("a", 0..299), rows("c", 0..150)].concat();
+        let mut fresh = rows("a", 0..299);
+        fresh.push(("c", 0, "c140".to_owned()));
+        let ids = refresh(old, fresh);
+        assert_eq!(ids.len(), 449, "every pending row once");
+        assert_eq!(ids[299], "c140");
+        assert_eq!(ids[300], "c000");
+    }
+
+    #[test]
+    fn many_rows_moved_ahead_keep_the_rows_they_passed() {
+        // Deliver Now on m280..m439 of 450: they move ahead of every other row.
+        let old = rows("m", 0..450);
+        let moved = (280..439).map(|n| ("m", n - 280, format!("m{n:03}")));
+        let fresh: Vec<Row> = moved.chain(rows("m", 0..141)).take(300).collect();
+        let ids = refresh(old, fresh);
+        assert_eq!(ids.len(), 450, "every pending row once");
+        assert!(ids.iter().any(|id| id == "m140"));
+    }
 }

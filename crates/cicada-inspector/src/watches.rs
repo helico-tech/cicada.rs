@@ -8,7 +8,7 @@ use cicada_client::ActorClient;
 use tokio::{runtime::Handle, sync::watch};
 
 use crate::model::{Limits, Part};
-use crate::pager::{Landed, NEAR_END, Order, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
 use crate::refresh::{RefreshPage, Stale};
 
 /// The locally filtered table and the state of the server's paging.
@@ -310,12 +310,15 @@ fn matches_prefix(watch: &WatchView, prefix: &str) -> bool {
 impl SoftPaged for Shared {
     type Row = WatchView;
     type Key = (String, ActorAddress);
+    type Sort = Self::Key;
     type Query = ();
-
-    const ORDER: Order = Order::Key;
 
     fn key(row: &Self::Row) -> Self::Key {
         (row.target.as_str().to_owned(), row.watcher.clone())
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        Self::key(row)
     }
 
     fn rows(&self, state: &State) -> Vec<Arc<Self::Row>> {

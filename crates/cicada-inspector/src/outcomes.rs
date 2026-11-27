@@ -20,7 +20,7 @@ use tokio::time::Instant;
 
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, within};
-use crate::pager::{Cursor, Landed, NEAR_END, Order, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
 use crate::refresh::{Budget, RefreshPage, Stale};
 
 /// The messages of one page of "Caused".
@@ -889,12 +889,16 @@ pub fn retry_text(policy: Option<&RetryPolicy>) -> String {
 impl SoftPaged for Shared {
     type Row = OutcomeView;
     type Key = MessageId;
+    // The store's documented order of outcomes, `(finished_at, message_id)`.
+    type Sort = (Timestamp, MessageId);
     type Query = (String, Option<OutcomeStatus>);
-
-    const ORDER: Order = Order::Id;
 
     fn key(row: &Self::Row) -> Self::Key {
         row.id.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        (row.finished_at, row.id.clone())
     }
 
     fn rows(&self, _state: &State) -> Vec<Arc<Self::Row>> {

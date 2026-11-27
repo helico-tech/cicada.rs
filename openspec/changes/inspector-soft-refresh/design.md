@@ -9,11 +9,13 @@ refresh; ⌘R keeps today's full Refresh.
 
 ## Decisions
 
-1. **Where the re-read range ends.** Cursors are opaque, so the range is defined by the old last row. For the lists
-   ordered by a key the client knows (Running Turns: the actor's address; Watches: target then watcher), a soft refresh
-   reads root pages from the start, by cursor, until a page's rows reach or pass the old last key. Messages and Outcomes
-   are ordered by the server (by delivery or finish time and sequence, not by id), so their read stops at the page that
-   holds the old last message id. Either way it stops after at most 3 pages (300 rows), or when the server has no more.
+1. **Where the re-read range ends.** Cursors are opaque, so the range is defined by the old last row's place in the
+   server's order, which every list's rows carry: Running Turns by the actor's address, Watches by target then watcher,
+   Messages by `(to, deliver_at, seq)` and Outcomes by `(finished_at, message_id)`, the orders the store documents for
+   `list_pending` and `outcomes` (addresses compare bytewise, as PostgreSQL's `COLLATE "C"` columns and SQLite do). A
+   soft refresh reads root pages from the start, by cursor, until a page's rows reach or pass the old last row's place.
+   It stops after at most 3 pages (300 rows), or when the server has no more. (Revised in code review: finding the old
+   last id instead lost rows when new or moved rows, such as one given Deliver Now, sorted ahead of old ones.)
 2. **The seam.** The new rows replace the old ones in the range. Old rows past the range are kept and marked "not
    refreshed" (the footer: "rows past 300 as of HH:MM"), after removing any whose key or id the new range already holds;
    the seen set of Messages and Outcomes is rebuilt from both. The cursor that survives is the new range's last one, so

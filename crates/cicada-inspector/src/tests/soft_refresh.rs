@@ -158,7 +158,10 @@ async fn messages_refresh_keeps_old_rows_pushed_back_by_new_ones_ahead_of_them()
 #[tokio::test(start_paused = true)]
 async fn messages_refresh_does_not_let_a_row_moved_ahead_set_the_seam() {
     with_clock(async {
-        let fresh = messages(440..441).chain(messages(0..99));
+        // Deliver Now gives m440 a new place in delivery order: here a lower `seq` puts it first.
+        let mut moved = envelope("m440", "counter/a", 1);
+        moved["seq"] = json!(0);
+        let fresh = std::iter::once(moved).chain(messages(0..99));
         let routes = Script::new([
             (INBOX, vec![page(messages(0..100), Some("old1")), page(fresh, Some("new1"))]),
             ("/messages?cursor=old1&limit=100", vec![page(messages(100..200), Some("old2"))]),

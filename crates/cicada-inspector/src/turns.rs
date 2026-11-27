@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::model::{Limits, Part, within};
-use crate::pager::{Landed, NEAR_END, Order, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
 use crate::refresh::{RefreshPage, Stale};
 
 /// What the Running Turns table shows.
@@ -448,11 +448,14 @@ impl Shared {
 impl SoftPaged for Shared {
     type Row = RunningTurnView;
     type Key = ActorAddress;
+    type Sort = Self::Key;
     type Query = String;
 
-    const ORDER: Order = Order::Key;
-
     fn key(row: &Self::Row) -> Self::Key {
+        row.actor.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
         row.actor.clone()
     }
 

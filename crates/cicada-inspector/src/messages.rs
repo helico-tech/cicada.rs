@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::api::MessageView;
 use cicada::store::MessageId;
+use cicada::time::Timestamp;
 use cicada_client::ActorClient;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
@@ -15,7 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::json::{self, Json};
 use crate::model::{Limits, Part};
-use crate::pager::{Landed, NEAR_END, Order, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
 use crate::refresh::{RefreshPage, Stale};
 
 /// What the Messages table shows.
@@ -435,12 +436,16 @@ impl Shared {
 impl SoftPaged for Shared {
     type Row = MessageView;
     type Key = MessageId;
+    // `list_pending`'s documented order, `(to, deliver_at, seq)`; addresses compare bytewise there (`COLLATE "C"`).
+    type Sort = (String, Timestamp, i64, MessageId);
     type Query = String;
-
-    const ORDER: Order = Order::Id;
 
     fn key(row: &Self::Row) -> Self::Key {
         row.id.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        (row.to.as_str().to_owned(), row.deliver_at, row.seq, row.id.clone())
     }
 
     fn rows(&self, _state: &State) -> Vec<Arc<Self::Row>> {
