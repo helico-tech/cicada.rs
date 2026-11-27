@@ -4,13 +4,13 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-types-watches`
 landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design reviews are
 `.reviews/inspector-outcomes.design.*`. No ADR.
 
-- [ ] 1. **The Outcomes list.** `outcomes.rs`: `outcomes` through the pager by status and prefix, the first row per id
+- [x] 1. **The Outcomes list.** `outcomes.rs`: `outcomes` through the pager by status and prefix, the first row per id
   within a generation and paging past a page of only duplicates, the status switch resetting cursor, seen ids, search,
   selection and pane work together, the status column on All (decision 1). Verify: the list tests of the design.
-- [ ] 2. **The failed count.** The sidebar count from `/stats` with no prefix, read with the Overview's refresh and
+- [x] 2. **The failed count.** The sidebar count from `/stats` with no prefix, read with the Overview's refresh and
   Outcomes' Refresh; "…", a kept value with the error after a failed read, "—", and reset on a context switch
   (decision 2). Verify: the count tests of the design.
-- [ ] 3. **The pane and the cause chain.** The pane from the row with the payload formatted on selection; Show Actor;
+- [x] 3. **The pane and the cause chain.** The pane from the row with the payload formatted on selection; Show Actor;
   Caused by and Caused as places with a fresh `status` read, an outcome's place keeping the outcome as read, one Caused
   request at a time, Retry on the same cursor, empty pages with a next cursor followed (several in a row too), "None",
   "not found", a failed linked read with Retry (also from a place reached by back or forward), the history cleared on a

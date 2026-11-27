@@ -19,6 +19,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::actors::Actors;
 use crate::messages::Messages;
+use crate::outcomes::{OutcomePlace, Outcomes};
 use crate::types::Types;
 use crate::watches::{WatchPlace, Watches};
 
@@ -258,6 +259,7 @@ pub struct Session {
     shared: Arc<Shared>,
     actors: Actors,
     messages: Messages,
+    outcomes: Outcomes,
     types: Types,
     watches: Watches,
 }
@@ -284,9 +286,10 @@ impl Session {
         let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
         let actors = Actors::new(handle.clone(), limits);
         let messages = Messages::new(handle.clone(), limits);
+        let outcomes = Outcomes::new(handle.clone(), limits);
         let types = Types::new(handle.clone(), limits);
         let watches = Watches::new(handle.clone(), limits);
-        Self { env, limits, handle, shared, actors, messages, types, watches }
+        Self { env, limits, handle, shared, actors, messages, outcomes, types, watches }
     }
 
     /// The Actors page's reads, on the client of the context in use.
@@ -297,6 +300,11 @@ impl Session {
     /// The Messages page's reads, on the client of the context in use.
     pub fn messages(&self) -> &Messages {
         &self.messages
+    }
+
+    /// The Outcomes page and the sidebar's failed count, on the client of the context in use.
+    pub fn outcomes(&self) -> &Outcomes {
+        &self.outcomes
     }
 
     /// The Types page on the client of the context in use.
@@ -347,22 +355,25 @@ impl Session {
             });
             self.actors.use_client(current.client.clone());
             self.messages.use_client(current.client.clone());
+            self.outcomes.use_client(current.client.clone());
             self.types.use_client(current.client.clone());
             self.watches.use_client(current.client.clone());
         }
         self.refresh();
     }
 
-    /// Starts a refresh of the context in use, cancelling one that runs. Without a client it does nothing.
+    /// Starts a refresh of the context in use, cancelling one that runs; its `/stats` also gives the sidebar's failed
+    /// count. Without a client it does nothing.
     pub fn refresh(&self) {
         let mut current = self.shared.current.lock().expect("inspector session");
         current.supersede();
         let Some(client) = current.client.clone() else { return };
         let generation = current.generation;
         self.shared.view.send_modify(|view| view.refreshing = true);
-        let (shared, limits) = (self.shared.clone(), self.limits);
+        let (shared, limits, count) = (self.shared.clone(), self.limits, self.outcomes.count_ticket());
         current.task = Some(self.handle.spawn(async move {
             let overview = overview(&client, limits).await;
+            count.land(&overview.stats);
             let current = shared.current.lock().expect("inspector session");
             if current.generation == generation {
                 shared.view.send_modify(|view| {
@@ -386,14 +397,15 @@ impl Session {
         navigation.forget();
     }
 
-    /// Applies `change` to the history, remembering the Messages or Watches place left and restoring the place
-    /// reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
+    /// Applies `change` to the history, remembering the Messages, Outcomes or Watches place left and restoring the
+    /// place reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
     /// Returns what `change` returned.
     pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
         let left = navigation.current();
         let recorded = navigation.place().clone();
         match left {
             Section::Messages => navigation.current.messages = Some(self.messages.source()),
+            Section::Outcomes => navigation.current.outcomes = Some(self.outcomes.source()),
             Section::Watches => navigation.current.watches = Some(self.watches.source()),
             _ => {}
         }
@@ -414,7 +426,19 @@ impl Session {
         if let Some(watch) = &place.watches {
             self.watches.restore(watch.clone());
         }
+        if let Some(outcome) = &place.outcomes {
+            self.outcomes.restore(outcome.clone());
+        }
         true
+    }
+
+    /// Follows a link of the cause chain: records a place of the Outcomes page that reads the message `id` fresh, and
+    /// reads it.
+    pub fn follow(&self, navigation: &mut Navigation, id: MessageId) {
+        self.navigate(navigation, |navigation| {
+            navigation.link(id);
+            true
+        });
     }
 
     /// Show Actor: records a jump to `actor` on the Actors page and starts it.
@@ -430,6 +454,7 @@ impl Session {
         self.shared.current.lock().expect("inspector session").supersede();
         self.actors.stop();
         self.messages.stop();
+        self.outcomes.stop();
         self.types.stop();
         self.watches.stop();
         self.shared.view.send_modify(|view| view.refreshing = false);
@@ -467,7 +492,7 @@ pub enum Section {
     Messages,
     /// Running turns.
     RunningTurns,
-    /// Outcomes.
+    /// Finished messages (`inspector-outcomes`).
     Outcomes,
     /// Nodes.
     Nodes,
@@ -498,12 +523,13 @@ impl Section {
 
     /// True for an item with a page; the others say "Coming soon" until their change lands.
     pub fn ready(self) -> bool {
-        matches!(self, Self::Overview | Self::Actors | Self::Messages | Self::Types | Self::Watches)
+        matches!(self, Self::Overview | Self::Actors | Self::Messages | Self::Outcomes | Self::Types | Self::Watches)
     }
 }
 
-/// A place in the history: a sidebar item, with a Show Actor destination or a Messages or Watches selection.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// A place in the history: a sidebar item, with a Show Actor destination, a Messages or Watches selection, or what
+/// the Outcomes pane showed.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Place {
     /// The item shown.
     pub section: Section,
@@ -513,10 +539,12 @@ pub struct Place {
     pub messages: Option<(String, Option<MessageId>)>,
     /// The Watches page's filter and selection when this place was left.
     pub watches: Option<WatchPlace>,
+    /// What the Outcomes pane showed when this place was left, or the message a link of the cause chain reads.
+    pub outcomes: Option<OutcomePlace>,
 }
 
 /// The sidebar's selection with a back and forward history, as in a browser.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Navigation {
     back: Vec<Place>,
     current: Place,
@@ -544,6 +572,11 @@ impl Navigation {
     /// Records a Show Actor: the Actors page with `actor` as its target, after the current place.
     pub fn jump(&mut self, actor: ActorAddress) {
         self.go(Place { section: Section::Actors, actor: Some(actor), ..Place::default() });
+    }
+
+    /// Records a link of the cause chain: the Outcomes page showing the message `id`, after the current place.
+    pub fn link(&mut self, id: MessageId) {
+        self.go(Place { section: Section::Outcomes, outcomes: Some(OutcomePlace::Linked(id)), ..Place::default() });
     }
 
     /// Forgets the history and what the current place restores: after a context switch, a place of the context
