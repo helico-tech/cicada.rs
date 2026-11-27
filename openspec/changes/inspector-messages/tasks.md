@@ -16,8 +16,8 @@ onto it when it landed first). Follow `design.md`; the spec is `specs/inspector/
   Forward, cancelled on leaving the page or a new search, its target kept through Retry; the exact root row selected
   after a successful load, "not found" and a failed read apart (decision 4). Verify: the Show Actor tests, including
   Back restoring the source prefix and the message from a later page.
-- [ ] 4. **The Messages page.** The `appkit` page: an `NSTableView` sharing the search field, footer and pane toggle, the
-  pane with Show Actor; every `unsafe` with its reason (decision 5). Verify: `cargo build -p cicada-inspector`,
+- [ ] 4. **The Messages page.** The `appkit` page: an `NSTableView` sharing the search field, footer and pane toggle,
+  the pane with Show Actor; every `unsafe` with its reason (decision 5). Verify: `cargo build -p cicada-inspector`,
   `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done or not
   done in the report.
 - [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Messages page and Show Actor;
