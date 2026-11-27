@@ -11,7 +11,8 @@ Operators want to send a message to an actor from the inspector, as `cicada send
   payload checked against that message's schema before sending, and Send through `send_message`.
 - The server's refusal (a schema mismatch, an unknown type, 404) shows in the sheet with its message.
 
-To decide in the design: how the payload is checked locally (the schema subset the inspector supports) and the editor.
+Decided in the design: the local check uses the same `jsonschema` crate as the server, with the server's check as the
+authority; a plain JSON editor.
 
 ## Order
 
