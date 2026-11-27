@@ -17,14 +17,15 @@ owner drew.
    session copies the boards, as only it has the Artifact tool; builders read the files.
 2. **No board, or departures, decided by the owner.** For a screen with no board the owner either has one drawn first or
    agrees in the design to build it without one, following the nearest board's style (named). The design has a section
-   "Departures from the board": each place where a screen will differ or add something the board does not show (a
-   control, a section, a state) (a native control that cannot look the same, data the API does not have), with its
+   "Departures from the board": each place where a screen will differ from the board or add what it does not show (a
+   native control that cannot look the same, data the API does not have, an extra control, section or state), with its
    reason. The owner agrees to them with the design; a departure found while building goes back to the owner as a
    question, never decided by the builder. Sample data and the board's desktop background are not departures.
-3. **Reviews compare.** The design reviewer checks that every screen is named with a board or an agreed "no board", and
-   that every element of each board is either in the design or under Departures. The code reviewer reads the board and
-   the screen's code and blocks, in both directions, on an element missing, changed or added without an agreed
-   departure: sections, columns and their order, controls, texts and states (empty, offline, error).
+3. **Reviews compare.** The design reviewer checks that every screen is named with a board or an agreed "no board", that
+   every element of each board is either in the design or under Departures, and that everything the design adds to a
+   screen beyond its board is under Departures. The code reviewer reads the board and the screen's code and blocks, in
+   both directions, on an element missing, changed or added without an agreed departure: sections, columns and their
+   order, controls, texts and states (empty, offline, error).
 4. **The owner looks.** The manual check list's first item is "next to board X, light and dark"; a GUI change is done
    in the release check only when the owner has seen it. Builders still never drive the GUI (no `osascript`, no screen
    capture).
