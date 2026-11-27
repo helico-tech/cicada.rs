@@ -30,13 +30,14 @@ and the Live pill.
    cannot carry, such as an Actors child outside the search prefix or an Outcomes link to a message elsewhere, are
    caught by the timer.
 5. **A slow timer.** While live, the page runs a soft refresh 30 s after its last refresh of any kind ended (soft,
-   timer, resync or manual); the timer is armed again whenever a refresh ends and keeps running while the stream
-   reconnects or waits for its first event, so a page stays fresh without hints.
-6. **The Live pill and pause.** The toolbar shows Live (stream open), Reconnecting (between tries; the tooltip says when
-   the next one is and why the last ended) or Paused. Clicking it pauses: the stream closes, the timer stops, the
-   gathered batch is cleared, and a soft refresh in flight is cancelled, with its list and pane results fenced so none
-   applies. Clicking again resumes: a stream opens, and its first `resync` runs one soft refresh. A manual Refresh (⌘R)
-   works in every state and re-arms the timer.
+   timer, resync or manual); the timer is armed again whenever a refresh attempt ends, also one the soft refresh skipped
+   (while paging has failed) or that missed its deadline, and keeps running while the stream reconnects or waits for its
+   first event, so a page stays fresh without hints.
+6. **The Live pill and pause.** The toolbar shows Live (from the stream's first valid event), Reconnecting (between
+   tries; the tooltip says when the next one is and why the last ended) or Paused. Clicking it pauses automatic
+   refreshes: the stream closes, the timer stops, the gathered batch is cleared, and a soft refresh in flight is
+   cancelled, with its list and pane results fenced so none applies. Clicking again resumes: a stream opens, and its
+   first `resync` runs one soft refresh. A manual Refresh (⌘R) works in every state and re-arms the timer.
 7. **Where it lives.** The live model in `live.rs` (the stream's lifecycle, backoff, the batch, the timer, pause) on the
    pages' `soft_refresh`, with tests on virtual time against a fake change source (a private async trait the model uses,
    implemented over `ActorClient::changes` in the app and by a channel in tests); the pill in the `appkit` module.
@@ -48,10 +49,11 @@ and on close, and a local filter leaving it alone; the first `resync` of an open
 one soft refresh, and a stream with no event causing none; the backoff and its reset 60 s after the first valid event;
 fifty hints in 200 ms causing one refresh; hints during a refresh causing exactly one more; a batch over 1,000 addresses
 counting as everything; a batch outside the prefix starting none on a paged page; the pane reconciled by every soft
-refresh; the timer armed after every refresh and running while reconnecting, catching an Actors child outside the prefix
-and an Outcomes link elsewhere; pause closing the stream, clearing the batch and fencing a refresh in flight, resume's
-`resync` causing one refresh; ⌘R re-arming the timer. Against an in-process server: a real change starting the Actors
-page's soft refresh within a second of its hint on an idle page. The pill gets a manual check list in the tasks.
+refresh; the timer armed after every refresh attempt, a skipped one included (recovery after a Retry with no hints), and
+running while reconnecting, catching an Actors child outside the prefix and an Outcomes link elsewhere; pause closing
+the stream, clearing the batch and fencing a refresh in flight, resume's `resync` causing one refresh; ⌘R re-arming the
+timer. Against an in-process server: a real change starting the Actors page's soft refresh within a second of the hint's
+receipt on an idle page; Live shown from the first valid event. The pill gets a manual check list in the tasks.
 
 ## Docs
 

@@ -3,8 +3,9 @@
 ### Requirement: Live updates
 
 The inspector SHALL follow one change stream for the page on screen, run that page's soft refresh at most about twice a
-second from batched hints and 30 s after its last refresh, reconnect with backoff, and show Live, Reconnecting or
-Paused; pausing SHALL stop the stream, the timer and any refresh in flight until the user resumes.
+second from batched hints and 30 s after its last refresh attempt, reconnect with backoff, and show Live, Reconnecting
+or Paused; pausing SHALL stop the stream, the timer and any automatic refresh in flight until the user resumes, while a
+manual Refresh (⌘R) keeps working.
 
 #### Scenario: A hint for the selected actor
 
@@ -20,7 +21,7 @@ Paused; pausing SHALL stop the stream, the timer and any refresh in flight until
 #### Scenario: Paused
 
 - **WHEN** the user pauses and hints arrive
-- **THEN** nothing reloads until the user resumes, and then the stream's first `resync` runs one soft refresh
+- **THEN** nothing reloads by itself until the user resumes (⌘R still does), and then the stream's first `resync` runs one soft refresh
 
 #### Scenario: The stream drops
 
