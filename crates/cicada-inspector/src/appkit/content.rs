@@ -41,7 +41,7 @@ pub(super) fn render(document: &FlippedView, scroll: &NSScrollView, section: Sec
     }
     let size = scroll.contentSize();
     let mut layout = Layout { document, mtm: document.mtm(), y: MARGIN, width: size.width.max(480.0) };
-    if section.ready() {
+    if section == Section::Overview {
         overview(&mut layout, view);
     } else {
         layout.y = (size.height / 2.0 - 40.0).max(MARGIN);

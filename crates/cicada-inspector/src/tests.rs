@@ -3,6 +3,9 @@
 //! These tests use real sockets and the real clock: Tokio's paused clock would advance through the client's timeouts
 //! while a socket waits. Deadlines are short to keep them fast.
 
+mod actors;
+mod json;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -89,6 +92,8 @@ enum Fake {
     Hang,
     /// Signals `arrived` when the request comes in, then answers after `release` fires.
     Wait { arrived: Arc<Notify>, release: Arc<Notify> },
+    /// Signals `arrived` when the request comes in, then answers this status and JSON body after `release` fires.
+    Later { arrived: Arc<Notify>, release: Arc<Notify>, status: StatusCode, body: Value },
 }
 
 type Rule = Arc<dyn Fn(&str) -> Option<Fake> + Send + Sync>;
@@ -122,12 +127,12 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
             }
             let arrived = || drop(events.send(format!("arrived {target}")));
             let response = match rule(&target) {
-                Some(Fake::Answer(status, body)) => {
-                    let mut response = Response::new(Body::from(body.to_string()));
-                    *response.status_mut() = status;
-                    let json = if status.is_success() { "application/json" } else { "application/problem+json" };
-                    response.headers_mut().insert(header::CONTENT_TYPE, json.parse().unwrap());
-                    response
+                Some(Fake::Answer(status, body)) => answer(status, &body),
+                Some(Fake::Later { arrived: notify, release, status, body }) => {
+                    arrived();
+                    notify.notify_one();
+                    release.notified().await;
+                    answer(status, &body)
                 }
                 Some(Fake::Hang) => {
                     arrived();
@@ -153,6 +158,14 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await });
     Server { client: ActorClient::new(&url), url, most, events }
+}
+
+fn answer(status: StatusCode, body: &Value) -> Response {
+    let mut response = Response::new(Body::from(body.to_string()));
+    *response.status_mut() = status;
+    let json = if status.is_success() { "application/json" } else { "application/problem+json" };
+    response.headers_mut().insert(header::CONTENT_TYPE, json.parse().unwrap());
+    response
 }
 
 fn no_rule() -> Rule {
@@ -569,7 +582,9 @@ fn a_failed_stats_shows_its_error_on_the_tiles() {
     assert_eq!(error, "cannot connect: connection refused");
     let tiles = tiles(&Part::Failed(error.clone()), chrono::Utc::now());
     assert!(tiles.iter().all(|tile| tile.error && tile.value == "—" && tile.note == error));
-    assert!(Section::BROWSE.iter().all(|section| !section.ready()) && Section::Overview.ready());
+    let ready: Vec<_> = Section::BROWSE.into_iter().filter(|section| section.ready()).collect();
+    assert_eq!(ready, [Section::Actors]);
+    assert!(Section::Overview.ready());
     assert_eq!(crate::model::check_macos((13, 6, 0)), Err(crate::model::NEEDS_MACOS));
     assert_eq!(crate::model::check_macos((14, 0, 0)), Ok(()));
 }

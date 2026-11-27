@@ -3,16 +3,16 @@
 Normal lane, version 0.26.0 (unreleased). Builds on `inspector-in-tray` (landed). Follow `design.md`; the spec is
 `specs/inspector/spec.md`; the design reviews are `.reviews/inspector-actors.design.*`. No ADR.
 
-- [ ] 1. **The list model.** `ActorsList`: pages by the unchanged cursor, requests keyed by generation and cursor, at
+- [x] 1. **The list model.** `ActorsList`: pages by the unchanged cursor, requests keyed by generation and cursor, at
   most one in flight, a failed page kept for an explicit Retry; the turns sample under the list's generation with its
   "first 200" and "unknown" footers; the list generation bumped at the first key press, the debounced request, and
   queued or pending work cancelled on a context switch or close (decisions 1–3). Verify: the list tests of the design,
   with delayed HTTP answers.
-- [ ] 2. **The pane model.** The pane's generation and reads: `get_actor`, `turn`, the mailbox's first 50 rows (the
+- [x] 2. **The pane model.** The pane's generation and reads: `get_actor`, `turn`, the mailbox's first 50 rows (the
   turn's message matched, the pending rows listed), the watches as watcher and as exact target kept apart; "not found",
   "idle", paused with running, one part failing alone (decision 4). Verify: the pane tests of the design, including A,
   then B, then A with delayed answers.
-- [ ] 3. **The JSON formatter.** Pretty JSON cut at 256 KiB on a UTF-8 boundary with a notice, tokenized into at most
+- [x] 3. **The JSON formatter.** Pretty JSON cut at 256 KiB on a UTF-8 boundary with a notice, tokenized into at most
   20,000 runs (decision 5). Verify: its tests on nested JSON, escapes, numbers, non-ASCII text at the cut and the run
   cap.
 - [ ] 4. **The AppKit table and pane.** The `NSTableView` with its columns and paging on scroll, the search field, the

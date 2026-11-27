@@ -11,8 +11,12 @@
 //! the nodes, the running turns and the types with their actor counts. The other items say "Coming soon". The server
 //! comes from the contexts of `cicada config`, resolved as `cicada` resolves them. Refresh is by hand.
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod actors;
 #[cfg(target_os = "macos")]
 mod appkit;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod json;
 #[cfg(any(target_os = "macos", test))]
 mod lifecycle;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

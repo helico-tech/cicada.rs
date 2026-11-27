@@ -13,6 +13,7 @@ cicada.workspace = true
 cicada-app.workspace = true
 cicada-client.workspace = true
 futures.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -37,7 +38,6 @@ cicada-axum.workspace = true
 cicada-test.workspace = true
 schemars.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

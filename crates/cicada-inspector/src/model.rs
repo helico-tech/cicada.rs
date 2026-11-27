@@ -15,6 +15,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
+use crate::actors::Actors;
+
 /// What the inspector says where it cannot run.
 pub const NEEDS_MACOS: &str = "the Cicada inspector requires macOS 14 or later";
 /// The running turns the Overview shows: the first page of `/turns`.
@@ -36,13 +38,17 @@ pub struct Limits {
     pub types: usize,
     /// The most per-type counts in flight at once.
     pub concurrent: usize,
-    /// How long the whole refresh may take; what has not answered by then is not shown.
+    /// How long the whole refresh may take; what has not answered by then is not shown. Each read of the Actors page
+    /// has as long.
     pub deadline: Duration,
+    /// How long the search field must be still before its prefix is read.
+    pub debounce: Duration,
 }
 
 impl Limits {
-    /// 50 types, 8 at a time, 10 seconds.
-    pub const DEFAULT: Self = Self { types: 50, concurrent: 8, deadline: Duration::from_secs(10) };
+    /// 50 types, 8 at a time, 10 seconds; a search waits 300 ms.
+    pub const DEFAULT: Self =
+        Self { types: 50, concurrent: 8, deadline: Duration::from_secs(10), debounce: Duration::from_millis(300) };
 }
 
 /// One part of the Overview: its value, or why it has none.
@@ -54,9 +60,17 @@ pub enum Part<T> {
     Failed(String),
 }
 
-#[cfg(test)]
 impl<T> Part<T> {
+    /// The value mapped by `f`, or the same failure.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Part<U> {
+        match self {
+            Self::Ready(value) => Part::Ready(f(value)),
+            Self::Failed(error) => Part::Failed(error),
+        }
+    }
+
     /// The value, if the call answered.
+    #[cfg(test)]
     pub fn ready(&self) -> Option<&T> {
         match self {
             Self::Ready(value) => Some(value),
@@ -137,7 +151,8 @@ pub async fn overview(client: &ActorClient, limits: Limits) -> Overview {
     Overview { stats, health, nodes, turns, types }
 }
 
-async fn within<T>(deadline: Instant, call: impl Future<Output = Result<T, ClientError>>) -> Part<T> {
+/// The result of `call`, or [`TIMED_OUT`] when it has not answered by `deadline`.
+pub(crate) async fn within<T>(deadline: Instant, call: impl Future<Output = Result<T, ClientError>>) -> Part<T> {
     match timeout_at(deadline, call).await {
         Ok(Ok(value)) => Part::Ready(value),
         Ok(Err(error)) => Part::Failed(error_text(&error)),
@@ -236,6 +251,7 @@ pub struct Session {
     limits: Limits,
     handle: Handle,
     shared: Arc<Shared>,
+    actors: Actors,
 }
 
 struct Shared {
@@ -258,7 +274,13 @@ impl Session {
     /// A session with no context yet; [`Self::use_context`] picks one. Refreshes run on `handle`.
     pub fn new(env: Env, handle: Handle, limits: Limits) -> Self {
         let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
-        Self { env, limits, handle, shared }
+        let actors = Actors::new(handle.clone(), limits);
+        Self { env, limits, handle, shared, actors }
+    }
+
+    /// The Actors page's reads, on the client of the context in use.
+    pub fn actors(&self) -> &Actors {
+        &self.actors
     }
 
     /// The views, newest last.
@@ -267,7 +289,7 @@ impl Session {
     }
 
     /// Reads the contexts again, makes the client for `picked` (`None`: as `cicada` picks one) and refreshes. The
-    /// Overview of the context before is dropped.
+    /// Overview, the Actors list and the pane of the context before are dropped.
     pub fn use_context(&self, picked: Option<String>) {
         let contexts = Contexts::load(&self.env);
         let target = cicada_app::context_client(&self.env, picked.as_deref());
@@ -297,6 +319,7 @@ impl Session {
                     }
                 }
             });
+            self.actors.use_client(current.client.clone());
         }
         self.refresh();
     }
@@ -327,9 +350,10 @@ impl Session {
         std::mem::take(&mut self.shared.current.lock().expect("inspector session").superseded)
     }
 
-    /// Cancels a refresh that runs and discards its result; for a window that closes.
+    /// Cancels a refresh and the Actors page's reads, and discards their results; for a window that closes.
     pub fn stop(&self) {
         self.shared.current.lock().expect("inspector session").supersede();
+        self.actors.stop();
         self.shared.view.send_modify(|view| view.refreshing = false);
     }
 }
@@ -396,7 +420,7 @@ impl Section {
 
     /// True for an item with a page; the others say "Coming soon" until their change lands.
     pub fn ready(self) -> bool {
-        self == Self::Overview
+        matches!(self, Self::Overview | Self::Actors)
     }
 }
 
