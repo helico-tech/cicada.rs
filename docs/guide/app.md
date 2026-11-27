@@ -338,7 +338,9 @@ owns the app until the window closes: a regular app with a Dock icon and a main 
 Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
-Overview, Actors and Messages have pages, and the others say "Coming soon". The Overview shows tiles for actors, pending
+Overview, Actors, Messages, Types and Watches have pages, and the others say "Coming soon". Actors, Messages,
+Types and Watches share the toolbar's search field and pane toggle; each page keeps its own filter text, and the
+field's placeholder says which prefix to enter. The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
@@ -393,6 +395,20 @@ selection.
 - The table is not a snapshot: messages handled or retried after a page was read stay as read until ⌘R.
 - It shows no "due" mark, as the server's answer has no store time to compare with.
 - It is read only: no cancel, retry or deliver-now yet.
+
+**Types** lists the registered types by name, with the shortened contract hash (the full one in its tooltip) and the
+number of message types. The first visit and each ⌘R read the whole list, and the search field filters it by type
+name prefix. Select a type and pick its State schema or a message schema, in name order, in the pane's pop-up; the pane
+shows it as highlighted JSON, cut at 256 KiB with a notice. ⌘R clears the type and schema selection, a failed read
+shows its error with **Retry**, and after a context switch the next visit reads the new context's list.
+
+**Watches** lists each watch's target and watcher, ordered by target and then watcher, 100 rows at a time; scroll to
+load more while the search field is empty. A prefix matches either the watcher or the target among the rows already
+loaded, and while the field has text, **Load more** asks for the next page even when no row matches. Select a watch to
+see its target and watcher in the pane. **Show Actor** goes to the watcher's row on the Actors page, and a target that
+names one actor has its own **Show Actor**; Back returns to the watch and its filter, Forward repeats the jump. The
+rows stay as read until ⌘R, which clears the selection and starts from the first page, and a context switch drops the
+pages. The pane offers no watch actions other than navigation.
 
 The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
 a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
