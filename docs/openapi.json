@@ -2192,7 +2192,7 @@
             "default": null
           },
           "causedBy": {
-            "description": "The message whose turn sent this one; null for a message sent from outside an actor.",
+            "description": "The id of the message whose turn sent this one, or of the original message in an operator retry.\nFor a `Stopped` notice, it is the id of the message handled by the turn that stopped or deleted the actor,\nremoved it with an ancestor, or found it absent through `watch_existing`.\nNull for ordinary sends from outside an actor, `Failed` notices, and notices of removals outside a turn.",
             "type": [
               "string",
               "null"
@@ -2625,7 +2625,7 @@
             "default": null
           },
           "causedBy": {
-            "description": "The message whose turn sent this one; null for a message sent from outside an actor.",
+            "description": "The id of the message whose turn sent this one, or of the original message in an operator retry.\nFor a `Stopped` notice, it is the id of the message handled by the turn that stopped or deleted the actor,\nremoved it with an ancestor, or found it absent through `watch_existing`.\nNull for ordinary sends from outside an actor, `Failed` notices, and notices of removals outside a turn.",
             "type": [
               "string",
               "null"
