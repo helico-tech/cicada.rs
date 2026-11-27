@@ -339,7 +339,9 @@ Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
 every item has a page. All but the Overview share the toolbar's search field and pane toggle; each page keeps its own
-filter text, and the field's placeholder says what to enter, such as "Address prefix" or "Node id prefix". The Overview shows tiles for actors, pending
+filter text, and the field's placeholder says what to enter, such as "Address prefix" or "Node id prefix". Paging and
+Refresh keep the first visible row in place; if that row is gone, the table keeps the previous scroll offset as far as
+the new table allows. Refresh still clears the selection where a page's description says so. The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
