@@ -116,6 +116,17 @@ impl Pager {
         self.deferred_page = false;
     }
 
+    /// Accepts the cursor of the last successful page in a re-read.
+    pub fn accept_cursor(&mut self, next: Option<String>) {
+        self.cursor = next.map_or(Cursor::End, Cursor::Next);
+        self.read_at = Some(chrono::Utc::now());
+    }
+
+    /// Takes the request to page on after a soft refresh.
+    pub fn take_deferred_page(&mut self) -> bool {
+        std::mem::take(&mut self.deferred_page)
+    }
+
     /// True when a page can be asked for: the last is not read and none is out.
     pub fn can_ask(&self) -> bool {
         self.cursor != Cursor::End && self.asked.is_none()
@@ -285,8 +296,7 @@ impl<O: SoftPaged> RefreshPage for O {
             }
             let old_time = as_of(self.stale().as_ref(), pager.read_at);
             let (rows, kept) = if let Some(page) = range.page {
-                pager.cursor = page.next.map_or(Cursor::End, Cursor::Next);
-                pager.read_at = Some(chrono::Utc::now());
+                pager.accept_cursor(page.next);
                 let (rows, kept) = replace_range(old, page.items, pager.cursor != Cursor::End, Self::key, Self::sort);
                 (Some(rows), kept)
             } else {
@@ -304,7 +314,7 @@ impl<O: SoftPaged> RefreshPage for O {
     }
 
     fn after(self: &Arc<Self>, state: &mut Self::State) {
-        if std::mem::take(&mut Self::pager(state).deferred_page) {
+        if Self::pager(state).take_deferred_page() {
             self.page(state);
         }
     }

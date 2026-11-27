@@ -464,7 +464,7 @@ impl Session {
     pub fn soft_refresh(&self, section: Section) {
         match section {
             Section::Overview => self.shared.request(),
-            Section::Actors => {}
+            Section::Actors => self.actors.soft_refresh(),
             Section::Messages => self.messages.soft_refresh(),
             Section::RunningTurns => self.turns.soft_refresh(),
             Section::Outcomes => self.shared.outcomes.soft_refresh(),
@@ -477,7 +477,7 @@ impl Session {
     fn cancel_soft_refresh(&self, section: Section) {
         match section {
             Section::Overview => self.shared.lock_refresh().refresh.cancel(),
-            Section::Actors => {}
+            Section::Actors => self.actors.cancel_soft_refresh(),
             Section::Messages => self.messages.cancel_soft_refresh(),
             Section::RunningTurns => self.turns.cancel_soft_refresh(),
             Section::Outcomes => self.shared.outcomes.cancel_soft_refresh(),

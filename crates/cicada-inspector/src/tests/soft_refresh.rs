@@ -734,3 +734,50 @@ async fn overview_soft_refresh_shares_four_slots_and_keeps_the_part_that_misses_
     })
     .await;
 }
+
+mod actors_refresh {
+    use super::*;
+    use crate::actors::Actors;
+
+    const ROOTS: &str = "/actors/states?limit=100";
+
+    fn roots(keys: &[&str], next: Option<&str>) -> Fake {
+        page(
+            keys.iter().map(|key| {
+                json!({
+                    "address": format!("counter/{key}"), "type": "counter", "version": 1,
+                    "createdAt": "2026-11-27T10:00:00.000Z", "paused": false, "state": {}
+                })
+            }),
+            next,
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn roots_end_by_address_even_when_the_old_last_row_is_gone() {
+        with_clock(async {
+            let script = Script::new([
+                (ROOTS, vec![roots(&["b", "d"], Some("old")), roots(&["a", "b"], Some("first"))]),
+                ("/actors/states?cursor=first&limit=100", vec![roots(&["c", "e"], Some("second"))]),
+                ("/actors/states?cursor=second&limit=100", vec![roots(&["f"], None)]),
+            ]);
+            let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+            let model = Actors::new(Handle::current(), Limits::DEFAULT);
+            model.use_client(Some(server.client));
+            let mut list = model.list();
+            model.show();
+            let generation = list.wait_for(|list| list.paging == Paging::Idle && list.more).await.unwrap().generation;
+            model.soft_refresh();
+            let view = list.wait_for(|list| list.rows.len() == 4).await.unwrap();
+            let keys = view.rows.iter().map(|row| row.address.as_str()).collect::<Vec<_>>();
+            assert_eq!(keys, ["counter/a", "counter/b", "counter/c", "counter/e"]);
+            assert!(view.more);
+            assert_eq!(view.generation, generation);
+            assert_eq!(script.remaining("/actors/states?cursor=second&limit=100"), 1);
+            drop(view);
+            model.more();
+            assert!(!list.wait_for(|list| list.rows.len() == 5).await.unwrap().more);
+        })
+        .await;
+    }
+}
