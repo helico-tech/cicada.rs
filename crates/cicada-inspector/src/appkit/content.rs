@@ -229,6 +229,19 @@ impl<'a> Layout<'a> {
         self.y += 28.0;
     }
 
+    /// Lays out the actor pane's short controls in two columns.
+    pub(super) fn buttons(&mut self, buttons: &[(String, NSInteger)], target: &AnyObject, action: Sel, enabled: bool) {
+        let width = (self.inner() - GAP) / 2.0;
+        for row in buttons.chunks(2) {
+            for (column, (title, tag)) in row.iter().enumerate() {
+                let button = self.action_button(title, target, action, *tag, title);
+                button.setEnabled(enabled);
+                self.add(&button, MARGIN + column as f64 * (width + GAP), width, 24.0);
+            }
+            self.y += 28.0;
+        }
+    }
+
     /// A link on its own line: a borderless button in the link colour, as wide as the layout.
     pub(super) fn link(&mut self, title: &str, target: &AnyObject, action: Sel, tag: NSInteger, label: &str) {
         let button = self.action_button(title, target, action, tag, label);

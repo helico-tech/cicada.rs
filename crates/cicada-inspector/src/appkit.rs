@@ -1,6 +1,7 @@
 //! Main-thread AppKit lifecycle: the window with its sidebar, toolbar and content, the main menu, and their actions.
 #![allow(unsafe_code)]
 
+mod actor_dialog;
 mod actors;
 mod browse;
 mod content;
@@ -28,16 +29,16 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControl,
-    NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
-    NSImageView, NSMenu, NSMenuItem, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton,
-    NSScrollView, NSSearchField, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewDataSource,
-    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
-    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification, NSView, NSViewController,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAccessibility, NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSBackingStoreType, NSBezelStyle, NSButton,
+    NSCellImagePosition, NSColor, NSControl, NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent,
+    NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem, NSOutlineView,
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton, NSScrollView, NSSearchField, NSSplitViewController,
+    NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
+    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
+    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification,
+    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -45,6 +46,7 @@ use objc2_foundation::{
 };
 use tokio::{runtime::Handle, sync::watch};
 
+use crate::actors::actions::{Feedback, View as ActionView};
 use crate::actors::{ListView, PaneView};
 use crate::json::Json;
 use crate::lifecycle::WindowSlot;
@@ -239,6 +241,10 @@ struct Controller {
     /// The Actors page's rows and the pane's reads.
     list: RefCell<watch::Receiver<ListView>>,
     pane: RefCell<watch::Receiver<PaneView>>,
+    actor_actions: RefCell<watch::Receiver<ActionView>>,
+    actor_pane_shown: RefCell<PaneView>,
+    actor_alert_shown: Cell<u64>,
+    actor_dialog: RefCell<Option<actor_dialog::Dialog>>,
     /// The rows the table shows; the data source reads them.
     list_shown: RefCell<ListView>,
     /// One retained AppKit item per identity in the snapshot.
@@ -651,11 +657,15 @@ define_class!(
                 self.render_count();
             }
             let section = c.navigation.borrow().current();
+            let action_changed = c.actor_actions.borrow().has_changed().unwrap_or(false);
+            if section != Section::Actors && action_changed {
+                self.render_pane();
+            }
             if section == Section::Actors {
                 if c.list.borrow().has_changed().unwrap_or(false) {
                     self.render_list();
                 }
-                if c.pane.borrow().has_changed().unwrap_or(false) {
+                if action_changed || c.pane.borrow().has_changed().unwrap_or(false) {
                     self.render_pane();
                 }
                 self.check_more();
@@ -1061,6 +1071,22 @@ define_class!(
             }
         }
 
+        // SAFETY: The actor pane wires inspectorActorAction: to its action buttons, passing the button as sender.
+        #[unsafe(method(inspectorActorAction:))]
+        fn actor_action(&self, sender: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() || c.actor_dialog.borrow().is_some() {
+                return;
+            }
+            let Some(action) = actor_dialog::action(sender.tag()) else { return };
+            let pane = c.actor_pane_shown.borrow().clone();
+            let confirmation = c.session.actors().press_action(&pane, action);
+            self.render_pane();
+            if let Some(confirmation) = confirmation {
+                actor_dialog::Dialog::confirm(self, confirmation);
+            }
+        }
+
         // SAFETY: Only the context NSPopUpButton is wired to this action.
         #[unsafe(method(inspectorContext:))]
         fn pick_context(&self, sender: &NSPopUpButton) {
@@ -1071,6 +1097,7 @@ define_class!(
             let name = item.title().to_string();
             let c = self.ivars();
             c.session.switch_context(&mut c.navigation.borrow_mut(), Some(name));
+            self.dismiss_actor_dialog();
             self.render();
         }
 
@@ -1107,6 +1134,7 @@ impl Target {
         let live_status = live.status();
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
+        let actor_actions = session.actors().actions();
         let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
         let outcomes = session.outcomes();
         let (outcomes_list, outcomes_pane, outcomes_count) = (outcomes.list(), outcomes.pane(), outcomes.count());
@@ -1133,6 +1161,10 @@ impl Target {
             status: RefCell::default(),
             list: RefCell::new(list),
             pane: RefCell::new(pane),
+            actor_actions: RefCell::new(actor_actions),
+            actor_pane_shown: RefCell::default(),
+            actor_alert_shown: Cell::new(0),
+            actor_dialog: RefCell::default(),
             list_shown: RefCell::default(),
             items: RefCell::new(Items::from([(ItemId::Status(None), Item::new(mtm, ItemId::Status(None)))])),
             state_shown: RefCell::default(),
@@ -1417,9 +1449,48 @@ impl Target {
         }
         let Some(window) = c.window.get() else { return };
         let pane = c.pane.borrow_mut().borrow_and_update().clone();
+        let actions = c.actor_actions.borrow_mut().borrow_and_update().clone();
+        let feedback =
+            actions.feedback.filter(|(generation, _)| *generation == pane.generation).map(|(_, value)| value);
+        let notice = match &feedback {
+            Some(Feedback::Notice(notice)) => Some(notice.as_str()),
+            _ => None,
+        };
+        c.actor_pane_shown.replace(pane.clone());
+        let controls = actor_dialog::Controls {
+            selected: c.session.actors().selected().is_some(),
+            busy: actions.busy || c.actor_dialog.borrow().is_some(),
+            notice,
+        };
         let shown = c.state_shown.borrow().clone();
-        let shown = window.page.show_pane(&pane, shown.as_ref());
+        let shown = window.page.show_pane(&pane, shown.as_ref(), self.as_ref(), &controls);
         c.state_shown.replace(shown);
+        if let Some(Feedback::Alert(refusal)) = feedback
+            && actions.serial != c.actor_alert_shown.get()
+            && c.pane.borrow().borrow().generation == pane.generation
+        {
+            c.actor_alert_shown.set(actions.serial);
+            actor_dialog::Dialog::refusal(self, &refusal);
+        }
+    }
+
+    fn finish_actor_dialog(&self, alert: &NSAlert, id: Option<u64>, confirmed: bool) {
+        let c = self.ivars();
+        if c.finished.get() || !c.actor_dialog.borrow().as_ref().is_some_and(|dialog| dialog.matches(alert)) {
+            return;
+        }
+        drop(c.actor_dialog.take());
+        if let Some(id) = id {
+            c.session.actors().answer_action(id, confirmed);
+        }
+        self.render_pane();
+    }
+
+    fn dismiss_actor_dialog(&self) {
+        let dialog = self.ivars().actor_dialog.take();
+        if let Some(dialog) = dialog {
+            dialog.dismiss(&self.window().window);
+        }
     }
 
     fn change_history(&self, change: fn(&mut Navigation) -> bool) {
@@ -2108,6 +2179,7 @@ impl Target {
         // No live refresh may start once the session has cancelled its reads.
         c.live.stop();
         c.session.stop();
+        self.dismiss_actor_dialog();
         let window = self.window();
         window.window.setDelegate(None);
         window.toolbar.setDelegate(None);

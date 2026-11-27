@@ -1293,7 +1293,7 @@ impl Shared {
         kept
     }
 
-    /// The pane of a Show Actor whose actor is not in the list: "not found", with no row selected and no read.
+    /// Shows an address as "not found", with no row selected and no read.
     fn not_found(&self, state: &mut State, actor: ActorAddress) {
         state.supersede_pane();
         state.selected = None;
@@ -1476,7 +1476,8 @@ impl Shared {
         let read = state.pane_read(None, keep);
         let shared = self.clone();
         state.pane_task = Some(self.handle.spawn(async move {
-            let budget = Budget::with_slots(shared.limits.deadline, 5);
+            let budget =
+                if keep { Budget::new(shared.limits.deadline) } else { Budget::with_slots(shared.limits.deadline, 5) };
             shared.read_pane(&client, address, read, &budget).await;
             let mut state = shared.lock();
             if state.current_pane(read) {

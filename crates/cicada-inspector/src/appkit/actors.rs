@@ -6,14 +6,15 @@ use std::collections::BTreeMap;
 use cicada::time::Timestamp;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSFont, NSLineBreakMode, NSOutlineView, NSScrollView,
-    NSTabView, NSTabViewItem, NSTableColumn, NSTableColumnResizingOptions, NSTableViewColumnAutoresizingStyle,
-    NSTableViewStyle, NSTextField, NSView,
+    NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSControl, NSFont, NSLineBreakMode, NSOutlineView,
+    NSScrollView, NSTabView, NSTabViewItem, NSTableColumn, NSTableColumnResizingOptions,
+    NSTableViewColumnAutoresizingStyle, NSTableViewStyle, NSTextField, NSView,
 };
 use objc2_foundation::{NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, ns_string};
 
+use super::actor_dialog;
 use super::content::{FlippedView, Layout, Style, color, label};
 use super::json_text::JsonText;
 use crate::actors::{ActorPath, ListView, MAILBOX_ROWS, OutlineViewport, Paging, PaneView, Read, WATCH_ROWS};
@@ -280,11 +281,21 @@ impl Page {
         &self,
         pane: &PaneView,
         state_shown: Option<&std::sync::Arc<Json>>,
+        target: &AnyObject,
+        actions: &actor_dialog::Controls<'_>,
     ) -> Option<std::sync::Arc<Json>> {
         let width = self.pane.frame().size.width.max(240.0);
         let height = self.pane.frame().size.height;
+        self.clear_pane_actions();
         let mut layout = Layout::new(&self.header, width, PANE_MARGIN);
         header(&mut layout, pane);
+        if let Some(notice) = actions.notice {
+            layout.text(notice, Style::Secondary);
+        }
+        if actions.selected {
+            let buttons = actor_dialog::buttons(pane);
+            layout.buttons(&buttons, target, sel!(inspectorActorAction:), !actions.busy);
+        }
         let top = layout.finish(0.0);
         self.header.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, top)));
         let empty = pane.address.is_none() || pane.not_found();
@@ -320,6 +331,7 @@ impl Page {
     }
 
     pub(super) fn clear_actions(&self) {
+        self.clear_pane_actions();
         // SAFETY: Clears the table's references to the target while it is still alive.
         unsafe {
             self.table.setDataSource(None);
@@ -327,6 +339,15 @@ impl Page {
         }
         // Clear the outline's rows before the controller releases the item objects.
         self.table.reloadData();
+    }
+
+    fn clear_pane_actions(&self) {
+        for view in self.header.subviews().to_vec() {
+            if let Some(button) = AsRef::<AnyObject>::as_ref(&*view).downcast_ref::<NSButton>() {
+                // SAFETY: The target remains alive while this pane is updated or torn down.
+                unsafe { NSControl::setTarget(button, None) };
+            }
+        }
     }
 }
 

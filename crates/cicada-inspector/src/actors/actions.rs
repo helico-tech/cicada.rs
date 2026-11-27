@@ -134,6 +134,7 @@ impl Feedback {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct View {
     pub busy: bool,
+    pub serial: u64,
     pub feedback: Option<(u64, Feedback)>,
 }
 
@@ -198,7 +199,7 @@ impl Actors {
         state.actions.serial += 1;
         let id = state.actions.serial;
         state.actions.pending = Some(Pending { id, action, target, task: None });
-        self.shared.actions.send_replace(View { busy: true, feedback: None });
+        self.shared.actions.send_replace(View { busy: true, serial: id, feedback: None });
         if let Some(text) = text {
             Some(Confirmation { id, action, text })
         } else {
@@ -233,8 +234,11 @@ impl Shared {
 
     fn finish_action(&self, state: &mut ActorState, feedback: Option<Feedback>) {
         state.actions.pending = None;
-        self.actions
-            .send_replace(View { busy: false, feedback: feedback.map(|feedback| (state.pane_generation, feedback)) });
+        self.actions.send_replace(View {
+            busy: false,
+            serial: state.actions.serial,
+            feedback: feedback.map(|feedback| (state.pane_generation, feedback)),
+        });
     }
 
     fn send_action(self: &Arc<Self>, state: &mut ActorState) {

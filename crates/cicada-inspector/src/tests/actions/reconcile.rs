@@ -317,7 +317,7 @@ async fn delete_prunes_every_loaded_occurrence_and_fences_ordinary_pages() {
             assert_eq!(pruned.rows.iter().map(|row| &row.address).collect::<Vec<_>>(), [z.address()]);
             assert_eq!(pruned.children.keys().collect::<Vec<_>>(), [&z]);
             assert!(pruned.children[&z].rows.is_empty());
-            assert_eq!(pruned.open.into_iter().collect::<Vec<_>>(), [z.clone()]);
+            assert_eq!(pruned.open.iter().collect::<Vec<_>>(), [&z]);
             assert_eq!(pruned.generation, generation);
 
             for key in ["a", "b", "c"] {

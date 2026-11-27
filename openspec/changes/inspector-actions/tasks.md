@@ -19,7 +19,7 @@ reviews are `.reviews/inspector-actions.design.*`.
   actor and its known descendants at once and fencing root and children pages read before the answer; a Delete that
   answers after another actor was selected leaving that pane and showing no notice (decision 6). Verify: the refresh,
   prune and fence tests on virtual time.
-- [ ] 4. **The AppKit buttons, sheets and alerts.** The actor pane's buttons by state; sheets with Cancel as the
+- [x] 4. **The AppKit buttons, sheets and alerts.** The actor pane's buttons by state; sheets with Cancel as the
   default button, Return and Escape cancelling, the destructive button with no key equivalent; alerts; every `unsafe`
   with its reason, borrows released before AppKit calls (decision 7). Verify: `cargo build -p cicada-inspector`, `cargo
   clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done, run by code

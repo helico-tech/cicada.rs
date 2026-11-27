@@ -141,6 +141,13 @@ async fn a_stale_button_or_sheet_sends_nothing_even_after_reselecting_the_addres
             Some((a_again.generation, notice("selection changed; nothing done")))
         );
 
+        model.press_action(&a_again, Action::Pause);
+        assert!(model.actions().borrow().busy);
+        model.select(Some(path("b")));
+        let new_generation = model.pane().borrow().generation;
+        let before_send = model.actions().wait_for(|view| !view.busy).await.unwrap().feedback.clone();
+        assert_eq!(before_send, Some((new_generation, notice("selection changed; nothing done"))));
+
         while let Ok(event) = server.events.try_recv() {
             assert!(!event.contains("/mailbox/purge") && !event.contains("/mailbox/pause"), "{event}");
         }
