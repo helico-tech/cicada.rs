@@ -281,6 +281,13 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Upgrade to 0.26.0
+
+`WorkerReady`, which `App::on_worker_ready` passes, is now `#[non_exhaustive]`, has the new fields `types` and
+`stop_now`, and no longer implements `Copy`, `PartialEq` or `Eq`. Destructure it with `..`, call `clone()` when you need
+a second owned value, compare its fields (such as `types`, `grace_period` and `cancel_timeout`) instead of whole values,
+and get it only from the callback: code outside `cicada-app` can no longer build one. Nothing else changes for hosts.
+
 ## Upgrade to 0.25.0
 
 **Version 0.25.0 changes the contract of `cicada.placement`.** `PlacementMsg` gains `Duplicate` and the conflict mark

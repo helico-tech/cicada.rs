@@ -21,6 +21,7 @@ The guides assume you know Rust, serde and async functions.
 | Test a timer without waiting | [TestActors](guide/core.md#testing-with-testactors) |
 | Own child actors or react to failures | [Children](guide/core.md#child-actors), [watches](guide/core.md#watches) |
 | Run actors without database credentials | [HTTP worker](guide/app.md#a-worker-over-http) |
+| Control an HTTP worker from a menu bar | [A menu bar worker](guide/app.md#a-menu-bar-worker) |
 | Choose a scheduler, limiter, debouncer or batcher | [Ready-made actors](guide/actors.md) |
 | Cap how many jobs run at once | [Permit pool](guide/actors.md#permit-pool) |
 | Know which nodes offer room for work | [Placement pool](guide/actors.md#placement-pool) |

@@ -113,6 +113,43 @@ On an unavailable PostgreSQL database, startup retries a second after each attem
 one minute. Individual attempts can make the total longer. Logs use `tracing` on stdout, with `RUST_LOG`
 (default `info,sqlx=warn`).
 
+**Node config from the hosted types.** Use `App::node_config_for` (from 0.25.0) when a node setting depends on the
+types selected by `--types` or `CICADA_TYPES`, such as loading a placement identity only on runs that host the runner.
+It gets the names in the order of the `App::host` calls, and an empty slice for a serve-only run with `--types none`.
+It runs once for `serve` or `worker`, after the local startup checks and before waiting for the store or the server;
+operator commands, help and version skip it. A returned error fails the command with exit code 1. The last call to
+either `node_config` or `node_config_for` sets the host config; flags and variables still win over its fields, and an
+HTTP worker uses the same subset of fields as with `node_config`.
+
+<!-- doctest
+@@19
+-->
+```rust,no_run
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+
+use cicada::runtime::NodeConfig;
+use cicada_actors::NodeIdentity;
+use cicada_app::App;
+
+fn with_runner_identity(app: App, dir: PathBuf, identity_slot: Arc<OnceLock<NodeIdentity>>) -> App {
+    app.node_config_for(move |types| {
+        if types.contains(&"factory.runner") {
+            let identity = NodeIdentity::load_or_create(&dir)?;
+            let config = NodeConfig { node_id: identity.node_id(), ..NodeConfig::default() };
+            identity_slot.set(identity).map_err(|_| anyhow::anyhow!("runner identity was already set"))?;
+            Ok(config)
+        } else {
+            Ok(NodeConfig::default())
+        }
+    })
+}
+```
+
+Share the slot with the placement member's task of that run, and use a fresh slot for each run when a process builds a
+fresh `App` to run again, so the identity is released and the next run can lock the folder. With `--node-id other`
+the callback still loads and locks the identity when the runner is selected, and the node uses `other`.
+
 Exit codes: **0** success or requested stop, **2** invalid usage/environment, **1** operational/startup failure.
 
 ### A worker over HTTP
@@ -149,6 +186,105 @@ once. A refusal or conflict fails startup. The worker needs access to type reads
 SIGTERM/SIGINT drains the worker and leaves the source running. A fatal lease error stops it with exit 1.
 It has no node row or readiness endpoint. The [HTTP guide](http.md#run-a-worker-over-http) covers uncertainty and limits;
 [remote_worker.rs](../../examples/src/remote_worker.rs) shows library-level construction.
+
+**When the worker is ready.** `App::on_worker_ready` (from 0.25.0) calls the host once the worker over HTTP has
+checked the server and registered its contracts. It gets a `WorkerReady` with the settled `grace_period` and
+`cancel_timeout`, and from 0.26.0 `types`, the types selected by `--types` or `CICADA_TYPES` in host order
+(`App::type_names()` lists every type the app hosts), and `stop_now`, a `StopNow` handle. From 0.26.0 `WorkerReady` is
+`#[non_exhaustive]`: destructure it with `..` and get it only from the callback. Only a worker over HTTP reports it; `serve` and a worker on the store keep
+their signal-driven stop.
+
+<!-- doctest
+@@13
+# let _ = app;
+-->
+```rust,no_run
+use std::sync::{Arc, Mutex};
+
+use cicada_app::{App, StopNow};
+use cicada_examples::sync::ReportsActor;
+
+let stop_now: Arc<Mutex<Option<StopNow>>> = Arc::default();
+let keep = stop_now.clone();
+let app = App::new().host(ReportsActor).on_worker_ready(move |ready| {
+    println!("running {:?} with a grace period of {:?}", ready.types, ready.grace_period);
+    *keep.lock().unwrap() = Some(ready.stop_now);
+});
+// Later, when a user asks to stop at once:
+if let Some(stop_now) = stop_now.lock().unwrap().as_ref() { stop_now.now() }
+```
+
+`stop_now.now()` ends the grace period of the worker's stop, so the stop ends within the cancel timeout. The running
+turns are cancelled, and their leases are released where the worker still holds them and can, and otherwise expire; a
+turn whose handler had already ended may still complete. A call that comes before the worker has begun stopping, even
+before the stop signal, is kept and applies as soon as the stop begins. It never stops the worker by itself.
+
+### A menu bar worker
+
+`cicada-tray` (from 0.25.0, [ADR 0074](../adr/0074-a-tray-crate-next-to-the-app.md)) runs a worker over HTTP in the
+host process and lets a menu bar app control it. Build a `Tray` with `Tray::new(|| App::new().host(MyActor))`: it calls
+the factory again for every connection it starts. On a Tokio runtime, `connect("production")` runs an HTTP worker
+against the named operator context, with the process environment by default; `with_env` passes an explicit map, such
+as one that sets `CICADA_CONFIG` to a chosen config file.
+
+<!-- doctest
+# async fn example() {
+@@10
+# }
+-->
+```rust,no_run
+use cicada_app::App;
+use cicada_examples::sync::ReportsActor;
+use cicada_tray::{Tray, TrayState};
+
+let tray = Tray::new(|| App::new().host(ReportsActor));
+tray.connect("production");
+let mut state = tray.state();
+while state.changed().await.is_ok() {
+    if let TrayState::Failed { error, .. } = &*state.borrow() { eprintln!("worker failed: {error}") }
+}
+```
+
+- **State.** `state()` moves from `Offline` through `Connecting` to `Online`, even without work. `Failed` carries the
+  worker command's error, also when the worker task panics or is cancelled; connect again from there. `disconnect()`
+  stops claiming and gives running turns their grace period: `Stopping` shows the stop time plus the grace period and
+  cancel timeout, and a successful stop returns to `Offline`. Do not call `connect`, `disconnect` or `stop_now` while
+  holding a borrow of `state()`.
+- **Stop now.** From 0.26.0, `stop_now()` works while the tray stops a worker that was ready: it ends the grace period,
+  as `StopNow` does, and `Stopping`'s time drops to at most now plus the cancel timeout. A turn that ends without an
+  acknowledged commit is listed as abandoned; one whose handler had already ended may still commit. A turn the worker
+  leaves behind, such as one whose release is still in flight at the cancel timeout, stays listed as running after
+  `Offline` until it ends. In any other state it does nothing.
+- **Turns.** `turns()` gives the running turns and the last 50 finished ones of this tray; watch `turn_changes()` to
+  redraw. A running turn shows its actor, message type, attempt and claim time; a finished one adds its end time and
+  outcome. `Abandoned` means the worker saw no commit succeed, such as when a stop cancelled its handler. The history
+  lives in memory.
+- The worker follows the retry and shutdown rules of the HTTP worker command, and an `App` with `on_start` or `task` is
+  refused, as those need a local `ActorSystem`.
+
+### Menu bar app on macOS
+
+From 0.26.0, `Tray::run` drives a native menu bar app on macOS 14 or later, on the main thread: a plain `main` that
+returns `std::process::ExitCode` calls `Tray::new(|| App::new().host(MyActor)).run()`. The worked example is
+[menu-bar-worker.rs](../../examples/menu-bar-worker.rs), which hosts the checkout actor; run it with
+`cargo run -p cicada-examples --example menu-bar-worker`. Configure and select a context with the
+[command line](#command-line-and-terminal-ui) before opening the menu.
+
+The app starts offline. Its switch connects to the config file's current context and disconnects gracefully; picking
+another context drains the current worker before starting the next, and the menu reloads the context names each time
+it opens (`Contexts::load` in code). Running shows each turn's actor, message type, attempt and time since claim;
+Registered Types marks the types the worker runs; Recent Turns shows the last 50 finished turns, with a badge for failed
+and abandoned ones. While the worker drains after a disconnect or a Quit, a Stop Now row under the header ends the
+grace period, and the countdown drops to the cancel timeout. Quit, Ctrl-C and logout drain the worker before the app
+exits. Settings is not enabled yet.
+
+- On macOS 14.0 to 14.3 the running turn's details go in its title.
+- For a distributed `.app`, build the binary with the intended `MACOSX_DEPLOYMENT_TARGET`, put it in `Contents/MacOS`,
+  give `Contents/Info.plist` its executable and bundle metadata, and set `LSUIElement` to true for a menu bar agent;
+  the app uses the accessory policy, so it has no Dock icon. Signing and notarizing belong to your build.
+- The factory is called at launch to list the registered types, and for each accepted connection.
+- The grace period and cancel timeout can delay Quit and logout, and a second Ctrl-C does not force-quit while the
+  worker drains. Stop Now appears only for a worker that was ready.
 
 ## Command line and terminal UI
 

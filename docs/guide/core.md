@@ -322,7 +322,12 @@ owns type checks and buffering. Read [the protocol](../architecture.md#leases-ou
 
 `Worker::builder(source).host(actor).build()` runs unchanged actors through a `TurnSource`.
 `ActorSystem` is an in-process source; `ActorClient` is an [HTTP source](http.md#run-a-worker-over-http).
-Call `start()` to register and poll, `stop()` to drain, and observe `stopped()` for fatal errors.
+Call `start()` to register and poll, `stop()` to drain, and observe `stopped()` for fatal errors. `stop()` gives running
+turns the grace period and then cancels them; to end the drain early, such as when a user asks to stop now, call
+`worker.end_grace()` from anywhere while the stop runs (from 0.26.0). The turns are cancelled at once, and the stop
+returns within `shutdown_cancel_timeout`. `end_grace` is not a stop: called when no stop is running it does nothing and
+is not remembered, so a later stop still gets its full grace period. A turn that ignores cancellation is left behind
+after the cancel timeout, as at the normal end of the grace period.
 
 Workers have no node row, retention sweep or claim limit of their own. The source grants TTLs and applies its claim
 limit. Concurrency includes in-flight lease requests. A worker never closes or stops its source. Its `worker_id`
