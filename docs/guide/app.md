@@ -291,6 +291,14 @@ and Esc or ⌘W closes the window without saving.
   saved; worker settings not saved: <error>" (or "worker settings not saved: <error>" when only those changed), keeps
   your values and does not reconnect; Apply again once the cause is fixed.
 
+**Open Inspector.** With the Cargo feature `inspector` of `cicada-tray` (from 0.26.0), Open Inspector… (⌘I while the
+menu is open) opens the [inspector](#inspector-on-macos) in the tray's process, on the tray's context, also while it
+connects or stops; offline, it starts on the target `cicada` would use. The inspector has its own context picker. A
+second Open Inspector… brings the same window forward on the context it already shows; closing it and opening it again
+starts from the tray's latest connection. When the inspector is the key window, ⌘R refreshes, ⌘W closes, and ⌘[ and
+⌘] move through its history. Quit, Ctrl-C and logout close the inspector before the tray finishes quitting. Try it with
+`cargo run -p cicada-examples --example menu-bar-worker --features cicada-tray/inspector`.
+
 **`tray.toml`.** The tray keeps per-context worker settings in `tray.toml`, in the folder of the config path as given
 (next to a symlink, not its target), with mode 0644 and no secrets:
 
@@ -340,8 +348,12 @@ before.
 The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
 a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
 
-- macOS 14 or later; elsewhere `run` prints that and exits with code 1. It cannot yet open inside another app's run
-  loop, such as the menu bar app's.
+- macOS 14 or later; elsewhere `run` prints that and exits with code 1.
+- To open it inside an app that already owns the main thread and a Tokio runtime, such as a menu bar app, create a
+  `cicada_inspector::Embedded` with `new(mtm, env, handle)` and call `show(Some("prod"))`, or `show(None)` for the
+  target `cicada` would use. Calling `show` again brings the open window forward and keeps its context; `close()`, or
+  dropping the controller, closes the window and asks its refresh to stop, and late results are dropped. The tray's
+  Open Inspector… is built on it.
 - `CICADA_SERVER` and `CICADA_TOKEN` in its environment win over the picked context, as for `cicada`, and the window
   says so. A password in a server URL never reaches the window.
 - The failed tile counts what `GET /outcomes` still lists, so what retention keeps; the window cannot show the
