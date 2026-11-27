@@ -218,9 +218,6 @@ struct Controller {
     /// The live updates of the page on screen, and their state for the pill.
     live: Live,
     live_status: RefCell<watch::Receiver<LiveStatus>>,
-    /// The page, search text and visit, and the context, the live model was last told about.
-    live_screen: RefCell<Option<(Section, String, u64)>>,
-    live_context: Cell<Option<u64>>,
     /// True while the user has paused live updates.
     live_paused: Cell<bool>,
     /// The Actors outline's generation, visible rows and row count when its viewport was last reported, and whether
@@ -1121,8 +1118,6 @@ impl Target {
             session,
             live,
             live_status: RefCell::new(live_status),
-            live_screen: RefCell::default(),
-            live_context: Cell::new(None),
             live_paused: Cell::new(false),
             viewport_key: Cell::new(None),
             viewport_dirty: Cell::new(true),
@@ -1282,16 +1277,9 @@ impl Target {
             return;
         }
         let section = c.navigation.borrow().current();
-        let screen = (section, self.search_prefix(section).unwrap_or_default(), c.session.visit().1);
-        if c.live_screen.borrow().as_ref() != Some(&screen) {
-            c.live.show(screen.0, &screen.1, screen.2);
-            c.live_screen.replace(Some(screen));
-        }
-        let (context, client) = c.session.client();
-        if c.live_context.get() != Some(context) {
-            c.live_context.set(Some(context));
-            c.live.use_source(client);
-        }
+        let search = self.search_prefix(section).unwrap_or_default();
+        let (visit, context, client) = c.session.live_target();
+        c.live.follow(context, client, section, &search, visit);
         if c.live_status.borrow().has_changed().unwrap_or(false) {
             self.render_live();
         }

@@ -157,8 +157,11 @@ pub(crate) fn subscription(section: Section, search: &str) -> &str {
 }
 
 enum Command<S> {
+    #[cfg(test)]
     Source(Option<Arc<S>>),
     Show(Section, String, u64),
+    /// A context switch: the source, the page, its prefix and its visit, taken together.
+    Switch(Option<Arc<S>>, Section, String, u64),
     Pause,
     Resume(u64),
     Refreshed(Section),
@@ -184,6 +187,8 @@ pub(crate) struct Live<S: ChangeSource = ActorClient> {
     status: watch::Receiver<LiveStatus>,
     pages: Weak<dyn Pages>,
     gate: Arc<Mutex<Gate>>,
+    /// The context, page, prefix and visit [`Self::follow`] last sent.
+    followed: Mutex<Option<(u64, Section, String, u64)>>,
     task: JoinHandle<()>,
 }
 
@@ -213,18 +218,36 @@ impl<S: ChangeSource> Live<S> {
             reloading: None,
             timer: None,
         };
-        Self { commands, status: watcher, pages, gate, task: handle.spawn(driver.run()) }
+        Self { commands, status: watcher, pages, gate, followed: Mutex::default(), task: handle.spawn(driver.run()) }
     }
 
-    /// A context switch: the stream closes, and one opens on `source` when there is one.
+    /// A context switch: the stream closes, and one opens on `source` when there is one. The window uses
+    /// [`Self::follow`], which sends the source with the page's visit.
+    #[cfg(test)]
     pub fn use_source(&self, source: Option<S>) {
         let _ = self.commands.send(Command::Source(source.map(Arc::new)));
     }
 
     /// The page on screen, its search text and its visit, a number that grows with every page switch. A page switch
-    /// reopens the stream at once; a new prefix of the same page after the debounce.
+    /// reopens the stream at once; a new prefix of the same page after the debounce. The window uses [`Self::follow`].
+    #[cfg(test)]
     pub fn show(&self, section: Section, search: &str, visit: u64) {
         let _ = self.commands.send(Command::Show(section, subscription(section, search).to_owned(), visit));
+    }
+
+    /// Follows what the window shows: the context in use (`context` grows with every switch, `source` is its client),
+    /// the page, its search text and its visit. Sends nothing when none changed. A context switch sends the source
+    /// together with the page and its visit, so no stream ever opens for a visit with another context's source.
+    pub fn follow(&self, context: u64, source: Option<S>, section: Section, search: &str, visit: u64) {
+        let prefix = subscription(section, search).to_owned();
+        let mut followed = self.followed.lock().expect("live follow");
+        let command = match &*followed {
+            Some((c, s, p, v)) if *c == context && (*s, p.as_str(), *v) == (section, prefix.as_str(), visit) => return,
+            Some((c, ..)) if *c == context => Command::Show(section, prefix.clone(), visit),
+            _ => Command::Switch(source.map(Arc::new), section, prefix.clone(), visit),
+        };
+        *followed = Some((context, section, prefix, visit));
+        let _ = self.commands.send(command);
     }
 
     /// Pauses automatic refreshes: the stream closes, the timer stops, the gathered hints are dropped and a soft
@@ -439,9 +462,17 @@ impl<S: ChangeSource> Driver<S> {
 
     fn command(&mut self, command: Command<S>) {
         match command {
+            #[cfg(test)]
             Command::Source(source) => {
                 self.source = source;
                 self.follow_pending_prefix();
+                self.restart();
+            }
+            Command::Switch(source, section, prefix, visit) => {
+                self.source = source;
+                (self.section, self.prefix, self.visit) = (section, prefix, visit);
+                self.pending_prefix = None;
+                self.reloading = None;
                 self.restart();
             }
             Command::Show(section, prefix, visit) if section != self.section || visit != self.visit => {

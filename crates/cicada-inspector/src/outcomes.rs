@@ -436,10 +436,12 @@ impl Outcomes {
         let task = self.shared.handle.spawn(async move {
             let answer = within(Instant::now() + deadline, client.stats("")).await;
             let mut state = shared.lock();
-            if state.count_asked == ticket {
+            // This task leaves its slot, also when a newer count was asked meanwhile, and wakes a Refresh's waiter.
+            if state.count_task.as_ref().is_some_and(|task| task.id() == tokio::task::id()) {
                 state.count_task = None;
             }
             shared.land_count(&mut state, ticket, answer.map(|stats| stats.failed));
+            shared.count.send_modify(|_| ());
         });
         let before = state.count_task.replace(task);
         state.abort(before);
@@ -460,7 +462,7 @@ impl Outcomes {
                     }
                     || {
                         count.borrow_and_update();
-                        shared.lock().count_task.as_ref().is_some_and(|task| !task.is_finished())
+                        shared.lock().count_task.is_some()
                     };
                 if !busy {
                     return;

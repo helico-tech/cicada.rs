@@ -540,11 +540,12 @@ async fn a_gone_actor_ends_the_pane_reads_of_a_manual_reload() {
             json!({"type": "urn:cicada:problem:no-such-instance", "title": "Not Found", "status": 404}),
         );
         let (held, held_in, _never) = later(page([], None));
+        let (gone_later, gone_in, gone_out) = later(gone.clone());
         let three = |fake: Fake| vec![fake.clone(), fake.clone(), fake];
         let script = Script::new([
             (ROOTS, three(roots(&["a"]))),
             (SAMPLE, three(page([], None))),
-            (DETAILS, vec![details(1), gone.clone(), gone]),
+            (DETAILS, vec![details(1), gone_later, gone]),
             (TURN, three(Fake::Answer(StatusCode::OK, turns::turn("counter/a", "m")))),
             (MAILBOX, vec![page([], None), held, page([], None)]),
             (WATCHING, three(page([], None))),
@@ -561,10 +562,12 @@ async fn a_gone_actor_ends_the_pane_reads_of_a_manual_reload() {
         model.select(Some(root("a")));
         view_until(&mut pane, |pane| version(pane) == Some(1)).await;
 
-        // ⌘R as the actor disappears: its mailbox read is held when the lookup answers 404.
+        // ⌘R as the actor disappears: the lookup answers 404 once the mailbox read has arrived, and is held.
         model.refresh();
         live.refreshed(Section::Actors);
         held_in.notified().await;
+        gone_in.notified().await;
+        gone_out.notify_one();
         view_until(&mut pane, |pane| pane.not_found()).await;
         settle().await;
         assert!(!model.pane_reading(), "the pane's other reads ended with the 404");

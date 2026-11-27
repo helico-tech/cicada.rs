@@ -90,3 +90,72 @@ async fn a_real_change_starts_the_actors_soft_refresh_within_a_second_of_its_hin
     assert_eq!(view.generation, generation, "a soft refresh keeps the list's generation");
     assert_eq!(*status.borrow(), LiveStatus::Live);
 }
+
+/// Counts a server's `/stats` reads and the change streams it opened.
+#[derive(Clone, Default)]
+struct Reads {
+    stats: Arc<AtomicUsize>,
+    streams: Arc<AtomicUsize>,
+}
+
+impl Reads {
+    fn rule(&self) -> Rule {
+        let reads = self.clone();
+        Arc::new(move |target| {
+            if target == "/stats" {
+                reads.stats.fetch_add(1, Ordering::SeqCst);
+            } else if target.starts_with("/changes") {
+                reads.streams.fetch_add(1, Ordering::SeqCst);
+            }
+            None
+        })
+    }
+
+    fn stats(&self) -> usize {
+        self.stats.load(Ordering::SeqCst)
+    }
+
+    async fn until_stats(&self, count: usize) {
+        timeout(Duration::from_secs(10), async {
+            while self.stats() < count {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the /stats reads in time");
+    }
+}
+
+/// Scenario: A context switch on the Overview, with two servers.
+#[tokio::test]
+async fn a_context_switch_on_the_overview_reloads_the_new_server_only_from_its_own_stream() {
+    let (old_actors, new_actors) = (actors().await, actors().await);
+    let (old, new) = (Reads::default(), Reads::default());
+    let old_server = serve(&old_actors, old.rule(), Duration::ZERO).await;
+    let new_server = serve(&new_actors, new.rule(), Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = config(&dir, &[("old", &old_server.url), ("new", &new_server.url)]);
+    let session = Arc::new(Session::new(env, Handle::current(), Limits::DEFAULT));
+    let pages: Arc<dyn Pages> = session.clone();
+    let live = Live::new(&Handle::current(), Arc::downgrade(&pages), Limits::DEFAULT.debounce);
+    let follow = || {
+        let (visit, context, client) = session.live_target();
+        live.follow(context, client, Section::Overview, "", visit);
+    };
+    let mut status = live.status();
+
+    session.use_context(Some("old".into()));
+    follow();
+    view_until(&mut status, |status| *status == LiveStatus::Live).await;
+    // The Overview's own read, then the one of the first resync.
+    old.until_stats(2).await;
+
+    session.use_context(Some("new".into()));
+    follow();
+    new.until_stats(2).await;
+    sleep(Duration::from_millis(1500)).await;
+    assert_eq!(new.stats(), 2, "the new server: its Overview read and its own stream's resync, nothing more");
+    assert_eq!(old.stats(), 2, "the old server: nothing after the switch");
+    assert_eq!(old.streams.load(Ordering::SeqCst), 1, "no stream reopened on the old server");
+    assert_eq!(new.streams.load(Ordering::SeqCst), 1);
+}

@@ -528,3 +528,28 @@ async fn a_new_page_does_not_wait_for_the_reload_of_the_page_left() {
     assert_eq!(pages.times(), [resync + GATHER]);
     assert_eq!(pages.refreshes.lock().unwrap()[0].0, Section::Nodes);
 }
+
+#[tokio::test(start_paused = true)]
+async fn follow_sends_a_new_context_with_its_page_and_visit_in_one_step() {
+    let pages = FakePages::new(LENGTH);
+    let weak: std::sync::Weak<dyn Pages> = Arc::downgrade(&(pages.clone() as Arc<dyn Pages>));
+    let live: Live<Channel> = Live::new(&Handle::current(), weak, DEBOUNCE);
+    let (old, mut old_opened) = Channel::new();
+    live.follow(1, Some(old.clone()), Section::Overview, "", 0);
+    let first = old_opened.recv().await.unwrap();
+
+    // The context switch on the Overview: a new source and a new visit together; the old server gets no stream.
+    let (new, mut new_opened) = Channel::new();
+    live.follow(2, Some(new.clone()), Section::Overview, "", 1);
+    let switched = new_opened.recv().await.unwrap();
+    assert_eq!(switched.prefix, "");
+    no_try(&mut old_opened).await;
+    assert!(first.hints.is_closed());
+
+    // Nothing changed: nothing is sent. A page switch in the same context opens one stream on its source.
+    live.follow(2, Some(new.clone()), Section::Overview, "", 1);
+    no_try(&mut new_opened).await;
+    live.follow(2, Some(new), Section::Actors, "counter/", 2);
+    assert_eq!(new_opened.recv().await.unwrap().prefix, "counter/");
+    no_try(&mut old_opened).await;
+}

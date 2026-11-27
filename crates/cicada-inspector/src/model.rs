@@ -485,7 +485,8 @@ impl Session {
         }
     }
 
-    /// The page on screen and its visit, for the live model.
+    /// The page on screen and its visit; the window takes the visit with its context from [`Self::live_target`].
+    #[cfg(test)]
     pub(crate) fn visit(&self) -> (Section, u64) {
         *self.shown.lock().expect("inspector session")
     }
@@ -549,10 +550,11 @@ impl Session {
         (&self.shared.handle, self.shared.limits)
     }
 
-    /// The client of the context in use, and a number that grows with every [`Self::use_context`].
-    pub fn client(&self) -> (u64, Option<ActorClient>) {
+    /// For the live model, taken together: the page's visit, the context number and the client of the context in use.
+    pub(crate) fn live_target(&self) -> (u64, u64, Option<ActorClient>) {
+        let shown = self.shown.lock().expect("inspector session");
         let current = self.shared.current.lock().expect("inspector session");
-        (current.context, current.client.clone())
+        (shown.1, current.context, current.client.clone())
     }
 
     fn cancel_soft_refresh(&self, section: Section) {
