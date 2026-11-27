@@ -14,7 +14,7 @@ use super::{Actors, Children, Paging, PaneView, Read, Shared, State as ActorStat
 use crate::model::TIMED_OUT;
 use crate::pager::Paged;
 pub(crate) use alerts::{Alert, Redactions};
-pub(crate) use send::{Choices, SendView};
+pub(crate) use send::{CHECK_DELAY, Choices, MAX_TEXT, START, SendView, Verdict};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Action {

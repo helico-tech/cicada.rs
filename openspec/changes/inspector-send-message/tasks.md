@@ -7,7 +7,7 @@ checks, alert text and fresh read; rebase onto it when it landed first). Follow 
 - [x] 1. **The types for the pop-up.** The message types of the actor's type from the Types cache or one `/types` read;
   a failed read with Retry; "type not registered"; "this type takes no messages" with no Send (decisions 1 and 5).
   Verify: the in-process server tests of each case.
-- [ ] 2. **The local check.** The schema compiled once per chosen type with the server's settings (draft 2020-12
+- [x] 2. **The local check.** The schema compiled once per chosen type with the server's settings (draft 2020-12
   forced, no `format`, a retriever that loads nothing; a comment naming `cicada-axum`'s `schema_check.rs`); a schema
   that cannot be compiled shows its note and leaves Send on; on a 64 MiB-stack thread, one check at a time, 300 ms
   after the last edit, stale results dropped; Send disabled at once on an edit; size (1 MiB), parse and depth (64
