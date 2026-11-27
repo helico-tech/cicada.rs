@@ -7,7 +7,8 @@
 # - Each store feature builds only its own driver, and SQLite builds no TLS library.
 # - The whole workspace, on every target and with its dev-dependencies, builds rustls with one crypto provider: with
 #   both ring and aws-lc-rs, every caller that leaves the choice to rustls panics.
-# - No library crate has cicada-containers in its tree, with every feature and its dev-dependencies (ADR 0056).
+# - No other library crate has cicada-containers or cicada-tray in its tree, with every feature and its
+#   dev-dependencies (ADRs 0056 and 0074).
 # - cicada-containers without features builds no Docker client; with docker it builds bollard and no TLS library.
 set -euo pipefail
 trees=$(mktemp -d)
@@ -32,10 +33,15 @@ if awk '/^rustls v/ && /[[,]ring[],]/ && /[[,]aws_lc_rs[],]/ { two = 1 } END { e
     echo "the workspace builds rustls with two crypto providers, ring and aws-lc-rs"; exit 1
 fi
 
-for crate in cicada cicada-test cicada-axum cicada-client cicada-otel cicada-actors cicada-app; do
+for crate in cicada cicada-test cicada-axum cicada-client cicada-otel cicada-actors cicada-app cicada-containers cicada-tray; do
     cargo tree -p "$crate" --all-features --target all --prefix none > "$trees/lib-$crate.txt"
     grep -q "^$crate v" "$trees/lib-$crate.txt" || { echo "the tree of $crate does not hold $crate"; exit 1; }
-    if grep -q '^cicada-containers v' "$trees/lib-$crate.txt"; then echo "$crate builds cicada-containers"; exit 1; fi
+    for application_crate in cicada-containers cicada-tray; do
+        if [[ $crate != "$application_crate" ]] && grep -q "^$application_crate v" "$trees/lib-$crate.txt"; then
+            echo "$crate builds $application_crate"
+            exit 1
+        fi
+    done
 done
 
 cargo tree -p cicada-containers -e normal --target all > "$trees/containers.txt"

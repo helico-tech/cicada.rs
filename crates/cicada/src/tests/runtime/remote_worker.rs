@@ -554,6 +554,106 @@ async fn stopping_a_new_worker_drains_and_cancels_its_manual_turns() {
     assert!(worker.stopped().await.is_none());
 }
 
+/// A started worker of `source` running the counter turn `a`, which sleeps for a minute, and its message.
+async fn worker_with_a_long_turn(server: &ActorSystem, source: &Arc<Scripted>) -> (Worker, Message) {
+    setup(server, &["a"]).await;
+    let a = send(server, "a", CounterMsg::Sleep { millis: 60_000 }).await;
+    let worker = worker(source, &Events::default());
+    worker.start().await.unwrap();
+    eventually(secs(5), || async { worker.running_turns() == 1 }).await;
+    (worker, a)
+}
+
+fn stop_in_background(worker: &Worker, grace: Duration) -> tokio::task::JoinHandle<()> {
+    let worker = worker.clone();
+    tokio::spawn(async move { worker.stop_with_grace(grace).await })
+}
+
+/// Scenario: Ending the grace period during a stop.
+#[tokio::test(start_paused = true)]
+async fn end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout() {
+    let store = virtual_store();
+    let server = server(&store, "server", TTL);
+    let source = Scripted::new(&server);
+    let (worker, a) = worker_with_a_long_turn(&server, &source).await;
+    let stop = stop_in_background(&worker, secs(30));
+    sleep(secs(1)).await;
+    assert_eq!(worker.state(), NodeState::Stopping);
+    let mark = Instant::now();
+    worker.end_grace();
+    worker.end_grace(); // a second call changes nothing
+    stop.await.unwrap();
+    assert!(mark.elapsed() < worker_config().shutdown_cancel_timeout, "stopped after {:?}", mark.elapsed());
+    assert_eq!(worker.state(), NodeState::Stopped);
+    assert_eq!(Scripted::count(&source.releases), 1, "the cancelled turn gave its lease back");
+    assert!(pending(&server, &a.id).await.is_some());
+    worker.end_grace(); // after the stop: nothing
+    worker.stop().await; // returns at once
+    assert_eq!(Scripted::count(&source.releases), 1);
+}
+
+/// `end_grace` right after the stop began, before the stop reaches its grace wait, is not lost.
+#[tokio::test(start_paused = true)]
+async fn end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it() {
+    let store = virtual_store();
+    let server = server(&store, "server", TTL);
+    let source = Scripted::new(&server);
+    let (worker, a) = worker_with_a_long_turn(&server, &source).await;
+    let mark = Instant::now();
+    let stop = stop_in_background(&worker, secs(30));
+    while worker.state() != NodeState::Stopping {
+        tokio::task::yield_now().await;
+    }
+    worker.end_grace();
+    stop.await.unwrap();
+    assert!(mark.elapsed() < worker_config().shutdown_cancel_timeout, "stopped after {:?}", mark.elapsed());
+    assert_eq!(Scripted::count(&source.releases), 1);
+    assert!(pending(&server, &a.id).await.is_some());
+}
+
+/// `end_grace` while the stop waits for a polling loop that does not end: the wait ends at once, not at the cancel
+/// timeout, and the loop is aborted.
+#[tokio::test(start_paused = true)]
+async fn end_grace_ends_the_wait_for_a_polling_loop_that_hangs_and_aborts_it() {
+    let store = virtual_store();
+    let server = server(&store, "server", TTL);
+    let source = Scripted::new(&server);
+    let (worker, a) = worker_with_a_long_turn(&server, &source).await;
+    let (alive, aborted) = tokio::sync::oneshot::channel::<()>();
+    worker.replace_polling_loop(tokio::spawn(async move {
+        let _alive = alive;
+        std::future::pending::<()>().await
+    }));
+    let stop = stop_in_background(&worker, secs(30));
+    sleep(secs(1)).await;
+    assert_eq!(worker.state(), NodeState::Stopping, "waiting for the polling loop, whose timeout is 5 s");
+    let mark = Instant::now();
+    worker.end_grace();
+    stop.await.unwrap();
+    assert!(mark.elapsed() < secs(1), "stopped {:?} after end_grace", mark.elapsed());
+    assert!(aborted.await.is_err(), "the polling loop was aborted");
+    assert_eq!(Scripted::count(&source.releases), 1);
+    assert!(pending(&server, &a.id).await.is_some());
+}
+
+/// Scenario: Before a stop.
+#[tokio::test(start_paused = true)]
+async fn end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period() {
+    let store = virtual_store();
+    let server = server(&store, "server", TTL);
+    setup(&server, &["a"]).await;
+    let a = send(&server, "a", CounterMsg::Sleep { millis: 3_000 }).await;
+    let source = Scripted::new(&server);
+    let worker = worker(&source, &Events::default());
+    worker.end_grace(); // a new worker
+    worker.start().await.unwrap();
+    eventually(secs(5), || async { worker.running_turns() == 1 }).await;
+    worker.end_grace(); // a running worker
+    worker.stop_with_grace(secs(5)).await;
+    assert_eq!(server.outcome(&a.id).await.unwrap().unwrap().status, OutcomeStatus::Done, "finished in the grace");
+    assert_eq!(Scripted::count(&source.releases), 0);
+}
+
 /// type `blocker`: a handler that blocks its thread, ignoring cancellation, and fires `started` when it begins.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Blocker {

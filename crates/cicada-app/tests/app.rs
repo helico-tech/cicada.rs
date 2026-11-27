@@ -16,7 +16,7 @@ use axum::routing::get;
 use cicada::api::MessageState;
 use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use cicada::runtime::{NodeConfig, NodeState};
-use cicada::store::{MessageStatus, OutcomeStatus, SqliteOptions};
+use cicada::store::{MessageStatus, NodeId, OutcomeStatus, SqliteOptions};
 use cicada::{ActorSystem, Store};
 use cicada_app::{App, AppError, Env, node_command};
 use cicada_client::ActorClient;
@@ -30,7 +30,93 @@ fn counter_app() -> App {
     App::new().host(CounterActor)
 }
 
+#[test]
+fn type_names_follow_host_call_order() {
+    assert!(App::new().type_names().is_empty());
+    assert_eq!(App::new().host(RegistryActor).host(CounterActor).type_names(), ["registry", "counter"]);
+}
+
 const LOOPBACK_ANY: [&str; 4] = ["myapp", "serve", "--listen", "127.0.0.1:0"];
+
+#[tokio::test]
+async fn node_config_for_sees_the_selected_types_in_host_order_and_flags_win() {
+    for (flags, selected, override_id) in [
+        (&[][..], &["registry", "counter"][..], None),
+        (&["--types", "registry"][..], &["registry"][..], None),
+        (&["--types", "none"][..], &[][..], None),
+        (&["--types", "counter,registry", "--node-id", "other"][..], &["registry", "counter"][..], Some("other")),
+    ] {
+        let db = TempDb::new();
+        let (chosen, mut choice) = tokio::sync::oneshot::channel();
+        let app = App::new().host(RegistryActor).host(CounterActor).node_config_for(move |types| {
+            assert_eq!(types, selected);
+            let mut config = NodeConfig::default();
+            if types.contains(&"counter") {
+                config.node_id = NodeId::new("runner").unwrap();
+            }
+            chosen.send(config.node_id.clone()).unwrap();
+            Ok(config)
+        });
+        let args: Vec<_> = LOOPBACK_ANY.into_iter().chain(flags.iter().copied()).collect();
+        let (node, base) = Running::serve(app, &db.env(), &args).await;
+        let chosen = choice.try_recv().unwrap();
+        let nodes = ActorClient::new(&base).nodes().await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id.as_str(), override_id.unwrap_or(chosen.as_str()));
+        node.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn the_last_node_config_builder_call_wins() {
+    let fixed = || NodeConfig { node_id: NodeId::new("fixed").unwrap(), ..NodeConfig::default() };
+    let hook = || NodeConfig { node_id: NodeId::new("hook").unwrap(), ..NodeConfig::default() };
+    let apps = [
+        (counter_app().node_config_for(|_| panic!("replaced by node_config")).node_config(fixed()), "fixed"),
+        (counter_app().node_config(fixed()).node_config_for(move |_| Ok(hook())), "hook"),
+    ];
+    for (app, expected) in apps {
+        let db = TempDb::new();
+        let (node, base) = Running::serve(app, &db.env(), &LOOPBACK_ANY).await;
+        assert_eq!(ActorClient::new(&base).nodes().await.unwrap()[0].id.as_str(), expected);
+        node.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_node_config_hook_error_fails_before_opening_the_store() {
+    let db = TempDb::new();
+    let app = counter_app().node_config_for(|_| Err(anyhow::anyhow!("identity is locked").context("load identity")));
+    let error = run(app, &db.env(), &["myapp", "worker"]).await.unwrap_err();
+    assert_eq!(error.exit_code(), 1);
+    assert_eq!(error.to_string(), "load identity: identity is locked");
+    assert!(!db.path.exists(), "the store was not opened");
+}
+
+#[tokio::test]
+async fn a_bad_flag_or_variable_skips_the_node_config_hook() {
+    let db = TempDb::new();
+    let mut bad_env = db.env();
+    bad_env.insert("CICADA_POLL_INTERVAL".into(), "soon".into());
+    let cases = [
+        (db.env(), &["myapp", "worker", "--types", "absent"][..], "--types"),
+        (bad_env, &["myapp", "worker"][..], "CICADA_POLL_INTERVAL"),
+    ];
+    for (env, args, setting) in cases {
+        let app = counter_app().node_config_for(|_| panic!("settings did not pass validation"));
+        let error = run(app, &env, args).await.unwrap_err();
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains(setting), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn help_and_version_skip_the_node_config_hook() {
+    for args in [&["myapp", "serve", "--help"][..], &["myapp", "--version"][..]] {
+        let app = counter_app().node_config_for(|_| panic!("the command does not run a node"));
+        assert!(!run(app, &no_config(), args).await.unwrap().is_empty());
+    }
+}
 
 async fn status(client: &ActorClient, id: &cicada::store::MessageId) -> Option<MessageState> {
     client.status(id).await.unwrap().map(|s| s.status)
@@ -175,7 +261,7 @@ async fn an_operator_command_does_not_look_at_the_stop() {
     let (node, base) = Running::serve(counter_app().http(slow), &db.env(), &LOOPBACK_ANY).await;
     ActorClient::new(&base).create(&Counter { name: "c".into() }, &CounterState::default()).await.unwrap();
     let out = common::Out::default();
-    let command = counter_app().run_with(
+    let command = counter_app().node_config_for(|_| panic!("the operator command does not run a node")).run_with(
         args(&["myapp", "get", "actors", "--server", &base]),
         no_config(),
         out.clone(),

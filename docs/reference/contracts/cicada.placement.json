@@ -3,7 +3,7 @@
     "Alert": {
       "$defs": {
         "PlacementNoticeKind": {
-          "description": "What a notice of a pool says about a node.",
+          "description": "What a notice of a pool says about a node. More kinds may come: a match on it needs a wildcard arm.",
           "oneOf": [
             {
               "const": "silent",
@@ -18,6 +18,11 @@
             {
               "const": "conflict",
               "description": "Another instance offered under the live node's id, whose offers are ignored, or a member reported another\nmachine under it (`Duplicate`). Sent once while the mark lasts; the node's `conflict` names the instance and,\nfor a report, the host. Or the node offered a resource key another live node holds, whose offers are ignored:\nsent once while its entry in the pool's `contested` lasts, which names the key.",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "The pool knows `maxNodes` nodes or more and ignored an offer of the node, which it does not know (ADR 0075).\nSent once while the pool's `full` mark lasts, about the first node it ignored then; raise `maxNodes` with\n`Configure`, or declare silent nodes `Gone`.",
               "type": "string"
             }
           ]
@@ -127,14 +132,14 @@
     },
     "Check": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each\nlive node not heard from for the silence time as silent, queues an `Alert` for each, removes each contest one\nsilence time after its last offer, and arms the next check at the earliest end of a live node's silence or of a\ncontest. Run early (made due by an operator) it arms itself again at `armed`;\nany other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.",
+      "description": "The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each\nlive node not heard from for the silence time as silent, queues an `Alert` for each, removes each contest and\nthe `full` mark one silence time after its last offer, and arms the next check at the earliest end of a live\nnode's silence, of a contest or of the `full` mark, or clears `armed` when none is left. Run early (made due by\nan operator) it arms itself again at `armed`;\nany other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.",
       "properties": {},
       "title": "Check",
       "type": "object"
     },
     "Configure": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Changes the pool's settings, from anyone: each field set replaces its value, each absent one keeps it, within\nthe bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders,\nwaiting asks and contests stay, and new ones are refused or queued until the count is below it. A larger `maxHolders` grants\nwaiting asks in this turn. A silence other than the current one, with a check armed, arms the check at the new\nearliest end of a live node's silence or of a contest, at once when that has passed, so a shorter one marks the\nquiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is\nout of bounds, or a node's or contest's silence would end after the last representable instant. Unknown fields\nare ignored, as in every message of the pool, so a misspelled field next to a valid one changes nothing.",
+      "description": "Changes the pool's settings, from anyone: each field set replaces its value, each absent one keeps it, within\nthe bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders,\nwaiting asks and contests stay, and new ones are ignored, refused or queued until the count is below it. A\nlarger `maxHolders` grants waiting asks in this turn. A silence other than the current one, with a check armed,\narms the check at the new earliest end of a live node's silence, of a contest or of the `full` mark, at once\nwhen that has passed, so a shorter one marks the quiet nodes silent in the next turn. Refused for good with the\nstate unchanged when no field is set, a value is out of bounds, or the silence of a node, a contest or the\n`full` mark would end after the last representable instant. Unknown fields are ignored, as in every message of\nthe pool, so a misspelled field next to a valid one changes nothing.",
       "properties": {
         "maxHolders": {
           "description": "The most holders of the pool at once, 1 through 1,000. Absent: kept.",
@@ -358,7 +363,7 @@
     },
     "Offer": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once),\nplaces and resource key, heard at the store time of this turn, and live. A silent node that offers is told\n`back` to the alert target, whatever its instance. An offer of another instance than the recorded one while the\nnode is live changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. An\noffer of a resource key that another live node holds changes nothing for the node: it is recorded in\n`contested`, and a new entry there is told `conflict` (ADR 0072). A node new to a pool that knows `maxNodes`\nnodes or more is refused for good, as is a new contest in a pool that lists `maxNodes` or more. Send one at an\ninterval shorter than the silence time.",
+      "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once),\nplaces and resource key, heard at the store time of this turn, and live. A silent node that offers is told\n`back` to the alert target, whatever its instance. An offer of another instance than the recorded one while the\nnode is live changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. An\noffer of a resource key that another live node holds changes nothing for the node: it is recorded in\n`contested`, and a new entry there is told `conflict` (ADR 0072). An offer of a node new to a pool that knows\n`maxNodes` nodes or more changes no entry: it sets or moves the pool's `full` mark, and a new mark is told\n`full` (ADR 0075). A new contest in a pool that lists `maxNodes` or more is refused for good. Send one at an\ninterval shorter than the silence time.",
       "properties": {
         "instance": {
           "description": "An id that tells two machines offering under one node id apart, kept across restarts, such as\n`NodeIdentity::instance`. One drawn at each process start makes a restart within the silence time look\nlike a second machine.",
@@ -410,7 +415,7 @@
     },
     "Rearm": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of\na check that was purged, cancelled or failed for good. Nothing when no node is live and no contest is listed.",
+      "description": "Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of\na check that was purged, cancelled or failed for good. Nothing when no node is live, no contest is listed and\nthe pool is not marked `full`.",
       "properties": {},
       "title": "Rearm",
       "type": "object"
@@ -667,6 +672,27 @@
         ],
         "type": "object"
       },
+      "PlacementFull": {
+        "description": "The mark of a full pool (ADR 0075): an offer of a node the pool did not know, ignored because the pool knew\n`maxNodes` nodes or more. One per pool, kept for one silence time after the last such offer, or until an offer adds\na node.",
+        "properties": {
+          "at": {
+            "description": "The store time of the last ignored offer.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "node": {
+            "description": "The node of the last ignored offer; 1 through 200 characters, not blank, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "at"
+        ],
+        "type": "object"
+      },
       "PlacementHolder": {
         "description": "A holder of a place on a node of a pool.",
         "properties": {
@@ -814,7 +840,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, given at its create\nand changed by `Configure`, where its notices go, the nodes it knows by node id, the next grant number, its holders\nin the order they were granted, its waiting asks in line order, the contests of resource keys, and the time and id\nof its armed check.\nBuild it with `PlacementState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"maxWaiting\":100,\"maxHolders\":1000,\"alerts\":null,\"nodes\":{},\n\"nextGrant\":1,\"holders\":[],\"waiting\":[],\"contested\":[],\"armed\":null,\"armedId\":null}`; `alerts`, `nodes`,\n`nextGrant`, `holders`, `waiting`, `contested`, `armed` and `armedId` may be left out of a create.",
+    "description": "The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, given at its create\nand changed by `Configure`, where its notices go, the nodes it knows by node id, the next grant number, its holders\nin the order they were granted, its waiting asks in line order, the contests of resource keys, the `full` mark, and\nthe time and id of its armed check.\nBuild it with `PlacementState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"maxWaiting\":100,\"maxHolders\":1000,\"alerts\":null,\"nodes\":{},\n\"nextGrant\":1,\"holders\":[],\"waiting\":[],\"contested\":[],\"armed\":null,\"armedId\":null}`; `full` is written only while\nit is set, and `alerts`, `nodes`, `nextGrant`, `holders`, `waiting`, `contested`, `full`, `armed` and `armedId` may\nbe left out of a create.",
     "properties": {
       "alerts": {
         "anyOf": [
@@ -828,7 +854,7 @@
         "description": "Where its notices go; absent or null: no notices."
       },
       "armed": {
-        "description": "The time of the armed `Check`: present exactly while a node is live or a contest is listed.",
+        "description": "The time of the armed `Check`: present exactly while a node is live, a contest is listed or `full` is set.",
         "format": "date-time",
         "type": [
           "string",
@@ -850,6 +876,17 @@
           "$ref": "#/$defs/PlacementContest"
         },
         "type": "array"
+      },
+      "full": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PlacementFull"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The last offer of a new node ignored because the pool knew `maxNodes` nodes or more, kept for one silence time\nafter its `at` or until an offer adds a node; absent or null: none."
       },
       "holders": {
         "default": [],

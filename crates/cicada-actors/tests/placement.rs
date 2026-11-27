@@ -13,6 +13,9 @@
 //! And resource keys (ADR 0072): one live node holds a key, an offer of a held key changes nothing for its node and is
 //! listed in `contested` with one alert, the contest ends one silence time after its last offer, the next node takes
 //! the key once the holder is silent, offers without a key are not checked, and the list's limit.
+//! And a full pool (ADR 0075): a new node's offer is ignored with one `full` alert per full period, the mark moves with
+//! later ignored offers, ends one silence time after the last one or when an offer adds a node, a held key is still a
+//! contest, and an ignored offer arms the check.
 //! And the operator's `cicada send` recipes for `Drain`, `Undrain`, `Gone` and `Release`, over the HTTP send route.
 //! And `Configure`: each setting alone or together, refusals that change nothing, lower limits that keep what the pool
 //! has and serve only under them, a higher holder limit that grants at once, a new silence that re-arms the check, and
@@ -453,10 +456,9 @@ async fn a_pool_without_a_target_marks_silence_and_tells_nobody() {
     assert!(test.pending(&quiet).await.is_empty() && notices(&test).await.is_empty());
 }
 
-/// Out-of-bounds offers and a new node past `maxNodes` are refused for good with the state unchanged; a known node may
-/// still renew in a full pool.
+/// Out-of-bounds offers are refused for good with the state unchanged; a known node may still renew in a full pool.
 #[tokio::test(start_paused = true)]
-async fn offers_out_of_bounds_and_a_node_past_the_limit_are_refused() {
+async fn offers_out_of_bounds_are_refused() {
     let test = node_with(60, 2).await;
     offer(&test, "mac-1", &[], 1).await;
     offer(&test, "mac-2", &[], 1).await;
@@ -478,7 +480,6 @@ async fn offers_out_of_bounds_and_a_node_past_the_limit_are_refused() {
     let invalid = [
         keyed(String::new()),
         keyed("k".repeat(201)),
-        raw("mac-3", "i1", vec![], 1),
         raw("", "i1", vec![], 1),
         raw(" ", "i1", vec![], 1),
         raw(&"n".repeat(201), "i1", vec![], 1),
@@ -1672,6 +1673,148 @@ async fn a_contest_past_max_nodes_is_refused() {
     assert_eq!(failed(&test).await, [("Offer".to_owned(), FailureCause::Refused)]);
 }
 
+/// The pool's `full` mark, as node and seconds after `start`.
+async fn full_mark(test: &TestActors, start: Timestamp) -> Option<(String, u64)> {
+    held(test).await.full.map(|f| (f.node, time::between(start, f.at).as_secs()))
+}
+
+fn told_full(node: &str) -> (String, PlacementNoticeKind) {
+    (node.to_owned(), PlacementNoticeKind::Full)
+}
+
+/// Scenario: A new node offers to a full pool. Three offers of a second node commit, add nothing and send one `full`
+/// alert; a third node within the silence time moves the mark and sends nothing.
+#[tokio::test(start_paused = true)]
+async fn a_new_node_offering_to_a_full_pool_is_ignored_and_alerted_once() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    let entry = held(&test).await.nodes["mac-1"].clone();
+    for after in [10, 20, 30] {
+        test.advance_time_by(secs(10)).await;
+        let m = offer(&test, "mac-2", &["arm64"], 4).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "an accepted turn");
+        assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), after)));
+    }
+    test.advance_time_by(secs(5)).await;
+    offer(&test, "mac-3", &["arm64"], 4).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-3".into(), 35)), "moved to the last ignored node");
+    let state = held(&test).await;
+    assert_eq!(state.nodes.keys().collect::<Vec<_>>(), ["mac-1"], "not added");
+    assert_eq!(state.nodes["mac-1"], entry, "no entry changes");
+    assert_eq!(notices(&test).await, [told_full("mac-2")], "one alert, about the first ignored node");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A known node in a full pool. Its offer renews its entry as before, also while the pool is marked full.
+#[tokio::test(start_paused = true)]
+async fn a_known_node_in_a_full_pool_offers_as_before() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(10)).await;
+    let m = offer(&test, "mac-1", &["arm64", "docker"], 3).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    let entry = &held(&test).await.nodes["mac-1"];
+    assert_eq!((entry.places, entry.heard_at, entry.labels.len()), (3, time::add(start, secs(10)).unwrap(), 2));
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 0)), "a known node leaves the mark");
+    assert_eq!(notices(&test).await, [told_full("mac-2")]);
+}
+
+/// Scenario: The full period ends. The mark ends one silence time after the last ignored offer, at the check, and the
+/// next ignored offer is told again.
+#[tokio::test(start_paused = true)]
+async fn the_full_mark_ends_one_silence_time_after_the_last_ignored_offer_and_a_later_one_alerts_again() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(30)).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(30)).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 30)), "kept until its end");
+    assert_eq!(checks(&test, start).await, [secs(90)], "the mark's end and mac-1's");
+    test.advance_time_by(secs(30)).await;
+    assert_eq!(full_mark(&test, start).await, None, "removed one silence time after the last ignored offer");
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Live);
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 90)));
+    assert_eq!(notices(&test).await, [told_full("mac-2"), told_full("mac-2")], "the next full period is told again");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: The pool fills again. A larger `maxNodes` admits the ignored node at its next offer, which ends the mark;
+/// the pool full again within the silence time is told again.
+#[tokio::test(start_paused = true)]
+async fn a_larger_node_limit_admits_the_next_new_node_ends_the_mark_and_a_pool_full_again_alerts_again() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    send(&test, configure(None, Some(2), None, None)).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 0)), "a Configure keeps the mark");
+    test.advance_time_by(secs(10)).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    let state = held(&test).await;
+    assert_eq!((state.nodes.len(), state.full), (2, None), "added, and the mark ends");
+    test.advance_time_by(secs(10)).await;
+    offer(&test, "mac-3", &["arm64"], 1).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-3".into(), 20)));
+    assert_eq!(notices(&test).await, [told_full("mac-2"), told_full("mac-3")]);
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A held key in a full pool. A new node offering a key another live node holds is a contest with its
+/// `conflict` alert, not a `full` one; its offer without the key meets the full check.
+#[tokio::test(start_paused = true)]
+async fn a_new_node_offering_a_held_key_to_a_full_pool_is_a_contest() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    keyed(&test, "mac-1", "daemon-1", 1).await;
+    let m = keyed(&test, "mac-2", "daemon-1", 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(contests(&test, start).await, [("daemon-1".into(), "mac-2".into(), 0)]);
+    assert_eq!(full_mark(&test, start).await, None);
+    assert_eq!(notices(&test).await, [told_conflict("mac-2")]);
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 0)));
+    assert_eq!(notices(&test).await, [told_conflict("mac-2"), told_full("mac-2")]);
+}
+
+/// A full pool whose nodes are all silent has no check armed: an ignored offer arms one at the mark's end, and that
+/// check ends the mark and clears `armed`. A `Gone` frees a slot, and the next offer adds the node and ends the mark.
+#[tokio::test(start_paused = true)]
+async fn a_full_pool_whose_nodes_are_silent_arms_the_check_on_an_ignored_offer_and_the_check_ends_the_mark() {
+    let test = node_with(60, 1).await;
+    let start = test.now();
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    test.advance_time_by(secs(60)).await;
+    let state = held(&test).await;
+    assert_eq!((status_of(&state, "mac-1"), state.armed), (PlacementNodeStatus::Silent, None));
+    test.advance_time_by(secs(10)).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    assert_eq!(held(&test).await.armed, time::add(start, secs(130)).ok(), "armed at the mark's end");
+    assert_eq!(checks(&test, start).await, [secs(130)]);
+    test.advance_time_by(secs(60)).await;
+    let state = held(&test).await;
+    assert_eq!((state.full, state.armed, state.armed_id), (None, None, None), "nothing left to check");
+    assert!(checks(&test, start).await.is_empty());
+
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    send(&test, PlacementMsg::gone("mac-1").unwrap()).await;
+    assert_eq!(full_mark(&test, start).await, Some(("mac-2".into(), 130)), "a Gone keeps the mark");
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    let state = held(&test).await;
+    assert_eq!(state.nodes.keys().collect::<Vec<_>>(), ["mac-2"]);
+    assert_eq!(state.full, None, "the offer that adds the node ends the mark");
+    let silent = ("mac-1".to_owned(), PlacementNoticeKind::Silent);
+    assert_eq!(notices(&test).await, [silent, told_full("mac-2"), told_full("mac-2")]);
+    assert!(failed(&test).await.is_empty());
+}
+
 /// A `Configure` that sets the given fields.
 fn configure(
     silence: Option<u64>,
@@ -1797,14 +1940,17 @@ async fn a_lower_node_or_line_limit_keeps_what_is_there_and_refuses_new_ones() {
     let m = offer(&test, "mac-2", &["arm64"], 1).await;
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "a known node renews");
     let m = offer(&test, "mac-3", &["arm64"], 1).await;
-    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "two known, the limit is 1");
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "ignored, not refused");
+    assert!(!held(&test).await.nodes.contains_key("mac-3"), "two known, the limit is 1");
+    assert_eq!(notices(&test).await, [told_full("mac-3")]);
     ask(&test, "r5", &["arm64"]).await;
     assert_eq!(reasons(&test, "r5").await, [PlacementRefusal::LineFull], "two wait, the limit is 1");
     send(&test, configure(None, Some(3), None, None)).await;
     let m = offer(&test, "mac-3", &["arm64"], 1).await;
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "admitted at its next offer");
+    assert_eq!(held(&test).await.full, None, "the offer that adds a node ends the mark");
     assert_eq!(answers(&test, "r3").await, [QUEUED, granted(3, "mac-3")]);
-    assert_eq!(failed(&test).await, [("Offer".to_owned(), FailureCause::Refused)]);
+    assert!(failed(&test).await.is_empty());
 }
 
 /// Scenario: A shorter silence. A node last heard 50 seconds ago under a silence of 60 is marked silent in the turn

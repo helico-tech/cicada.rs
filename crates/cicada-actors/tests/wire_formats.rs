@@ -730,6 +730,7 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         (PlacementNoticeKind::Silent, "silent"),
         (PlacementNoticeKind::Back, "back"),
         (PlacementNoticeKind::Conflict, "conflict"),
+        (PlacementNoticeKind::Full, "full"),
     ] {
         let notice = PlacementNotice { pool: "runners".into(), node: "mac-1".into(), kind };
         let written = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": name});
@@ -739,7 +740,7 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         assert_eq!(read, notice);
     }
     let unknown = json!({"type": "Placement", "pool": "runners", "node": "mac-1", "kind": "live"});
-    assert!(serde_json::from_value::<PagerMsg>(unknown).is_err(), "three kinds");
+    assert!(serde_json::from_value::<PagerMsg>(unknown).is_err(), "four kinds");
 
     let answer = |kind, grant: Option<u64>, node: Option<&str>, reason| PlacementAnswer {
         pool: "runners".into(),
@@ -821,6 +822,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         "nodes": {"mac-1": marked, "mac-2": node("silent")}, "nextGrant": 6,
         "holders": [holder("r1", 3, true), holder("r2", 5, false)], "waiting": [waiter("r3")],
         "contested": [{"resource": "4f2a:ZQ7Y", "node": "mac-3", "at": "2026-01-01T00:00:20Z"}],
+        "full": {"node": "mac-5", "at": "2026-01-01T00:00:30Z"},
         "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&books);
     assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
@@ -848,7 +850,12 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         |entry: Value| with(json!({"nodes": {"mac-1": entry}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     let mut holds = node("live");
     holds["resource"] = json!("4f2a:ZQ7Y");
+    let full = with(json!({"full": {"node": "mac-5", "at": "2026-01-01T00:00:30Z"}, "armed": "2026-01-01T00:01:00Z",
+        "armedId": "c1"}));
+    assert_state_sample::<PlacementState>(&full);
     for invalid in [
+        with(json!({"full": {"node": "mac-5", "at": "2026-01-01T00:00:30Z"}})),
+        with(json!({"full": {"node": "mac-5"}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"})),
         with(json!({"nodes": {"mac-1": holds.clone(), "mac-2": holds}, "armed": "2026-01-01T00:01:00Z",
             "armedId": "c1"})),
         with(json!({"contested": [{"resource": "4f2a:ZQ7Y", "node": "mac-3"}], "armed": "2026-01-01T00:01:00Z",
@@ -885,7 +892,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
 
 /// The state a pool writes with a live node, a silent one, an alert target, holders, one told and one not yet, and a
 /// waiting ask; then a draining node, a node in conflict, that node reported duplicate, a node holding a resource key
-/// and another contesting it.
+/// and another contesting it; and the pool full.
 #[tokio::test(start_paused = true)]
 async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
@@ -956,6 +963,13 @@ async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["nodes"]["mac-3"]["resource"], "4f2a:ZQ7Y", "{written}");
     assert_eq!(written["contested"][0]["node"], "mac-4", "{written}");
+    assert_state_sample::<PlacementState>(&written);
+    let configure = PlacementMsg::Configure { silence: None, max_nodes: Some(3), max_waiting: None, max_holders: None };
+    test.send(&pool, configure).await;
+    test.send(&pool, PlacementMsg::offer("mac-5", "e7f8", ["arm64"], 1).unwrap()).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["full"]["node"], "mac-5", "{written}");
     assert_state_sample::<PlacementState>(&written);
 }
 

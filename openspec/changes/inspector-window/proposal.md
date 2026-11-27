@@ -20,8 +20,8 @@ console; the owner agreed to supersede it, now that the design is fixed.
   - The other sidebar items show "Coming soon" until their change lands.
   - Refresh by hand (a toolbar button and ⌘R).
 - `Inspector::run()` opens it on its own; a host makes a small binary or `.app` with it.
-- `cicada-tray` gains a feature `inspector`. With it, the menu has "Open Inspector… ⌘I", which opens the window in the
-  tray's process, on the tray's context.
+- Opening it from the tray (a feature `inspector` of `cicada-tray` and "Open Inspector… ⌘I") moved to the next change,
+  `inspector-in-tray` (design review, 2026-11-27).
 
 ## Out of scope
 
@@ -31,13 +31,13 @@ console; the owner agreed to supersede it, now that the design is fixed.
 
 ## Order
 
-After `stats-failed-count`, before `inspector-actors`.
+After `stats-failed-count`, before `inspector-in-tray`.
 
 ## Impact
 
-Crates: cicada-inspector, cicada-tray.
+Crates: cicada-inspector, cicada-app.
 
-New crate `crates/cicada-inspector`; `crates/cicada-tray` (feature and menu item); the new ADR, its row, and
+New crate `crates/cicada-inspector`; `crates/cicada-app` (`context_client`); the new ADR, its row, and
 ADR 0011's status line; the workspace manifest. As in the tray: the mapping from API answers to what the window shows
 is plain code with tests against an in-process server, and the window gets a manual check list. Docs handoff: the
 app guide and the docs index.

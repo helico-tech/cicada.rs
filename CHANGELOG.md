@@ -7,7 +7,40 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.25.0 — unreleased
+## 0.26.0 — unreleased
+
+`Tray::run` opens a native menu bar app on macOS 14 or later. Use the switch or pick a configured context to
+connect, watch running and recent turns, and let the worker drain when you disconnect or quit. While it drains, Stop
+Now cancels its running turns at once instead of waiting out the grace period.
+`cicada_app::Contexts` reads the configured names and current selection for the menu.
+
+**BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
+`Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
+fields instead of whole values. Use `clone()` when another owned value is needed. Only `App::on_worker_ready` supplies
+the value.
+
+### Added
+
+- `cicada`: `Worker::end_grace()` ends the grace period of a stop that has begun, as if it had run out: the running
+  turns are cancelled at once, their leases are released where the worker still holds them and can, and otherwise
+  expire, and the stop returns within the cancel timeout (a wait for the polling loop ends too). Before a stop begins or
+  after it ended it does nothing and is not remembered, so it never shortens a later stop. Covered by
+  `end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout`,
+  `end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it` and
+  `end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period`.
+- `cicada-app`: `StopNow`, a cloneable handle in `WorkerReady::stop_now`. `StopNow::now()` ends the grace period of
+  the worker over HTTP's stop, also of the stop after a panicking `App::on_worker_ready` function; a request before
+  the stop begins is kept until it does, and one after the stop does nothing. It does not stop the worker by itself.
+  Covered by the `over_http_stop_now_…` tests and `a_panicking_worker_ready_function_still_takes_stop_now` in
+  `crates/cicada-app/src/node.rs`.
+- `cicada-tray`: `Tray::stop_now()`, and a Stop Now row in the menu while the tray stops a worker that was ready. It
+  ends the grace period, so the running turns are cancelled, and moves the countdown's `until` to now plus the cancel
+  timeout when that is earlier; the tray is offline within the cancel timeout. A turn that ends without an acknowledged
+  commit, also after a failed release, is listed as abandoned; one whose handler had ended may still commit; one whose
+  release is still in flight stays listed as running until it ends. It does nothing in any other state. Covered by the
+  `stop_now_…` tests in `crates/cicada-tray/tests/control.rs`.
+
+## 0.25.0 — 2026-11-27
 
 A placement member notices a second machine under its node id (ADR 0071): two machines started from a copied identity
 folder write one node row in turn, so a member that finds another host name there sends no offers and reports
@@ -15,14 +48,27 @@ folder write one node row in turn, so a member that finds another host name ther
 host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` locks its folder, so one machine runs one
 process per identity. An offer can name a resource key, such as the Docker daemon's id that `RuntimeInfo::id` now
 reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. An operator changes
-a live pool's silence and limits with `Configure` instead of deleting the pool. **BREAKING** for placement pools: the
-contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node and the conflict mark,
-and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`, `PlacementConflict`,
-`PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The store schema, the HTTP
-API, the other actors' contracts and the guarantees are those of 0.24.0.
+a live pool's silence and limits with `Configure` instead of deleting the pool. A full pool ignores a new node's offer
+and sends one `full` notice per full period (ADR 0075) instead of refusing the offer for good. A host chooses its node
+config once the run's types are known (`App::node_config_for`), and a new crate `cicada-tray` runs a worker over HTTP in
+the host's process with its state and turns (ADR 0074; `App::type_names`, `App::on_worker_ready`). **BREAKING** for
+placement pools: the contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node
+and the conflict mark, the state's `contested` and `full`, and the notice kind `full`), so hosts of 0.24.0 pools follow
+Upgrading below; `NodeConfig`, `PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState`,
+`PlacementNoticeKind` and `Capacity` gain a field or a variant, and `PlacementNoticeKind` is `#[non_exhaustive]`. The
+store schema, the HTTP API, the other actors' contracts and the guarantees are those of 0.24.0.
 
 ### Added
 
+- `cicada-tray`: a portable model for a menu bar worker (ADR 0074). `Tray` builds a fresh `App` on each connect
+  and runs its HTTP worker against a named context. It watches connection state, drains the worker on disconnect
+  and shows its running turns and the last 50 finished turns, including turns abandoned without a confirmed commit.
+- `cicada-app`: `App::type_names()` returns the hosted names in registration order, and `App::on_worker_ready`
+  reports the settled grace period and cancel timeout once an HTTP worker starts.
+- `cicada-app`: `App::node_config_for` chooses a host's node config from the types selected for `serve` or
+  `worker`. Flags and environment variables still override the returned config. A worker over HTTP now checks its
+  server URL before that call: a malformed one fails with `invalid server URL` or `the server URL must use http or
+  https` instead of `the server is not ready: …`, still with exit code 1.
 - `cicada`: `NodeConfig::hostname`, the host name a node writes to its row in the node table, such as a container's
   stable name; `None` (the default) keeps the machine's own, looked up once when the node is built. A set value is
   checked like `label` (not blank, no NUL, at most 200 characters) at the start. `ActorSystem::hostname()` returns the
@@ -87,6 +133,24 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
   by the `Configure` tests of `crates/cicada-actors/tests/placement.rs`, the unit test
   `configured_replaces_the_given_settings_within_the_bounds_of_the_create` and `tests/wire_formats.rs`.
 
+### Changed
+
+- `cicada-actors`: a placement pool that knows `maxNodes` nodes or more ignores an offer of a node it does not know
+  (ADR 0075) instead of refusing it for good, so a member past the limit no longer makes a dead letter at every
+  interval. The turn commits and changes no entry. The pool keeps one mark in the state's new optional `full`
+  (`PlacementFull { node, at }`: the node of the last ignored offer and its store time, written only while set) and
+  sends the alert target one notice of the new kind `full` (`PlacementNoticeKind::Full`) about the first ignored node
+  when the mark is set; later ignored offers, from any new node, only move it. The check removes the mark one silence
+  time after its `at`, and an offer that adds a node (after `Configure` raised `maxNodes` or a `Gone` freed a slot)
+  removes it at once, so a pool that fills up again alerts again. An ignored offer arms the check when none is armed;
+  `armed` is now set while a node is live, a contest is listed or the pool is marked full, and a decoded state with a
+  mark and no armed check is refused. The resource check of ADR 0072 comes first: a new node offering a held key is a
+  contest with its `conflict` alert. A known node offers as before. `PlacementNoticeKind` becomes `#[non_exhaustive]`,
+  so a later kind does not break hosts again; a host's `match` on it needs a wildcard arm once. During a rolling
+  upgrade an alert target on an older node does not know `full` and fails that alert for good, and nothing else.
+  Covered by the full-pool tests of `crates/cicada-actors/tests/placement.rs`, the unit test
+  `a_decoded_full_mark_is_checked_and_keeps_the_check_armed` and `tests/wire_formats.rs`.
+
 ### Changed (breaking)
 
 - The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
@@ -94,7 +158,9 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
   code that builds `PlacementConflict` gains `host: None`. `PlacementMsg` also gains `Configure`, which an exhaustive
   match gains too. The resource keys add the optional `resource` to `Offer` and to the node entry and the state field
   `contested`: code that builds or matches `PlacementMsg::Offer` without `..` or builds `PlacementNode` or
-  `PlacementState` gains them (`resource: None`, `contested: vec![]`).
+  `PlacementState` gains them (`resource: None`, `contested: vec![]`). The full mark adds the state field `full` (code
+  that builds `PlacementState` gains `full: None`) and the notice kind `full`: a `match` on `PlacementNoticeKind`
+  gains a wildcard arm, as the enum is now `#[non_exhaustive]`.
 - `Capacity` gains the public field `resource`: a struct literal or a pattern without `..` no longer compiles; use
   `Capacity::new` and `Capacity::resource`.
 - A state of a placement pool is now written with `contested` (`[]` when empty).

@@ -27,9 +27,8 @@ use tokio::net::TcpListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-use crate::AppError;
-use crate::config::Target;
-use crate::settings::{HttpSettings, Settings, StoreSpec, check_built_in};
+use crate::settings::{HttpSettings, Settings, StoreSpec};
+use crate::{AppError, WorkerReady};
 
 /// How long `serve` and `worker` wait for a PostgreSQL store that answers "unavailable", and how often they try.
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
@@ -94,6 +93,8 @@ impl Hosting {
 pub(crate) type HttpFn = Box<dyn FnOnce(Router, &ActorSystem) -> Router + Send>;
 /// A function of `App::on_start`.
 pub(crate) type OnStartFn = Box<dyn FnOnce(ActorSystem) -> BoxFuture<'static, anyhow::Result<()>> + Send>;
+/// A function of `App::on_worker_ready`.
+pub(crate) type OnWorkerReadyFn = Box<dyn FnOnce(WorkerReady) + Send>;
 
 /// A task of `App::task`: its name and its function.
 pub(crate) struct HostTask {
@@ -107,6 +108,7 @@ pub(crate) struct Parts {
     pub observers: Vec<Arc<dyn TurnObserver>>,
     pub http: Vec<HttpFn>,
     pub on_start: Vec<OnStartFn>,
+    pub on_worker_ready: Vec<OnWorkerReadyFn>,
     pub tasks: Vec<HostTask>,
 }
 
@@ -163,6 +165,31 @@ impl Stopping {
 
     fn set(&self) {
         self.0.cancel()
+    }
+}
+
+/// Stop Now for a worker over HTTP, from [`WorkerReady`](crate::WorkerReady): [`Self::now`] ends the grace period of
+/// the worker's stop, so its running turns are cancelled at once and the stop ends within the cancel timeout. Their
+/// leases are released where the worker still holds them and can, and otherwise expire. A turn whose handler had
+/// ended may still complete, or be abandoned while its result is checked. Cheap to clone; it holds no reference to
+/// the worker.
+#[derive(Debug, Clone)]
+pub struct StopNow(CancellationToken);
+
+impl StopNow {
+    fn new() -> Self {
+        Self(CancellationToken::new())
+    }
+
+    /// Ends the grace period of the worker's stop. Called before the stop has begun, the request is kept and applies
+    /// as soon as it does (it does not stop the worker by itself); called after the worker stopped, it does nothing. A
+    /// plain call: it does not wait for the stop.
+    pub fn now(&self) {
+        self.0.cancel()
+    }
+
+    async fn requested(&self) {
+        self.0.cancelled().await
     }
 }
 
@@ -383,20 +410,9 @@ pub(crate) async fn worker(parts: Parts, settings: Settings, stop: Stop) -> Resu
 }
 
 /// A worker over HTTP: waits for the server ([`wait_for_server`]), starts a `Worker` of the selected types on the
-/// client of `target`, and runs until the stop or until the worker stops by itself. It opens no store and no listener,
-/// and never stops or closes the source.
+/// source, and runs until the stop or until the worker stops by itself. It opens no store and no listener, and never
+/// stops or closes the source.
 pub(crate) async fn http_worker(
-    parts: Parts,
-    settings: HttpSettings,
-    target: Target,
-    stop: Stop,
-) -> Result<(), AppError> {
-    let client = target.worker_client().map_err(AppError::Failed)?;
-    run_worker(parts, settings, Arc::new(client), stop).await
-}
-
-/// [`http_worker`] on any `source`.
-async fn run_worker(
     parts: Parts,
     settings: HttpSettings,
     source: Arc<dyn TurnSource>,
@@ -425,18 +441,48 @@ async fn run_worker(
         }
         Some(Ok(())) => {}
     }
-    run_until_stopped(&worker, &stop).await
+    let stop_now = StopNow::new();
+    let ready = WorkerReady {
+        types: settings.types,
+        grace_period: worker.config().shutdown_grace_period,
+        cancel_timeout: worker.config().shutdown_cancel_timeout,
+        stop_now: stop_now.clone(),
+    };
+    for f in parts.on_worker_ready {
+        let ready = ready.clone();
+        if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| f(ready))) {
+            // An earlier function may hold the handle already.
+            stop_worker(&worker, &stop_now).await;
+            return Err(AppError::Failed(anyhow!("App::on_worker_ready panicked: {}", panic_text(panic.as_ref()))));
+        }
+    }
+    run_until_stopped(&worker, &stop, &stop_now).await
 }
 
 /// Runs a started `worker` until the stop, which stops it with its grace period and cancel timeout, or until it stops
-/// by itself; then its end (see [`stopped`]).
-async fn run_until_stopped(worker: &Worker, stop: &Stop) -> Result<(), AppError> {
+/// by itself; then its end (see [`stopped`]). `stop_now`, set before or during the stop, ends its grace period.
+async fn run_until_stopped(worker: &Worker, stop: &Stop, stop_now: &StopNow) -> Result<(), AppError> {
     tokio::select! {
         biased;
-        () = stop.wait() => worker.stop().await,
+        () = stop.wait() => stop_worker(worker, stop_now).await,
         _ = worker.stopped() => {}
     }
     stopped(worker).await
+}
+
+/// Stops `worker` with its grace period, which `stop_now`, set before or during the stop, ends.
+async fn stop_worker(worker: &Worker, stop_now: &StopNow) {
+    let stopping = worker.stop();
+    tokio::pin!(stopping);
+    // The stop is polled first: it sets `Stopping` before `end_grace` is called, which before then is lost.
+    tokio::select! {
+        biased;
+        () = &mut stopping => {}
+        () = stop_now.requested() => {
+            worker.end_grace();
+            stopping.await;
+        }
+    }
 }
 
 /// The end of a stopped `worker`: an error it recorded when it stopped by itself, also when a stop came at the same
@@ -498,7 +544,6 @@ async fn wait_for_server(source: &dyn TurnSource, stop: &Stop) -> Result<bool, S
 
 /// The store of `settings`, or `None` when the stop came while it was waited for.
 async fn open_unless_stopped(settings: &Settings, stop: &Stop) -> Result<Option<Store>, AppError> {
-    check_built_in(&settings.store, &crate::settings::built_in()).map_err(|e| AppError::Failed(anyhow!(e)))?;
     tokio::select! {
         biased;
         () = stop.wait() => Ok(None),
@@ -506,7 +551,7 @@ async fn open_unless_stopped(settings: &Settings, stop: &Stop) -> Result<Option<
     }
 }
 
-/// Opens the store of `settings`; PostgreSQL is waited for while it answers "unavailable".
+/// Opens the store already checked by `App`. Waits for PostgreSQL while it answers "unavailable".
 async fn open(settings: &Settings) -> anyhow::Result<Store> {
     match &settings.store {
         StoreSpec::Sqlite(path) => {
@@ -523,7 +568,7 @@ async fn open(settings: &Settings) -> anyhow::Result<Store> {
             #[cfg(not(feature = "sqlite"))]
             {
                 let _ = path;
-                Err(anyhow!(check_built_in(&settings.store, &[]).unwrap_err()))
+                unreachable!("App checks the SQLite feature before opening the store")
             }
         }
         StoreSpec::Postgres(url) => {
@@ -537,7 +582,7 @@ async fn open(settings: &Settings) -> anyhow::Result<Store> {
             #[cfg(not(feature = "postgres"))]
             {
                 let _ = url;
-                Err(anyhow!(check_built_in(&settings.store, &[]).unwrap_err()))
+                unreachable!("App checks the PostgreSQL feature before opening the store")
             }
         }
     }
@@ -875,6 +920,8 @@ mod worker_tests {
     use tokio::time::Instant;
 
     use super::*;
+    use crate::App;
+    use crate::config::Target;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Tick {
@@ -1044,9 +1091,7 @@ mod worker_tests {
     }
 
     fn parts() -> Parts {
-        let actor = ActorType::from(TickActor);
-        let tick = HostedType { name: "tick", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![tick], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
+        App::new().host(TickActor).into_parts()
     }
 
     fn settings() -> HttpSettings {
@@ -1132,7 +1177,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn a_stop_while_the_server_is_waited_for_starts_no_worker() {
         let fake = Arc::new(Fake::new().listing(|_| unavailable()));
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_millis(1500))).await.unwrap();
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_millis(1500))).await.unwrap();
         assert_eq!(fake.count("register") + fake.count("lease"), 0);
     }
 
@@ -1141,7 +1186,7 @@ mod worker_tests {
     async fn a_stop_during_registration_stops_the_worker_before_any_lease() {
         let fake = Arc::new(Fake::new().registering(|| Box::pin(std::future::pending())));
         let started = Instant::now();
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("success");
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("success");
         assert_eq!(started.elapsed(), Duration::from_secs(2));
         assert_eq!((fake.count("register"), fake.count("lease")), (1, 0));
     }
@@ -1152,7 +1197,7 @@ mod worker_tests {
         let fake = Fake::new();
         fake.system.register_contract(&contract_of::<OtherTickActor>().unwrap()).await.unwrap();
         let fake = Arc::new(fake);
-        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         let text = error.to_string();
         assert!(text.starts_with("the worker cannot start") && text.contains("tick"), "{text}");
@@ -1163,7 +1208,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn an_unavailable_registration_fails_the_start_without_a_retry() {
         let fake = Arc::new(Fake::new().registering(unavailable));
-        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("connection refused"), "{error}");
         assert_eq!((fake.count("list"), fake.count("register"), fake.count("lease")), (1, 1, 0));
@@ -1173,15 +1218,71 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn a_stop_of_a_healthy_worker_succeeds() {
         let fake = Arc::new(Fake::new());
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
         assert!(fake.count("lease") >= 2, "it leased until the stop");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_ready_runs_once_after_a_retry_and_registration_with_the_settled_settings() {
+        let fake = Arc::new(Fake::new().listing(|call| if call == 0 { unavailable() } else { listed() }));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = signal();
+        let source = fake.clone();
+        let parts = App::new()
+            .host(TickActor)
+            .on_worker_ready(move |ready| {
+                assert_eq!(source.count("list"), 2);
+                assert_eq!(source.count("register"), 1);
+                tx.send(ready).unwrap();
+            })
+            .into_parts();
+        let mut settings = settings();
+        settings.worker.shutdown_cancel_timeout = Duration::from_secs(3);
+        let worker = tokio::spawn(http_worker(parts, settings, fake, stopped));
+        let ready: WorkerReady = rx.await.unwrap();
+        assert_eq!(
+            (ready.types, ready.grace_period, ready.cancel_timeout),
+            (vec!["tick"], Duration::from_secs(1), Duration::from_secs(3))
+        );
+        stop.send(()).unwrap();
+        worker.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_ready_reports_the_types_selected_by_the_flag_or_environment() {
+        for (flags, expected) in [(&[][..], "gated"), (&["--types", "tick"][..], "tick")] {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let (stop, stopped) = signal();
+            let app = App::new().host(TickActor).host(GatedActor(gate())).on_worker_ready(move |ready| {
+                tx.send(ready.types).unwrap();
+            });
+            let args = ["test", "worker", "--server", "http://localhost"].into_iter().chain(flags.iter().copied());
+            let args = args.map(Into::into).collect::<Vec<_>>();
+            let crate::command::Parsed::Worker(args) = crate::command::parse(&args, true).unwrap() else {
+                panic!("expected worker command");
+            };
+            let env = crate::Env::from([("CICADA_TYPES".to_owned(), "gated".to_owned())]);
+            let settings = crate::settings::parse_http(&args.node, &env, &app.type_names()).unwrap().apply(None);
+            let worker = tokio::spawn(http_worker(app.into_parts(), settings, Arc::new(Fake::new()), stopped));
+            assert_eq!(rx.await.unwrap(), [expected]);
+            stop.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_ready_hook_is_skipped_when_registration_fails() {
+        let parts = App::new().host(TickActor).on_worker_ready(|_| panic!("the worker did not start")).into_parts();
+        let fake = Arc::new(Fake::new().registering(unavailable));
+        let error = http_worker(parts, settings(), fake, never()).await.unwrap_err();
+        assert!(error.to_string().starts_with("the worker cannot start"), "{error}");
     }
 
     /// Scenario: A stopped worker and a failed worker: a worker that stops by itself fails the command.
     #[tokio::test(start_paused = true)]
     async fn a_worker_that_stops_by_itself_fails_the_command() {
         let fake = Fake { lease_error: Some(SourceError::Fatal("Leasing turns: HTTP 307".into())), ..Fake::new() };
-        let error = run_worker(parts(), settings(), Arc::new(fake), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), Arc::new(fake), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().starts_with("the worker stopped") && error.to_string().contains("307"), "{error}");
     }
@@ -1198,7 +1299,7 @@ mod worker_tests {
             tokio::task::yield_now().await;
         }
         // Both are ready; the stop is taken first.
-        let error = run_until_stopped(&worker, &stop).await.unwrap_err();
+        let error = run_until_stopped(&worker, &stop, &StopNow::new()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("refused"), "{error}");
     }
@@ -1376,9 +1477,7 @@ mod worker_tests {
     }
 
     fn gated_parts(gate: &Gate) -> Parts {
-        let actor = ActorType::from(GatedActor(gate.clone()));
-        let gated = HostedType { name: "gated", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![gated], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
+        App::new().host(GatedActor(gate.clone())).into_parts()
     }
 
     fn gated_settings() -> HttpSettings {
@@ -1412,7 +1511,7 @@ mod worker_tests {
         let server = Server::start().await;
         let gate = gate();
         let (stop, stopped) = signal();
-        let worker = tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+        let worker = tokio::spawn(http_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
         let id = server.send_wait().await;
         gate.began.notified().await;
         tokio::time::sleep(Duration::from_millis(4500)).await;
@@ -1442,7 +1541,7 @@ mod worker_tests {
     async fn over_http_a_refused_token_fails_at_once() {
         let server = Server::start().await;
         let started = Instant::now();
-        let error = run_worker(gated_parts(&gate()), gated_settings(), server.source("wrong"), never()).await;
+        let error = http_worker(gated_parts(&gate()), gated_settings(), server.source("wrong"), never()).await;
         let error = error.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(
@@ -1462,7 +1561,7 @@ mod worker_tests {
         let gate = gate();
         let (stop, stopped) = signal();
         let mut worker =
-            tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+            tokio::spawn(http_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
         let id = server.send_wait().await;
         gate.began.notified().await;
         stop.send(()).unwrap();
@@ -1476,5 +1575,104 @@ mod worker_tests {
         assert_eq!(signalled.elapsed(), Duration::from_secs(10), "it ended when the handler did");
         assert_eq!(server.finished(&id).await, Some(cicada::store::OutcomeStatus::Done));
         assert_eq!(server.count("POST", "/leases/release"), 0);
+    }
+    /// A worker over HTTP of `gated` with a grace period of 30 s, running the turn `Wait` until the gate opens: the
+    /// server, the gate, the stop signal, the worker's task, its [`StopNow`] and the message.
+    async fn worker_in_a_long_turn() -> (
+        Server,
+        Gate,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), AppError>>,
+        StopNow,
+        MessageId,
+    ) {
+        let server = Server::start().await;
+        let gate = gate();
+        let (stop, stopped) = signal();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let parts = App::new()
+            .host(GatedActor(gate.clone()))
+            .on_worker_ready(move |ready| tx.send(ready.stop_now).unwrap())
+            .into_parts();
+        let worker = tokio::spawn(http_worker(parts, gated_settings(), server.source("s3cret"), stopped));
+        let stop_now = rx.await.unwrap();
+        let id = server.send_wait().await;
+        gate.began.notified().await;
+        (server, gate, stop, worker, stop_now, id)
+    }
+
+    /// The cancel timeout of [`gated_settings`].
+    const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Scenario: Stop Now during the drain: the running turn is cancelled and released, and the worker ends within the
+    /// cancel timeout, not the grace period of 30 s.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_ends_the_drain_early_and_releases_the_running_turn() {
+        let (server, _gate, stop, worker, stop_now, id) = worker_in_a_long_turn().await;
+        stop.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let asked = Instant::now();
+        stop_now.now();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(asked.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", asked.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
+        assert_eq!(server.finished(&id).await, None, "released, not finished");
+        stop_now.now(); // after the stop: nothing
+    }
+
+    /// Scenario: Stop Now right after the stop signal, before the worker has begun stopping: it is kept.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_right_after_the_stop_signal_is_kept() {
+        let (server, _gate, stop, worker, stop_now, _id) = worker_in_a_long_turn().await;
+        let signalled = Instant::now();
+        stop.send(()).unwrap();
+        stop_now.now();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(signalled.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", signalled.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
+    }
+
+    /// Stop Now before the stop signal does not stop the worker, and ends the grace period as soon as the stop begins.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_before_the_stop_signal_applies_when_the_stop_begins() {
+        let (server, _gate, stop, mut worker, stop_now, id) = worker_in_a_long_turn().await;
+        stop_now.now();
+        assert!(tokio::time::timeout(Duration::from_secs(2), &mut worker).await.is_err(), "still running");
+        assert_eq!((server.count("POST", "/leases/release"), server.finished(&id).await), (0, None));
+        let signalled = Instant::now();
+        stop.send(()).unwrap();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(signalled.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", signalled.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
+    }
+
+    /// A function of `on_worker_ready` that panics while a turn runs, after an earlier one used the handle: the stop
+    /// of the panic takes Stop Now, and the command fails with the panic. On real time: the functions are synchronous,
+    /// so a turn runs meanwhile only on a multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_panicking_worker_ready_function_still_takes_stop_now() {
+        let fake = Arc::new(Fake::new());
+        fake.system.register_contract(&contract_of::<GatedActor>().unwrap()).await.unwrap();
+        let gated = Gated { id: "g".into() };
+        fake.system.create(&gated, &NoState {}).await.unwrap();
+        fake.system.send(&gated, GatedMsg::Wait).await.unwrap();
+        let gate = gate();
+        let began = gate.began.clone();
+        let parts = App::new()
+            .host(GatedActor(gate))
+            .on_worker_ready(|ready| ready.stop_now.now())
+            .on_worker_ready(move |_| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        tokio::time::timeout(Duration::from_secs(10), began.notified()).await.expect("a turn runs")
+                    })
+                });
+                panic!("late");
+            })
+            .into_parts();
+        let started = std::time::Instant::now();
+        let error = http_worker(parts, gated_settings(), fake, never()).await.unwrap_err();
+        assert!(error.to_string().contains("App::on_worker_ready panicked: late"), "{error}");
+        assert!(started.elapsed() < CANCEL_TIMEOUT, "the grace period of 30 s ended early: {:?}", started.elapsed());
     }
 }

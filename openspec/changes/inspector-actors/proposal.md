@@ -26,7 +26,7 @@ page Inspector, "Actors".
 
 ## Order
 
-After `inspector-window`, before `inspector-outcomes`.
+After `inspector-in-tray`, before `inspector-outcomes`.
 
 ## Impact
 

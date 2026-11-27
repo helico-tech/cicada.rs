@@ -39,7 +39,9 @@
 //!
 //! The store comes from `--store` or `CICADA_STORE` (a `postgres://` address, `sqlite:FILE` or the path of a SQLite
 //! file), the types from `--types` or `CICADA_TYPES`, and each setting of the node from its flag or its variable
-//! `CICADA_…`, else the host's [`App::node_config`], else the default. On PostgreSQL, `serve` and `worker` wait for a
+//! `CICADA_…`, else the host's config from [`App::node_config`] or [`App::node_config_for`], else the default.
+//! `node_config_for` sees the selected types after local settings checks and before the store or server wait.
+//! On PostgreSQL, `serve` and `worker` wait for a
 //! store that answers "unavailable", as containers start in any order: they try again every second and start no try
 //! after a minute, but one try can take seconds (about 10 s for an address that does not answer), so the wait is about
 //! a minute and can be longer, and a wrong password counts as unavailable and is tried again like an unreachable
@@ -68,6 +70,7 @@ use std::io::Write;
 use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use cicada::observer::TurnObserver;
@@ -75,32 +78,65 @@ use cicada::runtime::NodeConfig;
 use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
-pub use crate::node::Stopping;
-use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, Parts, Stop};
-use crate::settings::{Kind, WorkerMode};
+pub use crate::config::Contexts;
+use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, OnWorkerReadyFn, Parts, Stop};
+pub use crate::node::{StopNow, Stopping};
+use crate::settings::{Kind, ParsedSettings, Settings, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
 pub type Env = BTreeMap<String, String>;
+
+/// The selected types and settled shutdown settings of a started worker over HTTP, and its [`StopNow`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct WorkerReady {
+    /// The names of the types the worker runs, in the order the app hosts them.
+    pub types: Vec<&'static str>,
+    /// How long running turns may finish before the worker cancels them at a stop.
+    pub grace_period: Duration,
+    /// How long the worker waits for its polling loop and cancelled turns to end.
+    pub cancel_timeout: Duration,
+    /// Ends the grace period of the worker's stop: a request before the stop begins is kept until it does.
+    pub stop_now: StopNow,
+}
 
 /// A binary: the types it hosts, what the host adds to a node, and what `--version` prints. [`Self::run`] runs it.
 pub struct App {
     types: Vec<HostedType>,
     observers: Vec<Arc<dyn TurnObserver>>,
-    node_config: Option<NodeConfig>,
+    node_config: Option<NodeConfigSource>,
     http: Vec<HttpFn>,
     on_start: Vec<OnStartFn>,
+    on_worker_ready: Vec<OnWorkerReadyFn>,
     tasks: Vec<HostTask>,
     version: Option<String>,
+}
+
+type NodeConfigFn = Box<dyn FnOnce(&[&'static str]) -> anyhow::Result<NodeConfig> + Send>;
+
+enum NodeConfigSource {
+    Fixed(NodeConfig),
+    ForTypes(NodeConfigFn),
+}
+
+impl fmt::Debug for NodeConfigSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed(config) => fmt::Debug::fmt(config, f),
+            Self::ForTypes(_) => f.write_str("node_config_for(..)"),
+        }
+    }
 }
 
 impl fmt::Debug for App {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("App")
-            .field("types", &self.types.iter().map(|t| t.name).collect::<Vec<_>>())
+            .field("types", &self.type_names())
             .field("observers", &self.observers.len())
             .field("node_config", &self.node_config)
             .field("http", &self.http.len())
             .field("on_start", &self.on_start.len())
+            .field("on_worker_ready", &self.on_worker_ready.len())
             .field("tasks", &self.tasks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>())
             .field("version", &self.version)
             .finish()
@@ -122,6 +158,7 @@ impl App {
             node_config: None,
             http: Vec::new(),
             on_start: Vec::new(),
+            on_worker_ready: Vec::new(),
             tasks: Vec::new(),
             version: None,
         }
@@ -137,6 +174,11 @@ impl App {
         self
     }
 
+    /// Returns the hosted type names in the order of the calls to [`Self::host`].
+    pub fn type_names(&self) -> Vec<&'static str> {
+        self.types.iter().map(|t| t.name).collect()
+    }
+
     /// Adds an observer of the turns of the node or of a worker over HTTP, as
     /// [`cicada::runtime::ActorSystemBuilder::observe`]; for telemetry, `cicada_otel::ActorTelemetry`.
     pub fn observe(mut self, observer: impl TurnObserver) -> Self {
@@ -146,9 +188,25 @@ impl App {
 
     /// The host's `NodeConfig`. A flag of `serve` or `worker`, and its variable `CICADA_…`, override a field of it. A
     /// worker over HTTP takes only its id, concurrency, poll interval, longest turn, grace period and cancel timeout:
-    /// it has no row in the node table, so its label is not read.
+    /// it has no row in the node table, so its label is not read. The last call to this or [`Self::node_config_for`]
+    /// wins.
     pub fn node_config(mut self, config: NodeConfig) -> Self {
-        self.node_config = Some(config);
+        self.node_config = Some(NodeConfigSource::Fixed(config));
+        self
+    }
+
+    /// Chooses the host's `NodeConfig` from the types selected for this run, in [`Self::host`] order. `serve` and
+    /// `worker` call `f` synchronously once, after checking the command line, environment, HTTP target or store
+    /// feature, and before waiting for the store or server. Operator commands, help and version skip it.
+    ///
+    /// A returned error fails the command with exit code 1. A panic propagates. Flags and their `CICADA_…` variables
+    /// still override fields, and a worker over HTTP uses the same fields as [`Self::node_config`]. The last call to
+    /// either method wins.
+    pub fn node_config_for(
+        mut self,
+        f: impl FnOnce(&[&'static str]) -> anyhow::Result<NodeConfig> + Send + 'static,
+    ) -> Self {
+        self.node_config = Some(NodeConfigSource::ForTypes(Box::new(f)));
         self
     }
 
@@ -176,6 +234,14 @@ impl App {
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         self.on_start.push(Box::new(move |system| Box::pin(f(system))));
+        self
+    }
+
+    /// Calls `f` once a worker over HTTP has started, after the server check and contract registration succeed.
+    /// Functions run in the order they were added and should return promptly. Other commands leave them unused.
+    /// A panic stops the worker and fails the command.
+    pub fn on_worker_ready(mut self, f: impl FnOnce(WorkerReady) + Send + 'static) -> Self {
+        self.on_worker_ready.push(Box::new(f));
         self
     }
 
@@ -264,7 +330,7 @@ impl App {
     // The signature promises a future that is `Send` and `'static`, and the compiler checks it.
     #[allow(clippy::manual_async_fn)]
     pub fn run_with(
-        self,
+        mut self,
         args: Vec<OsString>,
         env: Env,
         out: impl Write + Send + 'static,
@@ -273,7 +339,7 @@ impl App {
         async move {
             let mut out = out;
             let name = command::program_name(&args);
-            let names: Vec<&'static str> = self.types.iter().map(|t| t.name).collect();
+            let names = self.type_names();
             match command::parse(&args, !names.is_empty()).map_err(AppError::usage)? {
                 Parsed::Help(help) => write!(out, "{help}").map_err(|e| AppError::Failed(e.into())),
                 Parsed::Version => {
@@ -285,15 +351,9 @@ impl App {
                 Parsed::Serve(args) => {
                     self.check_task_names()?;
                     let stop = Stop::watch(shutdown);
-                    let settings = settings::resolve(
-                        Kind::Serve,
-                        &args.node,
-                        args.listen,
-                        &env,
-                        self.node_config.as_ref(),
-                        &names,
-                    )
-                    .map_err(AppError::usage)?;
+                    let parsed =
+                        settings::parse(Kind::Serve, &args.node, args.listen, &env, &names).map_err(AppError::usage)?;
+                    let settings = self.store_settings(parsed, &settings::built_in())?;
                     node::serve(self.into_parts(), settings, &mut out, stop).await
                 }
                 Parsed::Worker(args) => {
@@ -301,9 +361,9 @@ impl App {
                     let stop = Stop::watch(shutdown);
                     match settings::worker_mode(&args, &env).map_err(AppError::usage)? {
                         WorkerMode::Store => {
-                            let host = self.node_config.as_ref();
-                            let settings = settings::resolve(Kind::Worker, &args.node, None, &env, host, &names)
+                            let parsed = settings::parse(Kind::Worker, &args.node, None, &env, &names)
                                 .map_err(AppError::usage)?;
+                            let settings = self.store_settings(parsed, &settings::built_in())?;
                             node::worker(self.into_parts(), settings, stop).await
                         }
                         WorkerMode::Http => {
@@ -315,14 +375,32 @@ impl App {
                                         .to_owned(),
                                 ));
                             }
-                            let settings = settings::resolve_http(&args.node, &env, self.node_config.as_ref(), &names)
-                                .map_err(AppError::usage)?;
+                            let parsed = settings::parse_http(&args.node, &env, &names).map_err(AppError::usage)?;
                             let target = settings::http_target(&args, &env, &name).map_err(AppError::Failed)?;
-                            node::http_worker(self.into_parts(), settings, target, stop).await
+                            let client = target.worker_client().map_err(AppError::Failed)?;
+                            let config = self.take_node_config(&parsed.types)?;
+                            let settings = parsed.apply(config);
+                            node::http_worker(self.into_parts(), settings, Arc::new(client), stop).await
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Checks the selected store before applying the host's config.
+    fn store_settings(&mut self, parsed: ParsedSettings, built: &[settings::Backend]) -> Result<Settings, AppError> {
+        settings::check_built_in(&parsed.store, built).map_err(|e| AppError::Failed(anyhow::anyhow!(e)))?;
+        let config = self.take_node_config(&parsed.types)?;
+        Ok(parsed.apply(config))
+    }
+
+    /// Takes the host's config, calling its hook once for the selected types when given.
+    fn take_node_config(&mut self, types: &[&'static str]) -> Result<Option<NodeConfig>, AppError> {
+        match self.node_config.take() {
+            Some(NodeConfigSource::Fixed(config)) => Ok(Some(config)),
+            Some(NodeConfigSource::ForTypes(f)) => f(types).map(Some).map_err(AppError::Failed),
+            None => Ok(None),
         }
     }
 
@@ -342,8 +420,24 @@ impl App {
             observers: self.observers,
             http: self.http,
             on_start: self.on_start,
+            on_worker_ready: self.on_worker_ready,
             tasks: self.tasks,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_store_feature_skips_the_node_config_hook() {
+        let mut app = App::new().node_config_for(|_| panic!("the store is unavailable in this build"));
+        let env = Env::from([("CICADA_STORE".into(), "sqlite:actors.db".into())]);
+        let parsed = settings::parse(Kind::Serve, &settings::NodeArgs::default(), None, &env, &["counter"]).unwrap();
+        let error = app.store_settings(parsed, &[settings::Backend::Postgres]).unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("this binary was built without SQLite"), "{error}");
     }
 }
 

@@ -16,6 +16,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::Env;
 
+/// The names and current selection of the app's configured contexts.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Contexts {
+    names: Vec<String>,
+    current: Option<String>,
+}
+
+impl Contexts {
+    /// Loads the config file at the path resolved from `env`. A missing file has no contexts.
+    pub fn load(env: &Env) -> anyhow::Result<Self> {
+        let Config { contexts, current_context } = Config::load(&path(env)?).map_err(|error| {
+            // A TOML parse diagnostic can quote a token or server from the file.
+            if error.is::<toml::de::Error>() { anyhow!("{error}") } else { error }
+        })?;
+        Ok(Self { names: contexts.into_keys().collect(), current: current_context })
+    }
+
+    /// Returns the configured context names in alphabetical order.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Returns the current context named by the config file, if set.
+    pub fn current(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+}
+
 /// The config file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -205,8 +233,13 @@ impl Target {
     }
 
     /// The client of a worker over HTTP: the token and headers of [`Self::client`], [`WORKER_TIMEOUT`], and no
-    /// redirects, as a `307` or `308` would send a POST of a lease call again. It adds no retry of its own.
+    /// redirects, as a `307` or `308` would send a POST of a lease call again. Checks the URL and adds no retry of its
+    /// own.
     pub(crate) fn worker_client(&self) -> anyhow::Result<ActorClient> {
+        let server = reqwest::Url::parse(&self.server).context("invalid server URL")?;
+        if !matches!(server.scheme(), "http" | "https") {
+            bail!("the server URL must use http or https");
+        }
         let http = reqwest::Client::builder()
             .default_headers(self.headers()?)
             .timeout(WORKER_TIMEOUT)
@@ -363,6 +396,29 @@ mod tests {
         assert_eq!(Config::load(&file).unwrap(), config());
     }
 
+    #[test]
+    fn contexts_load_names_and_the_current_context_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let env = env(&[("CICADA_CONFIG", file.to_str().unwrap()), ("CICADA_CONTEXT", "b")]);
+        let contexts = Contexts::load(&env).unwrap();
+        assert!(contexts.names().is_empty());
+        assert_eq!(contexts.current(), None);
+        config().save(&file).unwrap();
+        let contexts = Contexts::load(&env).unwrap();
+        assert_eq!(contexts.names(), ["a", "b"]);
+        assert_eq!(contexts.current(), Some("a"));
+    }
+
+    #[test]
+    fn a_contexts_parse_error_does_not_expose_its_file_contents() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "[contexts.a]\ntoken = invalid-secret").unwrap();
+        let env = env(&[("CICADA_CONFIG", file.path().to_str().unwrap())]);
+        let error = Contexts::load(&env).unwrap_err();
+        assert!(error.to_string().contains("cannot read"));
+        assert!(!format!("{error:?}").contains("invalid-secret"));
+    }
     #[cfg(unix)]
     #[test]
     fn the_file_is_readable_only_by_its_owner() {
