@@ -8,11 +8,13 @@ mod json_text;
 mod messages;
 mod nodes;
 mod outcomes;
+mod scroll;
 mod turns;
 mod types;
 mod watches;
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -20,6 +22,7 @@ use std::time::Duration;
 
 use cicada::ActorAddress;
 use cicada::api::WatchView;
+use cicada::store::{MessageId, NodeId};
 use cicada_app::Env;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -46,8 +49,9 @@ use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
-use crate::nodes::{NodePane, NodesView};
+use crate::nodes::{NodePane, NodesRead, NodesView};
 use crate::outcomes::{FailedCount, OutcomePane, OutcomesView, StatusFilter};
+use crate::pager::Paging;
 use crate::turns::{TurnPane, TurnsView};
 use crate::types::{TypePane, TypesView};
 use crate::watches::WatchesView;
@@ -192,6 +196,16 @@ fn run_app(mtm: MainThreadMarker, session: Session) {
     app.setMainMenu(None);
 }
 
+/// The stable identities of rows as their tables know them.
+enum RowKey {
+    Outline(ItemId),
+    Message(MessageId),
+    Turn(ActorAddress),
+    Node(NodeId),
+    Type(String),
+    Watch(Arc<WatchView>),
+}
+
 /// The names, the selected context and the overrides that the context pop-up shows.
 type ContextsShown = (Vec<String>, Option<String>, Vec<&'static str>);
 
@@ -202,6 +216,8 @@ struct Controller {
     view: RefCell<watch::Receiver<View>>,
     navigation: RefCell<Navigation>,
     window: OnceCell<Window>,
+    /// A hard refresh publishes a loading view before the new rows, so keep its anchor across the empty reload.
+    scroll: RefCell<HashMap<Section, scroll::Position<RowKey>>>,
     back: RefCell<Option<Retained<NSToolbarItem>>>,
     forward: RefCell<Option<Retained<NSToolbarItem>>>,
     refresh: RefCell<Option<Retained<NSToolbarItem>>>,
@@ -1067,6 +1083,7 @@ impl Target {
             view: RefCell::new(view),
             navigation: RefCell::default(),
             window: OnceCell::new(),
+            scroll: RefCell::default(),
             back: RefCell::default(),
             forward: RefCell::default(),
             refresh: RefCell::default(),
@@ -1217,6 +1234,15 @@ impl Target {
         let list = c.list.borrow_mut().borrow_and_update().clone();
         let target_error = c.view.borrow().borrow().target_error.clone();
         window.page.show_footer(&list, target_error.as_deref());
+        let table = &window.page.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::Actors, table, loading, |row| {
+            let item = table.itemAtRow(row as NSInteger);
+            match item.as_deref().and_then(Item::id) {
+                Some(id @ ItemId::Actor(_)) => Some(RowKey::Outline(id.clone())),
+                _ => None,
+            }
+        });
         let selected = c.session.actors().selected().map(ItemId::Actor);
         let mut previous = c.items.take();
         let items = actors::items(self.mtm(), &list, &mut previous);
@@ -1228,9 +1254,12 @@ impl Target {
                 ItemId::Status(_) => None,
             })
             .partition(|(open, _)| *open);
+        let anchor_item = match anchor.as_ref().and_then(|anchor| anchor.key.as_ref()) {
+            Some(RowKey::Outline(id)) => items.get(id).cloned(),
+            _ => None,
+        };
         c.items.replace(items);
         c.list_shown.replace(list);
-        let table = &window.page.table;
         c.syncing.set(true);
         table.reloadData();
         drop(previous);
@@ -1255,6 +1284,13 @@ impl Target {
             } else {
                 table.deselectAll(None);
             }
+        }
+        if let Some(anchor) = anchor {
+            // SAFETY: The item, if present, is retained by the reloaded outline and by anchor_item.
+            let row = anchor_item
+                .as_ref()
+                .and_then(|item| usize::try_from(unsafe { table.rowForItem(Some(item.as_ref())) }).ok());
+            anchor.restore(table, row);
         }
         c.syncing.set(false);
         self.check_more();
@@ -1365,8 +1401,17 @@ impl Target {
         let target_error = c.view.borrow().borrow().target_error.clone();
         window.messages.show_footer(&list, target_error.as_deref());
         let selected = c.session.messages().selected().and_then(|id| list.index(&id));
+        let table = &window.messages.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::Messages, table, loading, |row| {
+            c.messages_shown.borrow().rows.get(row).map(|row| RowKey::Message(row.id.clone()))
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Message(id)) => list.index(id),
+            _ => None,
+        };
         c.messages_shown.replace(list);
-        self.reload_table(&window.messages.table, selected);
+        self.reload_table(table, selected, anchor, row);
         self.check_more_messages();
     }
 
@@ -1405,8 +1450,17 @@ impl Target {
         let target_error = c.view.borrow().borrow().target_error.clone();
         page.show_footer(&list, target_error.as_deref());
         let selected = list.selection(&c.turns_pane.borrow().borrow());
+        let table = &page.list.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::RunningTurns, table, loading, |row| {
+            c.turns_shown.borrow().rows.get(row).map(|row| RowKey::Turn(row.actor.clone()))
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Turn(id)) => list.index(id),
+            _ => None,
+        };
         c.turns_shown.replace(list);
-        self.reload_table(&page.list.table, selected);
+        self.reload_table(table, selected, anchor, row);
         self.check_more_turns();
     }
 
@@ -1447,8 +1501,17 @@ impl Target {
         let target_error = c.view.borrow().borrow().target_error.clone();
         page.show_footer(&list, target_error.as_deref());
         let selected = c.session.nodes().selected().and_then(|id| list.index(&id));
+        let table = &page.list.table;
+        let loading = list.rows.is_empty() && matches!(list.read, NodesRead::Loading | NodesRead::NotRead);
+        let anchor = self.table_position(Section::Nodes, table, loading, |row| {
+            c.nodes_shown.borrow().rows.get(row).map(|row| RowKey::Node(row.id.clone()))
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Node(id)) => list.index(id),
+            _ => None,
+        };
         c.nodes_shown.replace(list);
-        self.reload_table(&page.list.table, selected);
+        self.reload_table(table, selected, anchor, row);
     }
 
     /// Shows the selected node and its turns.
@@ -1476,8 +1539,17 @@ impl Target {
         page.show_footer(&list, target_error.as_deref());
         page.show_columns(list.status);
         let selected = c.session.outcomes().selected().and_then(|id| list.index(&id));
+        let table = &page.list.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::Outcomes, table, loading, |row| {
+            c.outcomes_shown.borrow().rows.get(row).map(|row| RowKey::Message(row.id.clone()))
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Message(id)) => list.index(id),
+            _ => None,
+        };
         c.outcomes_shown.replace(list);
-        self.reload_table(&page.list.table, selected);
+        self.reload_table(table, selected, anchor, row);
         self.check_more_outcomes();
     }
 
@@ -1562,8 +1634,17 @@ impl Target {
         let target_error = c.view.borrow().borrow().target_error.clone();
         let selected = c.types_pane.borrow().borrow().row.as_ref().and_then(|row| list.index(&row.name));
         page.show_footer(&list, target_error.as_deref());
+        let table = &page.list.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::Types, table, loading, |row| {
+            c.types_shown.borrow().rows.get(row).map(|row| RowKey::Type(row.name.clone()))
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Type(id)) => list.index(id),
+            _ => None,
+        };
         c.types_shown.replace(list);
-        self.reload_table(&page.list.table, selected);
+        self.reload_table(table, selected, anchor, row);
     }
 
     /// Reloads the Watches table and restores selection by target and watcher.
@@ -1577,17 +1658,54 @@ impl Target {
         let target_error = c.view.borrow().borrow().target_error.clone();
         let selected = c.watches_pane.borrow().borrow().as_ref().and_then(|row| list.index(row));
         page.show_footer(&list, target_error.as_deref());
+        let table = &page.list.table;
+        let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let anchor = self.table_position(Section::Watches, table, loading, |row| {
+            c.watches_shown.borrow().rows.get(row).cloned().map(RowKey::Watch)
+        });
+        let row = match anchor.as_ref().and_then(|position| position.key.as_ref()) {
+            Some(RowKey::Watch(id)) => list.index(id),
+            _ => None,
+        };
         c.watches_shown.replace(list);
-        self.reload_table(&page.list.table, selected);
+        self.reload_table(table, selected, anchor, row);
         self.check_more_watches();
     }
 
-    fn reload_table(&self, table: &NSTableView, selected: Option<usize>) {
+    fn table_position(
+        &self,
+        section: Section,
+        table: &NSTableView,
+        loading: bool,
+        key: impl FnOnce(usize) -> Option<RowKey>,
+    ) -> Option<scroll::Position<RowKey>> {
+        let saved = self.ivars().scroll.borrow_mut().remove(&section);
+        let anchor = saved.or_else(|| scroll::Position::capture(table, key));
+        if loading {
+            if let Some(anchor) = anchor {
+                self.ivars().scroll.borrow_mut().insert(section, anchor);
+            }
+            None
+        } else {
+            anchor
+        }
+    }
+
+    fn reload_table(
+        &self,
+        table: &NSTableView,
+        selected: Option<usize>,
+        anchor: Option<scroll::Position<RowKey>>,
+        row: Option<usize>,
+    ) {
         let c = self.ivars();
         c.syncing.set(true);
         table.reloadData();
         c.syncing.set(false);
         self.select_row(table, selected);
+        if let Some(anchor) = anchor {
+            anchor.restore(table, row);
+        }
     }
 
     /// Selects `selected` in `table`, or nothing, unless the table already shows that selection.

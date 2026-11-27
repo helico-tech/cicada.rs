@@ -8,7 +8,8 @@ use cicada_client::ActorClient;
 use tokio::{runtime::Handle, sync::watch};
 
 use crate::model::{Limits, Part};
-use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging};
+use crate::pager::{Landed, NEAR_END, Order, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::refresh::{RefreshPage, Stale};
 
 /// The locally filtered table and the state of the server's paging.
 #[derive(Clone, Default)]
@@ -23,6 +24,8 @@ pub(crate) struct WatchesView {
     pub more: bool,
     /// Whether a page is pending or failed.
     pub paging: Paging,
+    /// The mark on rows carried over by a soft refresh.
+    pub stale: Option<Stale>,
 }
 
 impl WatchesView {
@@ -109,6 +112,16 @@ impl Watches {
         }
     }
 
+    /// Re-reads the loaded range without clearing the view or changing the list generation.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
+    }
+
+    /// Cancels a soft refresh when this page is left.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock().pager.cancel_refresh();
+    }
+
     /// Clears the selection and starts paging from the top again.
     pub fn refresh(&self) {
         let mut state = self.shared.lock();
@@ -120,6 +133,7 @@ impl Watches {
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.lock();
         state.pending = None;
+        state.pager.cancel_refresh();
         self.shared.filter(&state, prefix);
     }
 
@@ -185,6 +199,9 @@ impl Watches {
     /// Restores a history place's filter and selection, waiting for the row if it is on an unread page.
     pub fn restore(&self, place: WatchPlace) {
         let mut state = self.shared.lock();
+        if self.shared.list.borrow().prefix != place.prefix {
+            state.pager.cancel_refresh();
+        }
         self.shared.filter(&state, &place.prefix);
         let row = self.shared.find(place.selected.as_deref());
         let can_land = {
@@ -209,6 +226,7 @@ impl Shared {
         state.rows.clear();
         state.pending = None;
         self.list.send_modify(|list| {
+            list.stale = None;
             list.rows.clear();
             list.loaded = 0;
             list.more = false;
@@ -235,9 +253,8 @@ impl Shared {
 
     fn request_page(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let read = move |cursor: Option<String>| async move {
-            client.watches(None, None, cursor.as_deref(), Some(PAGE)).await
-        };
+        let query = ();
+        let read = move |cursor| Self::read_page(client, query, cursor);
         if Pager::request(self, state, self.limits, read, Self::land) {
             state.visited = true;
             self.list.send_modify(|list| list.paging = Paging::Loading);
@@ -247,11 +264,9 @@ impl Shared {
     fn land(self: &Arc<Self>, state: &mut State, landed: Landed<WatchView>) {
         match landed.page {
             Part::Ready((rows, more)) => {
-                let start = state.rows.len();
-                state.rows.extend(rows.into_iter().map(Arc::new));
+                let added = crate::pager::insert_ordered(&mut state.rows, rows, Self::key);
                 self.list.send_modify(|list| {
-                    list.rows
-                        .extend(state.rows[start..].iter().filter(|row| matches_prefix(row, &list.prefix)).cloned());
+                    list.rows = state.rows.iter().filter(|row| matches_prefix(row, &list.prefix)).cloned().collect();
                     list.loaded = state.rows.len();
                     list.more = more;
                     list.paging = Paging::Idle;
@@ -262,9 +277,13 @@ impl Shared {
                 } else if !more {
                     state.pending = None;
                 }
+                if added == 0 && more {
+                    self.request_page(state);
+                }
             }
             Part::Failed(error) => self.list.send_modify(|list| list.paging = Paging::Failed(error)),
         }
+        self.resume(state);
     }
 }
 
@@ -286,4 +305,74 @@ impl Paged for Shared {
 
 fn matches_prefix(watch: &WatchView, prefix: &str) -> bool {
     watch.watcher.as_str().starts_with(prefix) || watch.target.as_str().starts_with(prefix)
+}
+
+impl SoftPaged for Shared {
+    type Row = WatchView;
+    type Key = (String, ActorAddress);
+    type Query = ();
+
+    const ORDER: Order = Order::Key;
+
+    fn key(row: &Self::Row) -> Self::Key {
+        (row.target.as_str().to_owned(), row.watcher.clone())
+    }
+
+    fn rows(&self, state: &State) -> Vec<Arc<Self::Row>> {
+        state.rows.clone()
+    }
+
+    fn paging(&self) -> Paging {
+        self.list.borrow().paging.clone()
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    fn stale(&self) -> Option<Stale> {
+        self.list.borrow().stale.clone()
+    }
+
+    fn query(state: &State) -> Option<(ActorClient, Self::Query)> {
+        Some((state.client.clone().filter(|_| state.visited)?, ()))
+    }
+
+    async fn read_page(
+        client: ActorClient,
+        _query: Self::Query,
+        cursor: Option<String>,
+    ) -> Result<cicada::api::PageView<Self::Row>, cicada_client::ClientError> {
+        client.watches(None, None, cursor.as_deref(), Some(PAGE)).await
+    }
+
+    fn land_refresh(
+        self: &Arc<Self>,
+        state: &mut State,
+        rows: Option<Vec<Arc<Self::Row>>>,
+        more: bool,
+        stale: Option<Stale>,
+    ) {
+        let Some(rows) = rows else {
+            return self.list.send_modify(|list| list.stale = stale);
+        };
+        state.rows = rows;
+        self.list.send_modify(|list| {
+            list.rows = state.rows.iter().filter(|row| matches_prefix(row, &list.prefix)).cloned().collect();
+            list.loaded = state.rows.len();
+            list.more = more;
+            list.stale = stale;
+        });
+        let selected = self.pane.borrow().clone();
+        let pending = self.find(state.pending.as_deref());
+        if pending.is_some() || !more {
+            state.pending = None;
+        }
+        let row = pending.or_else(|| self.find(selected.as_deref()));
+        self.pane.send_replace(row);
+    }
+
+    fn page(self: &Arc<Self>, state: &mut State) {
+        self.request_page(state);
+    }
 }

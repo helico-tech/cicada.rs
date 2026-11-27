@@ -1,6 +1,6 @@
 //! Registered types, cached once per reload, and the selected schema formatted off the main thread.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::api::TypeView;
 use cicada_client::ActorClient;
@@ -9,6 +9,7 @@ use tokio::{runtime::Handle, sync::watch, task::JoinHandle, time::Instant};
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, within};
 use crate::pager::Paging;
+use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
 
 /// The rows matching the Types search field.
 #[derive(Clone, Default)]
@@ -19,6 +20,8 @@ pub(crate) struct TypesView {
     pub rows: Vec<Arc<TypeView>>,
     /// The state of the whole-list read.
     pub paging: Paging,
+    /// The mark on a list a soft refresh could not update.
+    pub stale: Option<Stale>,
 }
 
 impl TypesView {
@@ -68,10 +71,13 @@ struct State {
     loaded: bool,
     generation: u64,
     task: Option<JoinHandle<()>>,
+    refresh: Refresh,
+    read_at: Option<cicada::time::Timestamp>,
     rows: Vec<Arc<TypeView>>,
     pane_generation: u64,
     pane_visible: bool,
     formatting: bool,
+    formatted_generation: Option<u64>,
     #[cfg(test)]
     formatted: usize,
     #[cfg(test)]
@@ -81,6 +87,8 @@ struct State {
 impl State {
     fn clear(&mut self) {
         self.generation += 1;
+        self.refresh.cancel();
+        self.read_at = None;
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -120,6 +128,7 @@ impl Types {
         state.loaded = false;
         self.shared.list.send_modify(|list| {
             list.rows.clear();
+            list.stale = None;
             list.paging = Paging::Idle;
         });
         self.shared.pane.send_replace(TypePane::default());
@@ -131,6 +140,16 @@ impl Types {
         if !state.loaded {
             self.shared.reload(&mut state);
         }
+    }
+
+    /// Re-reads the registered types and the selected schema without clearing them.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
+    }
+
+    /// Cancels a soft refresh when this page is left.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock_refresh().refresh.cancel();
     }
 
     /// Clears the list and selection and reads the list once again.
@@ -149,6 +168,9 @@ impl Types {
     /// Filters the cache and clears a selection that no longer matches.
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.state.lock().expect("types");
+        if self.shared.list.borrow().prefix != prefix {
+            state.refresh.cancel();
+        }
         self.shared.list.send_modify(|list| {
             list.prefix = prefix.to_owned();
             list.rows = matching(&state.rows, prefix);
@@ -203,6 +225,7 @@ impl Shared {
         state.loaded = true;
         self.list.send_modify(|list| {
             list.rows.clear();
+            list.stale = None;
             list.paging = Paging::Loading;
         });
         self.pane.send_replace(TypePane::default());
@@ -215,24 +238,31 @@ impl Shared {
                 return;
             }
             state.task = None;
-            shared.list.send_modify(|list| match answer {
-                Part::Ready(rows) => {
-                    state.rows = rows.into_iter().map(Arc::new).collect();
-                    list.rows = matching(&state.rows, &list.prefix);
-                    list.paging = Paging::Idle;
-                }
-                Part::Failed(error) => list.paging = Paging::Failed(error),
-            });
+            match answer {
+                Part::Ready(rows) => shared.replace_types(&mut state, rows),
+                Part::Failed(error) => shared.list.send_modify(|list| list.paging = Paging::Failed(error)),
+            }
+            shared.resume(&mut state);
         }));
     }
 
+    fn replace_types(&self, state: &mut State, rows: Vec<TypeView>) {
+        state.read_at = Some(chrono::Utc::now());
+        state.rows = rows.into_iter().map(Arc::new).collect();
+        self.list.send_modify(|list| {
+            list.rows = matching(&state.rows, &list.prefix);
+            list.paging = Paging::Idle;
+            list.stale = None;
+        });
+    }
+
     fn format_if_needed(self: &Arc<Self>, state: &mut State) {
-        if state.formatting || !state.pane_visible {
+        if state.formatting || !state.pane_visible || state.formatted_generation == Some(state.pane_generation) {
             return;
         }
         let (row, schema) = {
             let pane = self.pane.borrow();
-            let Some(row) = pane.row.clone().filter(|_| pane.json.is_none()) else { return };
+            let Some(row) = pane.row.clone() else { return };
             (row, pane.schema)
         };
         state.formatting = true;
@@ -255,11 +285,78 @@ impl Shared {
                 state.formatted += 1;
             }
             if state.pane_generation == generation {
+                state.formatted_generation = Some(generation);
                 shared.pane.send_modify(|pane| pane.json = Some(json));
             } else {
                 shared.format_if_needed(&mut state);
             }
         });
+    }
+}
+
+impl RefreshPage for Shared {
+    type State = State;
+
+    fn lock_refresh(&self) -> MutexGuard<'_, State> {
+        self.state.lock().expect("types")
+    }
+
+    fn refresh(state: &mut State) -> &mut Refresh {
+        &mut state.refresh
+    }
+
+    fn runtime(&self) -> (&Handle, std::time::Duration) {
+        (&self.handle, self.limits.deadline)
+    }
+
+    fn readiness(&self, state: &State) -> Readiness {
+        match self.list.borrow().paging {
+            Paging::Loading => Readiness::Wait,
+            Paging::Idle if state.loaded && state.client.is_some() => Readiness::Ready,
+            _ => Readiness::Skip,
+        }
+    }
+
+    async fn run(self: &Arc<Self>, ticket: u64, budget: Budget) {
+        let client = {
+            let state = self.lock_refresh();
+            if !state.refresh.current(ticket) {
+                return;
+            }
+            let Some(client) = state.client.clone() else { return };
+            client
+        };
+        let answer = budget.read(client.types()).await;
+        let mut state = self.lock_refresh();
+        if !state.refresh.current(ticket) {
+            return;
+        }
+        let rows = match answer {
+            Part::Ready(rows) => rows,
+            Part::Failed(error) => {
+                return self.list.send_modify(|list| {
+                    list.stale = Some(Stale::failed(as_of(list.stale.as_ref(), state.read_at), error));
+                });
+            }
+        };
+        self.replace_types(&mut state, rows);
+        let before = self.pane.borrow().clone();
+        let Some(previous) = before.row else { return };
+        let row = self.list.borrow().rows.iter().find(|row| row.name == previous.name).cloned();
+        if row.as_ref() == Some(&previous) {
+            return;
+        }
+        // The schema popup lists message names in order, so an updated contract can move the selected schema.
+        let message = before.schema.checked_sub(1).and_then(|index| previous.messages.keys().nth(index));
+        let schema = row
+            .as_ref()
+            .zip(message)
+            .and_then(|(row, name)| row.messages.keys().position(|key| key == name))
+            .map_or(0, |index| index + 1);
+        let json = row.as_ref().filter(|_| message.is_none() || schema > 0).and(before.json);
+        state.pane_generation += 1;
+        self.pane.send_replace(TypePane { row, schema, json });
+        self.format_if_needed(&mut state);
     }
 }
 

@@ -15,7 +15,7 @@ use crate::model::{Limits, Navigation, Section, Session};
 use crate::pager::Paging;
 use crate::watches::Watches;
 
-fn row(target: &str, watcher: &str) -> Value {
+pub(super) fn row(target: &str, watcher: &str) -> Value {
     json!({"target": target, "watcher": watcher})
 }
 

@@ -61,9 +61,12 @@ impl NodesPage {
             }
             (None, NodesRead::Ready(_)) => (format!("{} nodes; status {AS_OF}.", list.loaded), Style::Secondary, false),
         };
+        let (text, tip) = super::browse::freshness(text, list.stale.as_ref());
         self.list.footer(&text, style, retry, None);
         if let NodesRead::Ready(at) = &list.read {
-            self.list.footer_tip(&format!("{text} Read at {} on this Mac's clock.", created(*at)));
+            self.list.footer_tip(&format!("{tip}\nLast read at {}", precise_time(*at)));
+        } else {
+            self.list.footer_tip(&tip);
         }
     }
 

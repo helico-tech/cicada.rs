@@ -100,6 +100,10 @@ fn overview(layout: &mut Layout<'_>, view: &View) {
             layout.text(error, Style::Error);
         }
     }
+    if view.stale.is_some() {
+        let (text, tip) = super::browse::freshness(String::new(), view.stale.as_ref());
+        layout.text_with_tip(&text, Style::Secondary, Some(&tip));
+    }
 }
 
 fn nodes(layout: &mut Layout<'_>, overview: &Overview) {
@@ -200,10 +204,17 @@ impl<'a> Layout<'a> {
     }
 
     pub(super) fn text(&mut self, text: &str, style: Style) {
+        self.text_with_tip(text, style, None);
+    }
+
+    fn text_with_tip(&mut self, text: &str, style: Style, tip: Option<&str>) {
         let label = NSTextField::wrappingLabelWithString(&NSString::from_str(text), self.mtm);
         label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
         label.setTextColor(Some(&color(style)));
         label.setSelectable(true);
+        if let Some(tip) = tip {
+            label.setToolTip(Some(&NSString::from_str(tip)));
+        }
         label.setPreferredMaxLayoutWidth(self.inner());
         let height = label.fittingSize().height.max(LINE);
         self.add(&label, MARGIN, self.inner(), height);

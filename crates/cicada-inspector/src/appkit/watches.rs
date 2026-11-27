@@ -89,7 +89,9 @@ impl WatchesPage {
             }
         };
         let text = if filtered && target_error.is_none() { format!("Filter covers loaded rows. {text}") } else { text };
+        let (text, tip) = super::browse::freshness(text, view.stale.as_ref());
         self.list.footer(&text, style, retry, more);
+        self.list.footer_tip(&tip);
     }
 
     /// Shows the selected watch in the pane.

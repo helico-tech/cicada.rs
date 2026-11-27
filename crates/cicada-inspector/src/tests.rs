@@ -8,6 +8,7 @@ mod json;
 mod messages;
 mod nodes;
 mod outcomes;
+mod soft_refresh;
 mod turns;
 mod types;
 mod watches;

@@ -2,7 +2,7 @@
 //! and the sidebar's history. The AppKit view only renders it.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cicada::ActorAddress;
@@ -21,6 +21,7 @@ use crate::actors::Actors;
 use crate::messages::Messages;
 use crate::nodes::{NodePlace, Nodes};
 use crate::outcomes::{OutcomePlace, Outcomes};
+use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
 use crate::turns::{RunningTurns, TurnPlace};
 use crate::types::Types;
 use crate::watches::{WatchPlace, Watches};
@@ -145,32 +146,36 @@ pub(crate) async fn overview_with(
     limits: Limits,
     on_stats: impl FnOnce(&Part<StatsView>),
 ) -> Overview {
-    let deadline = Instant::now() + limits.deadline;
+    let budget = Budget::with_slots(limits.deadline, limits.concurrent.max(1).min(limits.types.max(1)) + 4);
+    gather_overview(client, limits, &budget, on_stats).await
+}
+
+async fn gather_overview(
+    client: &ActorClient,
+    limits: Limits,
+    budget: &Budget,
+    on_stats: impl FnOnce(&Part<StatsView>),
+) -> Overview {
     let turns = async {
         let page = client.turns(None, "", None, Some(TURNS_PAGE)).await?;
         Ok(Turns { more: page.next.is_some(), items: page.items })
     };
     // The counts start as soon as `/types` answers, not after the other base routes.
     let types = async {
-        match within(deadline, client.types()).await {
+        match budget.read(client.types()).await {
             Part::Ready(types) => {
-                Part::Ready(count(client, types.into_iter().map(|t| t.name).collect(), deadline, limits).await)
+                Part::Ready(count(client, types.into_iter().map(|t| t.name).collect(), budget, limits).await)
             }
             Part::Failed(error) => Part::Failed(error),
         }
     };
     let stats = async {
-        let stats = within(deadline, client.stats("")).await;
+        let stats = budget.read(client.stats("")).await;
         on_stats(&stats);
         stats
     };
-    let (stats, health, nodes, turns, types) = tokio::join!(
-        stats,
-        within(deadline, client.health()),
-        within(deadline, client.nodes()),
-        within(deadline, turns),
-        types,
-    );
+    let (stats, health, nodes, turns, types) =
+        tokio::join!(stats, budget.read(client.health()), budget.read(client.nodes()), budget.read(turns), types,);
     Overview { stats, health, nodes, turns, types }
 }
 
@@ -184,13 +189,16 @@ pub(crate) async fn within<T>(deadline: Instant, call: impl Future<Output = Resu
 }
 
 /// The actor counts of the first `limits.types` of `names`, in their order, at most `limits.concurrent` at a time.
-async fn count(client: &ActorClient, names: Vec<String>, deadline: Instant, limits: Limits) -> Vec<TypeRow> {
-    let stats = |name: String| async move { client.stats(&format!("{name}/")).await.map(|stats| stats.actors) };
-    count_with(names, deadline, limits, stats).await
+async fn count(client: &ActorClient, names: Vec<String>, budget: &Budget, limits: Limits) -> Vec<TypeRow> {
+    count_rows(names, limits, |name| async move {
+        let prefix = format!("{name}/");
+        budget.read(client.stats(&prefix)).await.map(|stats| stats.actors)
+    })
+    .await
 }
 
-/// [`count`] with the call of one count given: `count_one` is called only for a count that starts before the
-/// deadline, so a count still queued then never starts; one that runs at the deadline is dropped, uncounted.
+/// Runs a simulated count under the same deadline for the portable Overview tests.
+#[cfg(test)]
 pub(crate) async fn count_with<F, Fut>(
     names: Vec<String>,
     deadline: Instant,
@@ -201,16 +209,27 @@ where
     F: Fn(String) -> Fut,
     Fut: Future<Output = Result<u64, ClientError>>,
 {
+    count_rows(names, limits, |name| async {
+        if Instant::now() >= deadline {
+            return Part::Failed(TIMED_OUT.into());
+        }
+        within(deadline, count_one(name)).await
+    })
+    .await
+}
+
+async fn count_rows<F, Fut>(names: Vec<String>, limits: Limits, count_one: F) -> Vec<TypeRow>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Part<u64>>,
+{
     let asked = names.len().min(limits.types);
     let count_one = &count_one;
     let counts: Vec<Count> = stream::iter(names[..asked].iter().cloned().map(|name| async move {
-        if Instant::now() >= deadline {
-            return Count::NotCounted;
-        }
-        match timeout_at(deadline, count_one(name)).await {
-            Ok(Ok(actors)) => Count::Counted(actors),
-            Ok(Err(error)) => Count::Failed(error_text(&error)),
-            Err(_) => Count::NotCounted,
+        match count_one(name).await {
+            Part::Ready(actors) => Count::Counted(actors),
+            Part::Failed(error) if error == TIMED_OUT => Count::NotCounted,
+            Part::Failed(error) => Count::Failed(error),
         }
     }))
     .buffered(limits.concurrent.max(1))
@@ -254,6 +273,8 @@ pub struct View {
     pub overview: Option<Overview>,
     /// True while a refresh runs.
     pub refreshing: bool,
+    /// The mark on parts a soft refresh could not update.
+    pub stale: Option<Stale>,
 }
 
 impl View {
@@ -271,19 +292,19 @@ impl View {
 /// context, cancels the one before; a refresh that still finishes after that is discarded.
 pub struct Session {
     env: Env,
-    limits: Limits,
-    handle: Handle,
     shared: Arc<Shared>,
     actors: Actors,
     messages: Messages,
     turns: RunningTurns,
-    outcomes: Outcomes,
     nodes: Nodes,
     types: Types,
     watches: Watches,
 }
 
 struct Shared {
+    handle: Handle,
+    limits: Limits,
+    outcomes: Outcomes,
     view: watch::Sender<View>,
     current: Mutex<Current>,
 }
@@ -294,6 +315,8 @@ struct Current {
     generation: u64,
     client: Option<ActorClient>,
     task: Option<JoinHandle<()>>,
+    refresh: Refresh,
+    read_at: Option<Timestamp>,
     /// The refreshes cancelled so far, for tests that await their end.
     #[cfg(test)]
     superseded: Vec<JoinHandle<()>>,
@@ -302,15 +325,20 @@ struct Current {
 impl Session {
     /// A session with no context yet; [`Self::use_context`] picks one. Refreshes run on `handle`.
     pub fn new(env: Env, handle: Handle, limits: Limits) -> Self {
-        let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
+        let shared = Arc::new(Shared {
+            handle: handle.clone(),
+            limits,
+            outcomes: Outcomes::new(handle.clone(), limits),
+            view: watch::channel(View::default()).0,
+            current: Mutex::default(),
+        });
         let actors = Actors::new(handle.clone(), limits);
         let messages = Messages::new(handle.clone(), limits);
         let turns = RunningTurns::new(handle.clone(), limits);
-        let outcomes = Outcomes::new(handle.clone(), limits);
         let nodes = Nodes::new(handle.clone(), limits);
         let types = Types::new(handle.clone(), limits);
         let watches = Watches::new(handle.clone(), limits);
-        Self { env, limits, handle, shared, actors, messages, turns, outcomes, nodes, types, watches }
+        Self { env, shared, actors, messages, turns, nodes, types, watches }
     }
 
     /// The Actors page's reads, on the client of the context in use.
@@ -330,7 +358,7 @@ impl Session {
 
     /// The Outcomes page and the sidebar's failed count, on the client of the context in use.
     pub fn outcomes(&self) -> &Outcomes {
-        &self.outcomes
+        &self.shared.outcomes
     }
 
     /// The Nodes page's cache and pane, on the client of the context in use; the Overview's refresh leaves it alone.
@@ -370,6 +398,7 @@ impl Session {
                 view.picked = picked;
                 view.overrides = overrides.collect();
                 view.overview = None;
+                view.stale = None;
                 view.refreshing = false;
                 match target {
                     Ok((client, context)) => {
@@ -387,7 +416,7 @@ impl Session {
             self.actors.use_client(current.client.clone());
             self.messages.use_client(current.client.clone());
             self.turns.use_client(current.client.clone());
-            self.outcomes.use_client(current.client.clone());
+            self.shared.outcomes.use_client(current.client.clone());
             self.nodes.use_client(current.client.clone());
             self.types.use_client(current.client.clone());
             self.watches.use_client(current.client.clone());
@@ -403,10 +432,13 @@ impl Session {
         current.supersede();
         let Some(client) = current.client.clone() else { return };
         let generation = current.generation;
-        self.shared.view.send_modify(|view| view.refreshing = true);
-        let (shared, limits, count) = (self.shared.clone(), self.limits, self.outcomes.count_ticket());
+        self.shared.view.send_modify(|view| {
+            view.refreshing = true;
+            view.stale = None;
+        });
+        let (shared, limits, count) = (self.shared.clone(), self.shared.limits, self.shared.outcomes.count_ticket());
         let counted = shared.clone();
-        current.task = Some(self.handle.spawn(async move {
+        current.task = Some(self.shared.handle.spawn(async move {
             let land = move |stats: &Part<StatsView>| {
                 let current = counted.current.lock().expect("inspector session");
                 if current.generation == generation {
@@ -414,14 +446,45 @@ impl Session {
                 }
             };
             let overview = overview_with(&client, limits, land).await;
-            let current = shared.current.lock().expect("inspector session");
+            let mut current = shared.current.lock().expect("inspector session");
             if current.generation == generation {
+                current.task = None;
+                current.read_at = Some(chrono::Utc::now());
                 shared.view.send_modify(|view| {
                     view.overview = Some(overview);
                     view.refreshing = false;
                 });
+                shared.resume(&mut current);
             }
         }));
+    }
+
+    /// Re-reads a page without clearing its cached rows or selection.
+    #[allow(dead_code, reason = "used by the live refresh change")]
+    pub fn soft_refresh(&self, section: Section) {
+        match section {
+            Section::Overview => self.shared.request(),
+            Section::Actors => {}
+            Section::Messages => self.messages.soft_refresh(),
+            Section::RunningTurns => self.turns.soft_refresh(),
+            Section::Outcomes => self.shared.outcomes.soft_refresh(),
+            Section::Nodes => self.nodes.soft_refresh(),
+            Section::Types => self.types.soft_refresh(),
+            Section::Watches => self.watches.soft_refresh(),
+        }
+    }
+
+    fn cancel_soft_refresh(&self, section: Section) {
+        match section {
+            Section::Overview => self.shared.lock_refresh().refresh.cancel(),
+            Section::Actors => {}
+            Section::Messages => self.messages.cancel_soft_refresh(),
+            Section::RunningTurns => self.turns.cancel_soft_refresh(),
+            Section::Outcomes => self.shared.outcomes.cancel_soft_refresh(),
+            Section::Nodes => self.nodes.hide(),
+            Section::Types => self.types.cancel_soft_refresh(),
+            Section::Watches => self.watches.cancel_soft_refresh(),
+        }
     }
 
     /// The refreshes cancelled so far; each ends once it has stopped, with or without its own end.
@@ -450,7 +513,7 @@ impl Session {
             // What the pane shows is kept; but a link place whose pane a status switch or a context switch emptied
             // keeps its message, read fresh on every return.
             Section::Outcomes => {
-                let source = self.outcomes.source();
+                let source = self.shared.outcomes.source();
                 let link = matches!(navigation.current.outcomes, Some(OutcomePlace::Linked(_)));
                 if !(link && source == OutcomePlace::Nothing) {
                     navigation.current.outcomes = Some(source);
@@ -462,6 +525,9 @@ impl Session {
         if !change(navigation) {
             navigation.current = recorded;
             return false;
+        }
+        if left != navigation.current() {
+            self.cancel_soft_refresh(left);
         }
         if left == Section::Actors {
             self.actors.cancel_jump();
@@ -477,7 +543,7 @@ impl Session {
             self.watches.restore(watch.clone());
         }
         if let Some(outcome) = &place.outcomes {
-            self.outcomes.restore(outcome.clone());
+            self.shared.outcomes.restore(outcome.clone());
         }
         if let Some(turn) = &place.turns {
             self.turns.restore(turn.clone());
@@ -511,7 +577,7 @@ impl Session {
         self.actors.stop();
         self.messages.stop();
         self.turns.stop();
-        self.outcomes.stop();
+        self.shared.outcomes.stop();
         self.nodes.stop();
         self.types.stop();
         self.watches.stop();
@@ -519,9 +585,111 @@ impl Session {
     }
 }
 
+impl RefreshPage for Shared {
+    type State = Current;
+
+    fn lock_refresh(&self) -> MutexGuard<'_, Current> {
+        self.current.lock().expect("inspector session")
+    }
+
+    fn refresh(state: &mut Current) -> &mut Refresh {
+        &mut state.refresh
+    }
+
+    fn runtime(&self) -> (&Handle, Duration) {
+        (&self.handle, self.limits.deadline)
+    }
+
+    fn readiness(&self, state: &Current) -> Readiness {
+        if state.task.is_some() {
+            Readiness::Wait
+        } else if state.client.is_some() {
+            Readiness::Ready
+        } else {
+            Readiness::Skip
+        }
+    }
+
+    async fn run(self: &Arc<Self>, ticket: u64, budget: Budget) {
+        let (client, count) = {
+            let state = self.lock_refresh();
+            if !state.refresh.current(ticket) {
+                return;
+            }
+            let Some(client) = state.client.clone() else { return };
+            (client, self.outcomes.count_ticket())
+        };
+        let mut fresh = gather_overview(&client, self.limits, &budget, |_| {}).await;
+        let mut state = self.lock_refresh();
+        if !state.refresh.current(ticket) {
+            return;
+        }
+        count.land(&fresh.stats);
+        let mut errors = Vec::new();
+        self.view.send_modify(|view| {
+            let as_of = as_of(view.stale.as_ref(), state.read_at);
+            let old = view.overview.take();
+            retain_part(&mut fresh.stats, old.as_ref().map(|old| &old.stats), &mut errors);
+            retain_part(&mut fresh.health, old.as_ref().map(|old| &old.health), &mut errors);
+            retain_part(&mut fresh.nodes, old.as_ref().map(|old| &old.nodes), &mut errors);
+            retain_part(&mut fresh.turns, old.as_ref().map(|old| &old.turns), &mut errors);
+            let old_types = old.as_ref().map(|old| &old.types);
+            if let Part::Ready(rows) = &mut fresh.types {
+                retain_counts(rows, old_types, &budget, self.limits, &mut errors);
+            } else {
+                retain_part(&mut fresh.types, old_types, &mut errors);
+            }
+            view.overview = Some(fresh);
+            view.stale = (!errors.is_empty()).then(|| Stale::failed(as_of, errors.join("\n")));
+        });
+        state.read_at = Some(chrono::Utc::now());
+    }
+}
+
+fn retain_part<T: Clone>(fresh: &mut Part<T>, previous: Option<&Part<T>>, errors: &mut Vec<String>) {
+    if let Part::Failed(error) = fresh {
+        if !errors.contains(error) {
+            errors.push(error.clone());
+        }
+        if let Some(previous @ Part::Ready(_)) = previous {
+            *fresh = previous.clone();
+        }
+    }
+}
+
+fn retain_counts(
+    rows: &mut [TypeRow],
+    old: Option<&Part<Vec<TypeRow>>>,
+    budget: &Budget,
+    limits: Limits,
+    errors: &mut Vec<String>,
+) {
+    let old = match old {
+        Some(Part::Ready(old)) => old.as_slice(),
+        _ => &[],
+    };
+    for row in rows.iter_mut().take(limits.types) {
+        let error = match &row.actors {
+            Count::Failed(error) => error,
+            Count::NotCounted if Instant::now() >= budget.deadline() => TIMED_OUT,
+            _ => continue,
+        };
+        if !errors.iter().any(|before| before == error) {
+            errors.push(error.to_owned());
+        }
+        if let Some(before) =
+            old.iter().find(|before| before.name == row.name && matches!(before.actors, Count::Counted(_)))
+        {
+            row.actors = before.actors.clone();
+        }
+    }
+}
+
 impl Current {
     fn supersede(&mut self) {
         self.generation += 1;
+        self.refresh.cancel();
+        self.read_at = None;
         if let Some(task) = self.task.take() {
             task.abort();
             #[cfg(test)]
@@ -539,7 +707,7 @@ impl Drop for Session {
 }
 
 /// An item of the sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Section {
     /// The Overview.
     #[default]
