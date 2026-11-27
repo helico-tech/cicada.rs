@@ -338,12 +338,39 @@ owns the app until the window closes: a regular app with a Dock icon and a main 
 Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
-only the Overview has a page so far, and the others say "Coming soon". The Overview shows tiles for actors, pending
+Overview and Actors have pages, and the others say "Coming soon". The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
 time, all within 10 seconds: a part whose call fails shows its error, one with no answer says "no answer within 10 s",
 and a type past the 50 or not counted in time shows "not counted". A new refresh or a context switch cancels the one
 before.
+
+**Actors** lists the actors whose address starts with the text in the toolbar's search field, 100 at a time as the
+table scrolls, with their type, version, created time and status. Typing empties the table at once and reads the new
+prefix when you stop typing. The status says `running` when the actor is among the first 200 running turns under the
+prefix, read once per reload, `paused` when its mailbox is paused, or both; the footer says when the running status
+covers only the first 200 running turns, or that it is unknown. A page that fails shows its error with a Retry button.
+
+The list is an outline: open a row with its disclosure triangle or the right arrow key to see its first 100 children,
+choose **more…** for the next page of that parent's children, and **Retry** under the parent after a failed read.
+Closing a row keeps its loaded pages. A child row shows its address, type and running status, where a dash means its
+address is outside the running sample's prefix. An actor can appear in the root list and under a parent, and each row
+folds and selects on its own.
+
+Selecting an actor fills the pane on the right, read only: its type, version, created time, parent, pinned node and
+paused flag, its running turn, and tabs for its state as highlighted JSON, its mailbox (the pending messages among its
+first 50) and its watches. An actor that is gone shows "Not found". The toolbar's pane button hides and shows the pane
+(in the standalone app also View › Hide Pane). ⌘R on the Actors page reloads the list from the top and the pane, and
+reopens surviving rows as their pages load; a new search prefix or context starts with all rows folded.
+
+- The running status is a sample: with more than 200 running turns under the prefix, an actor past them shows no
+  `running` even when it runs. Search a narrower prefix to see it.
+- The turn's message type and attempt come from a separate read of the mailbox: a turn reclaimed between the two reads
+  can show an older attempt, and a message past the mailbox's first 50 shows no type.
+- Watches lists only watches whose stored target is exactly this actor, not one on its type or on every type (`*`).
+- A state longer than 256 KiB shows its first 256 KiB with a notice.
+- Pages are not a snapshot: an actor created or deleted while you scroll can be missed or appear late, and a row that
+  disappeared is forgotten once a page passes its address. Refresh reads again from the top.
 
 The window starts on the context `cicada` would use, and its pop-up lists the config file's contexts; picking one makes
 a new client and refreshes. A context without a usable server shows its error, and the window stays usable.
