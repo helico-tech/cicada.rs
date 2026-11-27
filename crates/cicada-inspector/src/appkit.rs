@@ -6,7 +6,9 @@ mod browse;
 mod content;
 mod json_text;
 mod messages;
+mod nodes;
 mod outcomes;
+mod turns;
 mod types;
 mod watches;
 
@@ -44,13 +46,17 @@ use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
+use crate::nodes::{NodePane, NodesView};
 use crate::outcomes::{FailedCount, OutcomePane, OutcomesView, StatusFilter};
+use crate::turns::{TurnPane, TurnsView};
 use crate::types::{TypePane, TypesView};
 use crate::watches::WatchesView;
 use actors::{CellContent, Item, ItemId, Items, Page};
 use content::FlippedView;
 use messages::MessagesPage;
+use nodes::NodesPage;
 use outcomes::{Links, OutcomesPage};
+use turns::TurnsPage;
 use types::TypesPage;
 use watches::WatchesPage;
 
@@ -82,16 +88,18 @@ const PANE: &str = "inspector.pane";
 /// The status switch, in the toolbar only on the Outcomes page.
 const STATUS: &str = "inspector.status";
 /// The identifiers of the lists sharing the sidebar's data source and delegate.
-const TABLES: [(Section, &str); 4] = [
+const TABLES: [(Section, &str); 6] = [
     (Section::Messages, "inspector.messages"),
+    (Section::RunningTurns, "inspector.turns"),
     (Section::Outcomes, "inspector.outcomes"),
+    (Section::Nodes, "inspector.nodes"),
     (Section::Types, "inspector.types"),
     (Section::Watches, "inspector.watches"),
 ];
 
-/// True for the pages with a table, the search field and the pane.
+/// True for the pages with a table, the search field and the pane: all but the Overview.
 fn browsable(section: Section) -> bool {
-    matches!(section, Section::Actors | Section::Messages | Section::Outcomes | Section::Types | Section::Watches)
+    section != Section::Overview
 }
 
 fn table_section(table: &NSTableView) -> Option<Section> {
@@ -215,6 +223,15 @@ struct Controller {
     messages_shown: RefCell<MessagesView>,
     /// The payload the Messages pane's text view holds.
     payload_shown: RefCell<Option<Arc<Json>>>,
+    /// The Running Turns page's rows and pane, and the turns the table shows.
+    turns_list: RefCell<watch::Receiver<TurnsView>>,
+    turns_pane: RefCell<watch::Receiver<TurnPane>>,
+    turns_shown: RefCell<TurnsView>,
+    /// The Nodes page's rows and pane, the nodes the table shows, and the actors of the pane's turns by tag.
+    nodes_list: RefCell<watch::Receiver<NodesView>>,
+    nodes_pane: RefCell<watch::Receiver<NodePane>>,
+    nodes_shown: RefCell<NodesView>,
+    node_turns_shown: RefCell<Vec<ActorAddress>>,
     /// The Outcomes page's rows and pane, and the sidebar's failed count.
     outcomes_list: RefCell<watch::Receiver<OutcomesView>>,
     outcomes_pane: RefCell<watch::Receiver<OutcomePane>>,
@@ -344,10 +361,19 @@ define_class!(
                         window.messages.show_footer(&list, view.target_error.as_deref());
                         self.check_more_messages();
                     }
+                    Section::RunningTurns => {
+                        let list = c.turns_shown.borrow().clone();
+                        window.turns.show_footer(&list, view.target_error.as_deref());
+                        self.check_more_turns();
+                    }
                     Section::Outcomes => {
                         let list = c.outcomes_shown.borrow().clone();
                         window.outcomes.show_footer(&list, view.target_error.as_deref());
                         self.check_more_outcomes();
+                    }
+                    Section::Nodes => {
+                        let list = c.nodes_shown.borrow().clone();
+                        window.nodes.show_footer(&list, view.target_error.as_deref());
                     }
                     Section::Watches => self.check_more_watches(),
                     _ => {}
@@ -366,7 +392,9 @@ define_class!(
             let c = self.ivars();
             match table_section(table) {
                 Some(Section::Messages) => c.messages_shown.borrow().rows.len() as NSInteger,
+                Some(Section::RunningTurns) => c.turns_shown.borrow().rows.len() as NSInteger,
                 Some(Section::Outcomes) => c.outcomes_shown.borrow().rows.len() as NSInteger,
+                Some(Section::Nodes) => c.nodes_shown.borrow().rows.len() as NSInteger,
                 Some(Section::Types) => c.types_shown.borrow().rows.len() as NSInteger,
                 Some(Section::Watches) => c.watches_shown.borrow().rows.len() as NSInteger,
                 _ => ROWS as NSInteger,
@@ -391,9 +419,17 @@ define_class!(
                     let text = messages::cell_text(&c.messages_shown.borrow(), row, &column);
                     text.map(|text| messages::cell(self.mtm(), &text, &column))
                 }
+                Some(Section::RunningTurns) => {
+                    let text = turns::cell_text(&c.turns_shown.borrow(), row, &column);
+                    text.map(|text| browse::cell(self.mtm(), &text, &text))
+                }
                 Some(Section::Outcomes) => {
                     let text = outcomes::cell_text(&c.outcomes_shown.borrow(), row, &column);
                     text.map(|(text, full)| browse::cell(self.mtm(), &text, &full))
+                }
+                Some(Section::Nodes) => {
+                    let text = nodes::cell_text(&c.nodes_shown.borrow(), row, &column);
+                    text.map(|text| browse::cell(self.mtm(), &text, &text))
                 }
                 Some(Section::Types) => {
                     let text = types::cell_text(&c.types_shown.borrow(), row, &column);
@@ -441,6 +477,16 @@ define_class!(
                 let id = row.and_then(|row| c.messages_shown.borrow().rows.get(row).map(|message| message.id.clone()));
                 c.session.messages().select(id.as_ref());
                 self.render_message_pane();
+            } else if is(window.turns.list.table.as_ref()) {
+                let row = usize::try_from(window.turns.list.table.selectedRow()).ok();
+                let actor = row.and_then(|row| c.turns_shown.borrow().rows.get(row).map(|turn| turn.actor.clone()));
+                c.session.turns().select(actor.as_ref());
+                self.render_turn_pane();
+            } else if is(window.nodes.list.table.as_ref()) {
+                let row = usize::try_from(window.nodes.list.table.selectedRow()).ok();
+                let id = row.and_then(|row| c.nodes_shown.borrow().rows.get(row).map(|node| node.id.clone()));
+                c.session.nodes().select(id.as_ref());
+                self.render_node_pane();
             } else if is(window.outcomes.list.table.as_ref()) {
                 let row = usize::try_from(window.outcomes.list.table.selectedRow()).ok();
                 let id = row.and_then(|row| c.outcomes_shown.borrow().rows.get(row).map(|outcome| outcome.id.clone()));
@@ -591,6 +637,21 @@ define_class!(
                     self.render_message_pane();
                 }
                 self.check_more_messages();
+            } else if section == Section::RunningTurns {
+                if c.turns_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_turns();
+                }
+                if c.turns_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_turn_pane();
+                }
+                self.check_more_turns();
+            } else if section == Section::Nodes {
+                if c.nodes_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_nodes();
+                }
+                if c.nodes_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_node_pane();
+                }
             } else if section == Section::Outcomes {
                 if c.outcomes_list.borrow().has_changed().unwrap_or(false) {
                     self.render_outcomes();
@@ -641,9 +702,17 @@ define_class!(
                     c.session.messages().search(&prefix);
                     self.render_messages();
                 }
+                Section::RunningTurns => {
+                    c.session.turns().search(&prefix);
+                    self.render_turns();
+                }
                 Section::Outcomes => {
                     c.session.outcomes().search(&prefix);
                     self.render_outcomes();
+                }
+                Section::Nodes => {
+                    c.session.nodes().search(&prefix);
+                    self.render_nodes();
                 }
                 Section::Types => {
                     c.session.types().search(&prefix);
@@ -675,6 +744,71 @@ define_class!(
             }
             let to = c.messages_pane.borrow().borrow().message.as_ref().map(|message| message.to.clone());
             self.show_actor_address(to);
+        }
+
+        // SAFETY: The Retry button of the Running Turns footer sends this action with itself as the sender.
+        #[unsafe(method(inspectorTurnsRetry:))]
+        fn turns_retry(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.turns().retry();
+                self.render_turns();
+            }
+        }
+
+        // SAFETY: The Show Actor button of the Running Turns pane sends this action with itself as the sender.
+        #[unsafe(method(inspectorTurnShowActor:))]
+        fn turn_show_actor(&self, _: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let actor = c.turns_pane.borrow().borrow().turn.as_ref().map(|turn| turn.actor.clone());
+            self.show_actor_address(actor);
+        }
+
+        // SAFETY: The Retry button of a failed read of a turn on a return sends this action with itself as the sender.
+        #[unsafe(method(inspectorRetryCheck:))]
+        fn retry_check(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.turns().retry_check();
+                self.render_turn_pane();
+            }
+        }
+
+        // SAFETY: The Retry button of the Nodes footer sends this action with itself as the sender.
+        #[unsafe(method(inspectorNodesRetry:))]
+        fn nodes_retry(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.nodes().retry();
+                self.render_nodes();
+            }
+        }
+
+        // SAFETY: The Retry button of a failed read of a node sends this action with itself as the sender.
+        #[unsafe(method(inspectorRetryNode:))]
+        fn retry_node(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.nodes().retry_node();
+                self.render_node_pane();
+            }
+        }
+
+        // SAFETY: The Show Actor buttons of a node's turns send this action with themselves as the sender; tags tell
+        // them apart.
+        #[unsafe(method(inspectorNodeShowActor:))]
+        fn node_show_actor(&self, sender: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            // The tag is read from AppKit before the actors are borrowed.
+            let tag = sender.tag();
+            let actor = usize::try_from(tag).ok().and_then(|index| c.node_turns_shown.borrow().get(index).cloned());
+            self.show_actor_address(actor);
         }
 
         // SAFETY: The Retry button of the Outcomes footer sends this action with itself as the sender.
@@ -925,6 +1059,8 @@ impl Target {
         let (outcomes_list, outcomes_pane, outcomes_count) = (outcomes.list(), outcomes.pane(), outcomes.count());
         let (types_list, types_pane) = (session.types().list(), session.types().pane());
         let (watches_list, watches_pane) = (session.watches().list(), session.watches().pane());
+        let (turns_list, turns_pane) = (session.turns().list(), session.turns().pane());
+        let (nodes_list, nodes_pane) = (session.nodes().list(), session.nodes().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
             session,
             owner,
@@ -945,6 +1081,13 @@ impl Target {
             messages_pane: RefCell::new(messages_pane),
             messages_shown: RefCell::default(),
             payload_shown: RefCell::default(),
+            turns_list: RefCell::new(turns_list),
+            turns_pane: RefCell::new(turns_pane),
+            turns_shown: RefCell::default(),
+            nodes_list: RefCell::new(nodes_list),
+            nodes_pane: RefCell::new(nodes_pane),
+            nodes_shown: RefCell::default(),
+            node_turns_shown: RefCell::default(),
             outcomes_list: RefCell::new(outcomes_list),
             outcomes_pane: RefCell::new(outcomes_pane),
             outcomes_count: RefCell::new(outcomes_count),
@@ -1021,7 +1164,9 @@ impl Target {
             match section {
                 Section::Actors => c.session.actors().refresh(),
                 Section::Messages => c.session.messages().refresh(),
+                Section::RunningTurns => c.session.turns().refresh(),
                 Section::Outcomes => c.session.outcomes().refresh(),
+                Section::Nodes => c.session.nodes().refresh(),
                 Section::Types => c.session.types().refresh(),
                 Section::Watches => c.session.watches().refresh(),
                 _ => c.session.refresh(),
@@ -1178,7 +1323,9 @@ impl Target {
         Some(match section {
             Section::Actors => c.list.borrow().borrow().prefix.clone(),
             Section::Messages => c.messages_list.borrow().borrow().prefix.clone(),
+            Section::RunningTurns => c.turns_list.borrow().borrow().prefix.clone(),
             Section::Outcomes => c.outcomes_list.borrow().borrow().prefix.clone(),
+            Section::Nodes => c.nodes_list.borrow().borrow().prefix.clone(),
             Section::Types => c.types_list.borrow().borrow().prefix.clone(),
             Section::Watches => c.watches_list.borrow().borrow().prefix.clone(),
             _ => return None,
@@ -1190,7 +1337,9 @@ impl Target {
         let (placeholder, tip) = match section {
             Section::Actors => ("Address prefix", "Search actors by address prefix"),
             Section::Messages => ("Address prefix", "Search pending messages by their actor's address prefix"),
+            Section::RunningTurns => ("Address prefix", "Search running turns by their actor's address prefix"),
             Section::Outcomes => ("Address prefix", "Search outcomes by their actor's address prefix"),
+            Section::Nodes => ("Node id prefix", "Filter the nodes read by id prefix"),
             Section::Types => ("Type name prefix", "Search registered types by name prefix"),
             Section::Watches => ("Watcher or target prefix", "Filter loaded watches by watcher or target prefix"),
             _ => return,
@@ -1243,6 +1392,72 @@ impl Target {
         let shown = c.payload_shown.borrow().clone();
         let shown = window.messages.show_pane(&pane, shown.as_ref());
         c.payload_shown.replace(shown);
+    }
+
+    /// Reloads the Running Turns table and restores the selection by actor.
+    fn render_turns(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let page = &self.window().turns;
+        let list = c.turns_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        page.show_footer(&list, target_error.as_deref());
+        let selected = c.session.turns().selected().and_then(|actor| list.index(&actor));
+        c.turns_shown.replace(list);
+        self.reload_table(&page.list.table, selected);
+        self.check_more_turns();
+    }
+
+    /// Asks for a page of turns when the last visible row is near the end, including after scrolling.
+    fn check_more_turns(&self) {
+        let c = self.ivars();
+        let last = self.window().turns.list.last_visible_row().unwrap_or(0);
+        let wants = c.turns_shown.borrow().wants_more(last);
+        if wants {
+            c.session.turns().more();
+        }
+    }
+
+    /// Shows the selected turn.
+    fn render_turn_pane(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let pane = c.turns_pane.borrow_mut().borrow_and_update().clone();
+        let actions =
+            turns::Actions { show_actor: sel!(inspectorTurnShowActor:), retry_check: sel!(inspectorRetryCheck:) };
+        self.window().turns.show_pane(&pane, self.as_ref(), &actions);
+    }
+
+    /// Reloads the Nodes table and restores the selection by node id.
+    fn render_nodes(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let page = &self.window().nodes;
+        let list = c.nodes_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        page.show_footer(&list, target_error.as_deref());
+        let selected = c.session.nodes().selected().and_then(|id| list.index(&id));
+        c.nodes_shown.replace(list);
+        self.reload_table(&page.list.table, selected);
+    }
+
+    /// Shows the selected node and its turns.
+    fn render_node_pane(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let pane = c.nodes_pane.borrow_mut().borrow_and_update().clone();
+        let actions =
+            nodes::Actions { show_actor: sel!(inspectorNodeShowActor:), retry_node: sel!(inspectorRetryNode:) };
+        let actors = self.window().nodes.show_pane(&pane, self.as_ref(), &actions);
+        c.node_turns_shown.replace(actors);
     }
 
     /// Reloads the Outcomes table, shows the status column on All, and restores the selection by message id.
@@ -1405,7 +1620,9 @@ impl Target {
         match section {
             Section::Actors => self.render_pane(),
             Section::Messages => self.render_message_pane(),
+            Section::RunningTurns => self.render_turn_pane(),
             Section::Outcomes => self.render_outcome_pane(),
+            Section::Nodes => self.render_node_pane(),
             Section::Types => self.render_types_pane(),
             Section::Watches => self.render_watch_pane(),
             _ => {}
@@ -1454,7 +1671,9 @@ impl Target {
         for (page, root, pane) in [
             (Section::Actors, &*window.page.root, &**window.page.pane),
             (Section::Messages, &*window.messages.root, &**window.messages.pane),
+            (Section::RunningTurns, &*window.turns.list.root, &**window.turns.pane.root),
             (Section::Outcomes, &*window.outcomes.list.root, &**window.outcomes.pane),
+            (Section::Nodes, &*window.nodes.list.root, &**window.nodes.pane.root),
             (Section::Types, &*window.types.list.root, &**window.types.pane),
             (Section::Watches, &*window.watches.list.root, &**window.watches.pane),
         ] {
@@ -1463,6 +1682,9 @@ impl Target {
         }
         if section != Section::Types {
             c.session.types().set_pane_visible(false);
+        }
+        if section != Section::Nodes {
+            c.session.nodes().hide();
         }
         let before = c.rendered.replace(Some(section));
         if before != Some(section) {
@@ -1481,9 +1703,17 @@ impl Target {
                 c.session.messages().show();
                 self.render_messages();
             }
+            Section::RunningTurns => {
+                c.session.turns().show();
+                self.render_turns();
+            }
             Section::Outcomes => {
                 c.session.outcomes().show();
                 self.render_outcomes();
+            }
+            Section::Nodes => {
+                c.session.nodes().show();
+                self.render_nodes();
             }
             Section::Types => {
                 c.session.types().show();
@@ -1627,7 +1857,9 @@ impl Target {
         }
         window.page.clear_actions();
         window.messages.clear_actions();
+        window.turns.teardown();
         window.outcomes.teardown();
+        window.nodes.teardown();
         window.types.clear_actions();
         window.watches.clear_actions();
         true
@@ -1663,7 +1895,9 @@ struct Window {
     /// The Actors page, next to the Overview's scroll view in the content.
     page: Page,
     messages: MessagesPage,
+    turns: TurnsPage,
     outcomes: OutcomesPage,
+    nodes: NodesPage,
     types: TypesPage,
     watches: WatchesPage,
     /// The inspector pane's split item, collapsed outside the browse pages and by the pane toggle.
@@ -1741,7 +1975,9 @@ impl Window {
         let page = Page::new(mtm);
         let messages =
             MessagesPage::new(mtm, target.as_ref(), sel!(inspectorMessagesRetry:), sel!(inspectorShowActor:));
+        let turns = TurnsPage::new(mtm, target.as_ref(), sel!(inspectorTurnsRetry:));
         let outcomes = OutcomesPage::new(mtm, target.as_ref(), sel!(inspectorOutcomesRetry:));
+        let nodes = NodesPage::new(mtm, target.as_ref(), sel!(inspectorNodesRetry:));
         let types = TypesPage::new(mtm, target.as_ref(), sel!(inspectorTypesRetry:), sel!(inspectorChooseSchema:));
         let watches = WatchesPage::new(
             mtm,
@@ -1751,9 +1987,16 @@ impl Window {
             sel!(inspectorShowTarget:),
             sel!(inspectorShowWatcher:),
         );
-        for view in
-            [&**content, &*page.root, &*messages.root, &*outcomes.list.root, &*types.list.root, &*watches.list.root]
-        {
+        for view in [
+            &**content,
+            &*page.root,
+            &*messages.root,
+            &*turns.list.root,
+            &*outcomes.list.root,
+            &*nodes.list.root,
+            &*types.list.root,
+            &*watches.list.root,
+        ] {
             view.setFrame(container.bounds());
             view.setAutoresizingMask(fill);
             container.addSubview(view);
@@ -1761,7 +2004,9 @@ impl Window {
         page.root.setHidden(true);
         for ((_, identifier), (table, root)) in TABLES.into_iter().zip([
             (&*messages.table, &*messages.root),
+            (&*turns.list.table, &*turns.list.root),
             (&*outcomes.list.table, &*outcomes.list.root),
+            (&*nodes.list.table, &*nodes.list.root),
             (&*types.list.table, &*types.list.root),
             (&*watches.list.table, &*watches.list.root),
         ]) {
@@ -1784,7 +2029,15 @@ impl Window {
         content_item.setMinimumThickness(420.0);
         // Each browse page shares the split item but shows its own pane.
         let panes = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(320.0, 600.0)));
-        for view in [&**page.pane, &**messages.pane, &**outcomes.pane, &**types.pane, &**watches.pane] {
+        for view in [
+            &**page.pane,
+            &**messages.pane,
+            &**turns.pane.root,
+            &**outcomes.pane,
+            &**nodes.pane.root,
+            &**types.pane,
+            &**watches.pane,
+        ] {
             view.setHidden(true);
             view.setFrame(panes.bounds());
             view.setAutoresizingMask(fill);
@@ -1862,7 +2115,9 @@ impl Window {
             status,
             page,
             messages,
+            turns,
             outcomes,
+            nodes,
             types,
             watches,
             pane_item,

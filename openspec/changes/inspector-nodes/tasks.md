@@ -17,7 +17,7 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
   switch, Retry on the selected node, "not found", its turns with Show Actor; a Nodes place reading its pane fresh on
   back (decisions 3 and 4). Verify: the node pane tests of the design, including A, then B, then A, and a selection
   the filter hides.
-- [ ] 4. **The two pages.** The `appkit` Running Turns and Nodes pages, `NSTableView`s sharing the search field (each
+- [x] 4. **The two pages.** The `appkit` Running Turns and Nodes pages, `NSTableView`s sharing the search field (each
   keeping its own filter text and placeholder), footer and pane toggle; every `unsafe` with its reason, borrows
   released before AppKit calls (decision 5). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p
   cicada-inspector --all-targets`, and the manual check list below, each item noted as done, run by code (not seen), or

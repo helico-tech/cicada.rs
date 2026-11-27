@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use super::{Counter, Fake, Rule, Server, actors, config, problem, serve};
 use crate::model::{Limits, Navigation, Section, Session, TIMED_OUT};
-use crate::nodes::{NodePane, NodeRead, Nodes, NodesRead, NodesView};
+use crate::nodes::{NodePane, NodeRead, Nodes, NodesRead, NodesView, health_text, hosted_text};
 
 /// The longest a test waits for one change.
 const WAIT: Duration = Duration::from_secs(10);
@@ -121,6 +121,10 @@ async fn the_cache_is_read_on_the_first_visit_its_refresh_and_a_context_switch_n
         (NodeHealth::Dead, Some("blue"), Some("box-1"))
     );
     assert_eq!(dead.last_seen.to_rfc3339(), "2026-11-27T09:59:30+00:00");
+    assert_eq!(
+        (health_text(dead.status), hosted_text(&dead.hosted), hosted_text(&[])),
+        ("dead", "counter".into(), "sends only".into())
+    );
     nodes.hide();
     nodes.show();
     session.refresh();
@@ -352,7 +356,7 @@ async fn a_node_read_is_dropped_on_a_new_selection_refresh_or_context_switch() {
     let counted = reads.clone();
     let rule: Rule = Arc::new(move |target| match target {
         "/nodes" => Some(nodes_answer(&[node("a", "alive"), node("b", "alive")])),
-        "/nodes/a" if counted.fetch_add(1, Ordering::SeqCst) % 2 == 0 => Some(held.clone()),
+        "/nodes/a" if counted.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) => Some(held.clone()),
         "/nodes/a" => Some(detail("a", "fresh", &[])),
         "/nodes/b" => Some(detail("b", "b", &[])),
         _ => None,

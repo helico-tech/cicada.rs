@@ -438,8 +438,8 @@ impl Session {
     }
 
     /// Applies `change` to the history, remembering the Messages, Running Turns, Outcomes, Nodes or Watches place left
-    /// and restoring the place reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
-    /// Returns what `change` returned.
+    /// and restoring the place reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place
+    /// starts it again. Returns what `change` returned.
     pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
         let left = navigation.current();
         let recorded = navigation.place().clone();

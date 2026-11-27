@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::api::{NodeDetailView, NodeView};
+use cicada::runtime::NodeHealth;
 use cicada::store::NodeId;
 use cicada::time::Timestamp;
 use cicada_client::ActorClient;
@@ -361,4 +362,18 @@ impl Shared {
             shared.pane.send_modify(|pane| pane.read = read);
         }));
     }
+}
+
+/// A node's health as the server computed it, as on the wire.
+pub fn health_text(health: NodeHealth) -> &'static str {
+    match health {
+        NodeHealth::Alive => "alive",
+        NodeHealth::Suspect => "suspect",
+        NodeHealth::Dead => "dead",
+    }
+}
+
+/// The types a node hosts, or "sends only" for a node that hosts none.
+pub fn hosted_text(hosted: &[String]) -> String {
+    if hosted.is_empty() { "sends only".to_owned() } else { hosted.join(", ") }
 }

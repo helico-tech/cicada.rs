@@ -1,8 +1,8 @@
-//! Table and footer shared by Types and Watches.
+//! The table and footer shared by the browse pages that need nothing more, and a pane of details that scroll.
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
 use objc2_app_kit::{
     NSAccessibility, NSAutoresizingMaskOptions, NSButton, NSControl, NSFont, NSLineBreakMode, NSScrollView,
     NSTableColumn, NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewStyle,
@@ -10,9 +10,10 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
-use super::content::{Style, color, label};
+use super::content::{FlippedView, Layout, Style, color, label};
 
 const FOOTER: f64 = 26.0;
+const PANE_MARGIN: f64 = 16.0;
 
 /// A browse table with a status line and paging controls.
 pub(super) struct BrowseTable {
@@ -110,6 +111,11 @@ impl BrowseTable {
         self.status.setTextColor(Some(&color(style)));
     }
 
+    /// Sets the footer's tooltip, after [`Self::footer`] set it to the footer's text.
+    pub(super) fn footer_tip(&self, tip: &str) {
+        self.status.setToolTip(Some(&NSString::from_str(tip)));
+    }
+
     /// The last row in the viewport, if any.
     pub(super) fn last_visible_row(&self) -> Option<usize> {
         let visible = self.table.rowsInRect(self.table.visibleRect());
@@ -140,4 +146,57 @@ pub(super) fn cell(mtm: MainThreadMarker, text: &str, full: &str) -> Retained<NS
     field.setToolTip(Some(&full));
     field.setAccessibilityLabel(Some(&full));
     Retained::into_super(Retained::into_super(field))
+}
+
+/// A pane of details that scroll, laid out from the top and built again at every render.
+pub(super) struct DetailPane {
+    /// The pane's root, in the split view's pane.
+    pub root: Retained<FlippedView>,
+    document: Retained<FlippedView>,
+    scroll: Retained<NSScrollView>,
+}
+
+impl DetailPane {
+    /// An empty pane that VoiceOver calls `name`.
+    pub(super) fn new(mtm: MainThreadMarker, name: &str) -> Self {
+        let size = NSSize::new(320.0, 600.0);
+        // SAFETY: NSView's designated initializer; the class adds no ivars.
+        let root: Retained<FlippedView> =
+            unsafe { msg_send![FlippedView::alloc(mtm), initWithFrame: NSRect::new(NSPoint::ZERO, size)] };
+        root.setAccessibilityLabel(Some(&NSString::from_str(name)));
+        // SAFETY: as above.
+        let document: Retained<FlippedView> =
+            unsafe { msg_send![FlippedView::alloc(mtm), initWithFrame: NSRect::new(NSPoint::ZERO, size)] };
+        document.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), NSRect::new(NSPoint::ZERO, size));
+        scroll.setHasVerticalScroller(true);
+        scroll.setAutohidesScrollers(true);
+        scroll.setDrawsBackground(false);
+        scroll.setDocumentView(Some(&document));
+        scroll.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        root.addSubview(&scroll);
+        Self { root, document, scroll }
+    }
+
+    /// Clears the targets of the buttons shown, then lays the pane out again with `fill`.
+    pub(super) fn show(&self, fill: impl FnOnce(&mut Layout<'_>)) {
+        self.clear_actions();
+        let bounds = self.root.bounds();
+        self.scroll.setFrame(bounds);
+        let mut layout = Layout::new(&self.document, self.scroll.contentSize().width.max(240.0), PANE_MARGIN);
+        fill(&mut layout);
+        layout.finish(0.0);
+    }
+
+    /// Clears the references of the pane's buttons to the target while it is still alive.
+    pub(super) fn clear_actions(&self) {
+        for view in self.document.subviews().to_vec() {
+            if let Ok(button) = view.downcast::<NSButton>() {
+                // SAFETY: Clears a reference to the target, which is still alive.
+                unsafe { NSControl::setTarget(&button, None) };
+            }
+        }
+    }
 }
