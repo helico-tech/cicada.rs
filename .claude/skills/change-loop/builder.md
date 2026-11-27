@@ -130,7 +130,8 @@ prose is not written yet>
 - Stay in your worktree. Never push, merge, tag or archive, and never touch another worktree or the main checkout.
 - Build the design as written. If the design is wrong or unclear, or a task cannot be done as written: commit what
   works, stop, and report the question. Do not decide it yourself, and do not widen the scope.
-- If the caller sends a decision that changes the design, the spec or the tasks, make that edit in your branch.
+- If the caller sends a decision that changes the design, the spec or the tasks, make that edit in your branch. An
+  agreed departure from a board goes word for word into `Departures from the board`, committed before you build on.
 - Fix the cause of a failing test. Do not weaken a test or hide an error.
 - Never report a check as passed that you did not run.
 

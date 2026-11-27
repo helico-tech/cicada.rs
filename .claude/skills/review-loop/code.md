@@ -37,7 +37,8 @@ checkout of your own.
    Compare in both directions: an element of the board missing or changed in the code, or an element of the code the
    board does not show (sections, columns and their order, controls, texts, states such as empty, offline and error),
    is a fault unless the design lists it under `Departures from the board`. Sample data and the board's desktop
-   background do not count.
+   background do not count, nor the system's dark colours for a board that `mockup/SOURCE.md` names as without dark
+   colours.
 
 Do not run the test suite: the builder ran the finishing checks and recorded gate evidence for its head (its report
 says which), and `scripts/gate.py` requires that evidence again before main or a tag is pushed (ADR 0046). To prove a finding you may run one targeted test in a checkout of your own:

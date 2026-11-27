@@ -90,8 +90,9 @@ built and reviewed against the owner's mockup boards ([MOCK-RULE]):
   board or add what the board does not show (a native control that cannot look the same, data the API lacks, an extra
   control, section or state), with its reason, for the owner to agree. Nothing else departs. Sample data and the
   board's desktop background are not departures.
-- **Tasks.** The task that builds a screen says "match board X". The manual check list starts with "next to board X,
-  light and dark"; builders never drive the GUI.
+- **Tasks.** The task that builds a screen says "match board X", or "in the style of board Y" for an agreed "no
+  board" screen. The manual check list starts with "next to board X, light and dark" (or "in the style of board Y");
+  builders never drive the GUI.
 
 ### Tasks
 
@@ -147,8 +148,10 @@ owner says otherwise. Keep a note of who builds what: the review needs it.
    Keep its id, tell the owner in one line, and go on with Describe. The two builders share the gate's lock: each
    retries while the other's run holds it (builder.md, Gate evidence).
 4. **When the builder reports.** A question about the design, or a departure from a board, goes to the owner; send
-   the answer with SendMessage. `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the
-   builder's report to a file in your scratchpad, and ask for a review:
+   the answer with SendMessage. An agreed departure goes with its entry for `Departures from the board`, word for word;
+   the builder commits it into the branch's design before it builds on (builder.md, Rules). `Docs: blocked` goes to
+   Blocked on docs. Otherwise write `Version: X.Y.Z` and the builder's report to a file in your scratchpad, and ask for
+   a review:
 
    ```sh
    python3 scripts/review.py request code <change> --head feat/<change> --built-by <builder's model> \
@@ -239,7 +242,8 @@ through that change's own `Order`, so the open changes stay one line.
    its worktree on the rebased branch (Blocked on docs, step 3). Merge only when they pass.
    A GUI change: read each board's live version with the Artifact tool and compare it with the copy in `mockup/`. If
    one changed, the standing yes does not cover it: the owner accepts the copied version, or the builder takes the new
-   copy (sent as a file from your scratchpad), updates the screen, and a new code review round checks it.
+   copy and `SOURCE.md` with its new version and copy date (sent as files from your scratchpad), updates the screen,
+   and a new code review round checks it.
 2. `git merge --ff-only feat/<change>` on `main`.
 3. Move the change's reviews into its folder, so that they are archived with it:
    `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.
@@ -264,8 +268,9 @@ through that change's own `Order`, so the open changes stay one line.
 The `release:` line of `python3 scripts/status.py` says when: at once when a landed change's proposal says
 `Release: now`; otherwise when no change is ready or in build and the batch holds a change outside the fast lane. A
 batch of fast-lane changes alone waits for the next behaviour change, or for the owner to ask. A batch with a GUI
-change waits until the owner has seen each screen next to its board, light and dark. Ask the owner before a release
-unless they gave a standing yes.
+change waits until the owner has seen each screen next to its board (or its style board), light and dark; this wait
+wins over the `release:` line, `Release: now` included, and nothing is released before it. Ask the owner before a
+release unless they gave a standing yes.
 
 1. `git fetch origin`; `main` equals `origin/main`.
 2. As in `docs/how-to/releasing.md`: the README tag lines and the changelog date (the `unreleased` heading of the batch

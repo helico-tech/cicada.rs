@@ -40,5 +40,5 @@ rules:
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)
     - Never ask the builder to edit README.md, AGENTS.md or the handwritten docs (AGENTS.md, Documentation ownership); ask for the content in docs-handoff.md, which every change writes
     - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md), the links, the guarantee rows and the skill routes passing; a break the design names is fixed by the docs session before landing
-    - "A GUI change: the task that builds a screen says \"match board X\", and the manual check list starts with \"next to board X, light and dark\""
+    - "A GUI change: the task that builds a screen says \"match board X\" (\"in the style of board Y\" for an agreed \"no board\" screen), and the manual check list starts with \"next to board X, light and dark\" (or \"in the style of board Y\")"
     - End with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `openspec validate <change> --strict`
