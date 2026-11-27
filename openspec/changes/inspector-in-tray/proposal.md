@@ -16,8 +16,8 @@ tasks (2026-11-27).
   runtime_handle, context)`): a main-thread controller, the host's environment and Tokio handle, and a close path that
   invalidates its timer and drops stale refreshes. The tray keeps its own delegate, accessory policy and run loop.
 
-To decide in the design: the API, what happens to the window when the tray quits or reconnects, and focus between the
-inspector and the Settings window.
+Decided in the design: `Embedded` with `show` and `close`, the inspector closes before the tray quits and keeps its own
+context on a reconnect, and keys that work without a main menu.
 
 ## Order
 
