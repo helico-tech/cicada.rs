@@ -30,7 +30,8 @@ refresh; ⌘R keeps today's full Refresh.
    soft refresh applies its rows and then keeps the selection as it is at that moment: by id when the row is still in
    the list, else cleared with an empty pane, as a manual Refresh does. A selection the user made while it ran is simply
    the current one. A pane filled from its row (Messages, Outcomes' selected outcome, Watches, Running Turns) is filled
-   again from the new row; a pane that reads (a Types schema, Outcomes' followed link with `status`) is read again
+   again from the new row; a pane that reads (a Types schema, a
+   selected node's pane with `node(id)`, Outcomes' followed link with `status`) is read again
    without resetting to "Loading": its old content stays until the new read answers, under the pane's generation.
 5. **The scroll position in AppKit.** Every `reloadData` of a page's table (soft refresh, paging, manual Refresh) keeps
    the first visible row by its key, or the same offset when that row is gone; the view does this itself, so the model

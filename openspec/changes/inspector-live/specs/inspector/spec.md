@@ -8,8 +8,9 @@ Paused; pausing SHALL stop the stream, the timer and any refresh in flight until
 
 #### Scenario: A hint for the selected actor
 
-- **WHEN** the Actors page shows actor `counter/a` selected and the server sends a `changed` hint for it
-- **THEN** within a second the pane shows its new state and the selection and scroll position are unchanged
+- **WHEN** the idle Actors page shows actor `counter/a` selected and the server sends a `changed` hint for it
+- **THEN** a soft refresh starts within a second, and when it ends the pane shows the new state with the selection and
+  scroll position unchanged
 
 #### Scenario: A burst of hints
 
@@ -19,7 +20,7 @@ Paused; pausing SHALL stop the stream, the timer and any refresh in flight until
 #### Scenario: Paused
 
 - **WHEN** the user pauses and hints arrive
-- **THEN** nothing reloads until the user resumes, and then the page runs one soft refresh
+- **THEN** nothing reloads until the user resumes, and then the stream's first `resync` runs one soft refresh
 
 #### Scenario: The stream drops
 
