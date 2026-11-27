@@ -1,11 +1,13 @@
+use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use cicada::ActorAddress;
 use futures_core::Stream;
-use futures_util::stream::{StreamExt, try_unfold, unfold};
-use reqwest::{StatusCode, header::CONTENT_TYPE};
+use reqwest::{Response, StatusCode, header::CONTENT_TYPE};
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until, timeout_at};
 
 use crate::{ActorClient, Answer, ClientError, ClientResult};
@@ -15,6 +17,7 @@ const IDLE_LIMIT: Duration = Duration::from_secs(45);
 const LIFETIME: Duration = Duration::from_hours(24);
 const REQUEST_LIMIT: Duration = LIFETIME.saturating_add(Duration::from_mins(1));
 const MAX_LINE: usize = 64 * 1024;
+const MAX_EVENT_DATA: usize = 64 * 1024;
 const BOM: &[u8] = b"\xef\xbb\xbf";
 
 /// A best-effort change hint from [`ActorClient::changes`].
@@ -37,10 +40,10 @@ pub enum ChangeStreamError {
     /// The stream has been open for 24 hours.
     #[error("change stream lifetime of 24 hours expired")]
     Lifetime,
-    /// Reading the response body failed, including a timeout on the underlying HTTP read.
-    #[error("could not read the change stream body")]
-    Transport,
-    /// A line exceeded 64 KiB or a `changed` event had invalid data.
+    /// Reading the response body failed. The source has no URL and can distinguish read timeouts from other failures.
+    #[error("could not read the change stream body: {0}")]
+    Transport(#[source] reqwest::Error),
+    /// A line or an event's combined data exceeded 64 KiB, or a `changed` event had invalid data.
     #[error("malformed change stream: {0}")]
     Malformed(&'static str),
 }
@@ -48,14 +51,17 @@ pub enum ChangeStreamError {
 /// A boxed, `Unpin` and `Send` stream of change hints. A clean end of the HTTP body yields `None`.
 pub type ChangeStream = Pin<Box<dyn Stream<Item = Result<Change, ChangeStreamError>> + Send>>;
 
+type ChangeResult = Result<Change, ChangeStreamError>;
+
 impl ActorClient {
     /// Opens `GET /changes?prefix=` for a literal address prefix (empty for all actors).
     ///
     /// The client's HTTP settings apply, with a total timeout of 24 hours and 1 minute for this request only.
     /// A non-200 response returns [`ClientError::Api`]. No headers within 10 seconds or a `200` without
     /// `text/event-stream` returns [`ClientError::Body`]. Once open, any byte, including a keep-alive, resets a
-    /// 45-second idle deadline. A stream lasts at most 24 hours. Open a new stream yourself after an error or EOF.
-    /// Hints carry no state and have no replay.
+    /// 45-second idle deadline. The stream reads ahead with a bounded buffer while the caller handles a hint. The
+    /// stream stops reading after 24 hours. Open a new subscription yourself after an error or EOF. Hints carry no
+    /// state and have no replay.
     ///
     /// ```no_run
     /// use cicada_client::{ActorClient, Change};
@@ -97,83 +103,90 @@ impl ActorClient {
         if !event_stream {
             return Err(ClientError::Body("expected a text/event-stream response".to_owned()));
         }
-        Ok(read_stream(try_unfold(response, |mut response| async move {
-            let chunk = response.chunk().await.map_err(|_| ChangeStreamError::Transport)?;
-            Ok(chunk.map(|bytes| (bytes, response)))
-        })))
+        Ok(read_stream(response))
     }
 }
 
-fn read_stream<B>(chunks: impl Stream<Item = Result<B, ChangeStreamError>> + Send + 'static) -> ChangeStream
-where
-    B: AsRef<[u8]> + Send + 'static,
-{
+fn read_stream(source: impl ChunkSource + 'static) -> ChangeStream {
+    // Read independently of next() so idle measures the body while the caller handles a hint. Backpressure bounds
+    // read-ahead to one queued hint, one awaiting delivery and the remainder of one chunk.
+    let (changes, received) = mpsc::channel(1);
     let opened = Instant::now();
-    let reader = Reader {
-        chunks: Box::pin(chunks),
-        chunk: None,
-        offset: 0,
-        idle_at: opened + IDLE_LIMIT,
-        expires_at: opened + LIFETIME,
-        parser: Parser::default(),
-    };
-    Box::pin(
-        unfold(Some(reader), |reader| async {
-            let mut reader = reader?;
-            match reader.next_change().await {
-                Ok(Some(change)) => Some((Ok(change), Some(reader))),
-                Ok(None) => None,
-                Err(error) => Some((Err(error), None)),
-            }
-        })
-        .fuse(),
-    )
+    tokio::spawn(async move {
+        let outcome = tokio::select! {
+            biased;
+            _ = changes.closed() => return,
+            outcome = read_changes(source, opened, &changes) => outcome,
+        };
+        if let Err(error) = outcome {
+            let _ = changes.send(Err(error)).await;
+        }
+    });
+    Box::pin(IncomingChanges(received))
 }
 
-struct Reader<S, B> {
-    chunks: Pin<Box<S>>,
-    chunk: Option<B>,
-    offset: usize,
-    idle_at: Instant,
-    expires_at: Instant,
-    parser: Parser,
+struct IncomingChanges(mpsc::Receiver<ChangeResult>);
+
+impl Stream for IncomingChanges {
+    type Item = ChangeResult;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
+    }
 }
 
-impl<S, B> Reader<S, B>
-where
-    S: Stream<Item = Result<B, ChangeStreamError>>,
-    B: AsRef<[u8]>,
-{
-    async fn next_change(&mut self) -> Result<Option<Change>, ChangeStreamError> {
-        loop {
-            if Instant::now() >= self.expires_at {
-                return Err(ChangeStreamError::Lifetime);
-            }
-            if let Some(chunk) = &self.chunk {
-                let bytes = chunk.as_ref();
-                let mut rest = &bytes[self.offset..];
-                let change = self.parser.consume(&mut rest)?;
-                self.offset = bytes.len() - rest.len();
-                if change.is_some() {
-                    return Ok(change);
-                }
-            }
-            let (deadline, elapsed) = if self.idle_at < self.expires_at {
-                (self.idle_at, ChangeStreamError::Idle)
-            } else {
-                (self.expires_at, ChangeStreamError::Lifetime)
-            };
-            let chunk = tokio::select! {
+trait ChunkSource: Send {
+    fn next_chunk(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<impl AsRef<[u8]> + Send + use<Self>>, ChangeStreamError>> + Send;
+}
+
+impl ChunkSource for Response {
+    async fn next_chunk(&mut self) -> Result<Option<impl AsRef<[u8]> + Send + use<>>, ChangeStreamError> {
+        self.chunk().await.map_err(|error| ChangeStreamError::Transport(error.without_url()))
+    }
+}
+
+async fn next_bytes(source: &mut impl ChunkSource) -> Result<Option<impl AsRef<[u8]> + Send>, ChangeStreamError> {
+    loop {
+        let chunk = source.next_chunk().await?;
+        if chunk.as_ref().is_none_or(|bytes| !bytes.as_ref().is_empty()) {
+            return Ok(chunk);
+        }
+        // An empty frame is not activity. Yield periodically so a run of them cannot starve the timers.
+        tokio::task::consume_budget().await;
+    }
+}
+
+async fn read_changes(
+    mut source: impl ChunkSource,
+    opened: Instant,
+    changes: &mpsc::Sender<ChangeResult>,
+) -> Result<(), ChangeStreamError> {
+    let mut parser = Parser::default();
+    let idle = sleep_until(opened + IDLE_LIMIT);
+    let lifetime = sleep_until(opened + LIFETIME);
+    tokio::pin!(idle, lifetime);
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            _ = &mut lifetime => return Err(ChangeStreamError::Lifetime),
+            // A chunk already waiting when delivery resumes wins over the old idle deadline.
+            chunk = next_bytes(&mut source) => chunk?,
+            _ = &mut idle => return Err(ChangeStreamError::Idle),
+        };
+        let Some(chunk) = chunk else { return Ok(()) };
+        idle.as_mut().reset(Instant::now() + IDLE_LIMIT);
+        let mut bytes = chunk.as_ref();
+        while let Some(change) = parser.consume(&mut bytes)? {
+            let sent = tokio::select! {
                 biased;
-                _ = sleep_until(deadline) => return Err(elapsed),
-                chunk = self.chunks.next() => chunk.transpose()?,
+                _ = &mut lifetime => return Err(ChangeStreamError::Lifetime),
+                sent = changes.send(Ok(change)) => sent,
             };
-            let Some(chunk) = chunk else { return Ok(None) };
-            if !chunk.as_ref().is_empty() {
-                self.idle_at = Instant::now() + IDLE_LIMIT;
+            if sent.is_err() {
+                return Ok(());
             }
-            self.chunk = Some(chunk);
-            self.offset = 0;
         }
     }
 }
@@ -241,6 +254,10 @@ impl Parser {
                         };
                     }
                     b"data" => {
+                        // The trailing newline of the previous data line separates it from this line.
+                        if self.data.len() + value.len() > MAX_EVENT_DATA {
+                            return Err(ChangeStreamError::Malformed("event data exceeds 64 KiB"));
+                        }
                         self.data.extend_from_slice(value);
                         self.data.push(b'\n');
                     }

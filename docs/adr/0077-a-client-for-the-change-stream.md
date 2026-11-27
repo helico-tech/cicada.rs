@@ -17,9 +17,10 @@ already carries authentication and TLS settings, and may set a total timeout sui
 - `ActorClient::changes(prefix)` opens `GET /changes` through its configured HTTP client. It waits up to 10 s for
   headers and checks the status and media type before returning a stream. The request overrides the client's total
   timeout with 24 hours and 1 minute.
-- The stream yields changed addresses and resync hints. It ends cleanly when the server closes the body. It reports a
-  read or framing error, 45 s without a byte, or an elapsed lifetime of 24 hours as a final error. Keep-alive comments
-  reset the idle deadline when read. `futures-core` is a public dependency for the `Stream` type.
+- The stream reads ahead with a bounded buffer and yields changed addresses and resync hints. It ends cleanly when
+  the server closes the body. It reports a read or framing error, 45 s without a byte, or an elapsed lifetime of
+  24 hours as a final error. Keep-alive comments reset the idle deadline even between calls to `next`. Both a line
+  and an event's joined data are limited to 64 KiB. `futures-core` is a public dependency for the `Stream` type.
 
 ## Consequences
 

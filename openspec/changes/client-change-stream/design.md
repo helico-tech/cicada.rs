@@ -29,15 +29,17 @@ while let Some(change) = changes.next().await {
 3. **Reading it: errors in the stream.** The request sets its own timeout of 24 hours and 1 minute, which replaces the
    client's total timeout for this request only. The stream itself ends with `Lifetime` after 24 hours on its own Tokio
    timer, and the caller opens a new one. It ends with `Idle` when no byte at all, keep-alive comments included, has
-   arrived for 45 s (three keep-alive periods), also on Tokio's clock. A failed read, including a client `read_timeout`
-   that fires, is `Transport`. A body that ends cleanly ends the stream with `None` (a store close).
+   arrived for 45 s (three keep-alive periods), also on Tokio's clock. A bounded read-ahead task reads independently
+   of calls to `next`. When backpressure releases it, ready body input takes priority over the idle deadline. A
+   failed read, including a client `read_timeout` that fires, is `Transport` with the reqwest error as its source
+   and the URL removed. A body that ends cleanly ends the stream with `None` (a store close).
 4. **A parser by the event-stream rules.** The body is read with `Response::chunk()` (reqwest's `stream` feature stays
    off). A UTF-8 BOM at the very start is dropped, also when it is split over reads; lines end with CRLF, LF or CR, also
    split over reads; a field's value drops one space after the colon; a line with no colon is a field name with an empty
    value; `data` lines of one event join with `\n`; a line starting with `:` is a comment; an empty line ends the event;
    `event` names it; unknown fields and events are skipped; an incomplete event when the body ends is dropped. A line
-   longer than 64 KiB, or a `changed` whose data is not `{"address": <valid address>}`, is `Malformed` (the stream
-   ends).
+   longer than 64 KiB, event data longer than 64 KiB after joining `data` lines, or a `changed` whose data is not
+   `{"address": <valid address>}`, is `Malformed` (the stream ends).
 5. **The types.** `ChangeStream` is a boxed `Stream<Item = Result<Change, ChangeStreamError>> + Unpin + Send`; `Change`
    is `Changed(ActorAddress)` or `Resync`, `#[non_exhaustive]`; `ChangeStreamError` (`Idle`, `Lifetime`, `Transport`,
    `Malformed`) is `#[non_exhaustive]` and never holds a token or a URL password in its text (reqwest removes URL
@@ -52,8 +54,9 @@ token and a context header arriving at the server, a store close ending the stre
 text. With a small local server in real time: a client built with a total timeout of 1 s keeps a stream open for 3 s of
 bytes every 200 ms. With crafted byte streams on virtual time: a BOM split over two reads, CRLF, LF and CR endings split
 over reads, `event: changed` with its space, a line with no colon, multi-line `data`, a comment, an unknown event, an
-incomplete final event, a line over 64 KiB, a malformed `changed`; `Idle` after 45 s with no byte and keep-alives
-keeping it open; the 10 s handshake timeout; `Lifetime` at 24 hours.
+incomplete final event, a line or combined event data over 64 KiB, a malformed `changed`; `Idle` after 45 s with
+no byte, keep-alives during a pause between reads, and a hint already waiting after a 46 s pause; the 10 s handshake
+timeout; `Lifetime` at 24 hours. Verify the sanitized transport source for a read timeout and an interrupted body.
 
 ## Docs
 

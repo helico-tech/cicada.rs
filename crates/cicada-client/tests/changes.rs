@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::future::{Future, pending};
 use std::pin::pin;
@@ -49,6 +50,15 @@ fn assert_no_secrets(error: &(impl Display + Debug)) {
 
 fn sse(body: Body) -> Response {
     ([(header::CONTENT_TYPE, "Text/Event-Stream; charset=utf-8")], body).into_response()
+}
+
+fn transport_source(error: &ChangeStreamError) -> &reqwest::Error {
+    assert!(matches!(error, ChangeStreamError::Transport(_)));
+    assert_no_secrets(error);
+    let source = error.source().unwrap().downcast_ref::<reqwest::Error>().unwrap();
+    assert!(source.url().is_none());
+    assert_no_secrets(source);
+    source
 }
 
 #[tokio::test(start_paused = true)]
@@ -159,15 +169,43 @@ async fn an_http_read_timeout_ends_the_stream_with_transport() {
             }),
         );
         let http = reqwest::Client::builder().read_timeout(Duration::from_secs(2)).build().unwrap();
-        let client = ActorClient::with_client(serve(app).await, http);
+        let base = serve(app).await.replacen("http://", &format!("http://user:{PASSWORD}@"), 1);
+        let client = ActorClient::with_client(base, http);
         let mut events = client.changes("").await.unwrap();
         assert_eq!(events.next().await.unwrap().unwrap(), Change::Resync);
         let mut next = pin!(events.next());
         assert!(poll!(&mut next).is_pending());
         advance(Duration::from_secs(3)).await;
         let error = next.await.unwrap().unwrap_err();
-        assert!(matches!(error, ChangeStreamError::Transport));
-        assert_no_secrets(&error);
+        assert!(transport_source(&error).is_timeout());
+        assert!(events.next().await.is_none());
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dropped_http_body_keeps_a_non_timeout_transport_source() {
+    within_wall_clock(async {
+        let dropped = Arc::new(Notify::new());
+        let signal = dropped.clone();
+        let app = Router::new().route(
+            "/changes",
+            get(move || async move {
+                let first = Ok(Bytes::from_static(b"event: resync\ndata: {}\n\n"));
+                let failure = stream::once(async move {
+                    signal.notified().await;
+                    Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+                });
+                sse(Body::from_stream(stream::iter([first]).chain(failure)))
+            }),
+        );
+        let base = serve(app).await.replacen("http://", &format!("http://user:{PASSWORD}@"), 1);
+        let client = ActorClient::new(base);
+        let mut events = client.changes("").await.unwrap();
+        assert_eq!(events.next().await.unwrap().unwrap(), Change::Resync);
+        dropped.notify_one();
+        let error = events.next().await.unwrap().unwrap_err();
+        assert!(!transport_source(&error).is_timeout());
         assert!(events.next().await.is_none());
     })
     .await;

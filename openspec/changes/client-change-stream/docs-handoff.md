@@ -42,11 +42,13 @@ async fn follow(client: &ActorClient) -> Result<(), Box<dyn std::error::Error>> 
 **Caveats.** The `changes` call returns `ClientError::Api` for a non-200 status. If it cannot read the problem body
 within the opening budget, it uses the HTTP status. It returns `ClientError::Body` if headers take more than
 10 seconds or the response is a `200` with another or missing media type. The stream ends cleanly when the store
-closes. It yields a final `ChangeStreamError` on a failed read, invalid changed data, a line longer than 64 KiB,
-45 seconds without receiving body bytes, or a 24-hour lifetime. Keep-alive comments reset the idle deadline. The
-request overrides the configured total timeout with 24 hours and 1 minute. A reconnect is a fresh subscription that
-starts with a resync. Open it yourself and reread the prefix. The same change hint coverage and reconciliation
-rules apply as for a browser client.
+closes. It yields a final `ChangeStreamError` on a failed read, invalid changed data, a line or combined event data
+longer than 64 KiB, 45 seconds without receiving body bytes, or a 24-hour lifetime. The stream reads ahead with a
+bounded buffer, so keep-alives can reset the idle deadline while the consumer handles a hint. Ready body bytes take
+priority over the idle deadline when delivery resumes. `ChangeStreamError::Transport` keeps the underlying reqwest
+error with its URL removed. The request overrides the configured total timeout with 24 hours and 1 minute. A
+reconnect is a fresh subscription that starts with a resync. Open it yourself and reread the prefix. The same change
+hint coverage and reconciliation rules apply as for a browser client.
 
 ## 2. Update the architecture limits
 
@@ -68,3 +70,6 @@ The 12 focused client tests, the `ActorClient::changes` doctest, the 11 document
 doctests passed. Workspace tests with PostgreSQL passed (3,933), along with formatting, workspace Clippy, the
 advisory check and strict OpenSpec validation. The HTTP guide and architecture edits are proposed for the docs
 session. ADR 0077 and the changelog are in the implementation branch. The change loop runs the gate at landing.
+
+The code review fixes passed 81 client tests with PostgreSQL, 11 documentation tests, workspace Clippy with warnings
+denied, formatting, the advisory check and strict OpenSpec validation.
