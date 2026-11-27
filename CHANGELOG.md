@@ -53,9 +53,10 @@ directly or use `..` in matches.
   lease, cancel requested) with the message's type and attempt when it is among the first 50 of the mailbox, the
   state as highlighted JSON (cut at 256 KiB with a notice), and tabs for the pending messages among the mailbox's
   first 50 and for the watches where it is the watcher and where it is the exact target. A missing actor shows "not
-  found", an idle one "idle", and each part shows its own error. A toolbar button and View › Hide Pane show and hide
-  the pane; ⌘R reloads the list from the top and the pane. A read that no longer matches the prefix, the selection or
-  the context is dropped, and a context switch or a closed window cancels the pending ones. Covered by the tests in
+  found", an idle one "idle", and each part shows its own error. A toolbar button shows and hides the pane, and so
+  does View › Hide Pane in the standalone app; ⌘R reloads the list from the top and the pane. A read that no longer
+  matches the prefix, the selection or the context is dropped, a search that leaves out the selected actor unselects
+  it, and a context switch or a closed window cancels the pending reads. Covered by the tests in
   `crates/cicada-inspector/src/tests/actors.rs` and `tests/json.rs`; the window has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the

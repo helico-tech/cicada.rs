@@ -294,7 +294,10 @@ async fn a_search_drops_the_pages_of_the_earlier_prefix() {
     model.search("ba");
     model.search("bag/");
     release.notify_waiters();
-    let view = list_until(&mut list, |l| l.paging == Paging::Idle && !l.rows.is_empty()).await;
+    // Both reads of the new prefix settle, the page and the turns sample, before old results are looked for.
+    let view =
+        list_until(&mut list, |l| l.paging == Paging::Idle && !l.rows.is_empty() && l.running != Running::Loading)
+            .await;
     assert_eq!(view.prefix, "bag/");
     let rows: Vec<_> = view.rows.iter().map(|row| row.address.to_string()).collect();
     assert_eq!(rows, ["bag/0", "bag/1", "bag/2"]);
@@ -308,7 +311,9 @@ async fn a_search_drops_the_pages_of_the_earlier_prefix() {
         let ended = timeout(WAIT, task).await.expect("an aborted read ends");
         assert!(ended.as_ref().is_err_and(|e| e.is_cancelled()) || ended.is_ok(), "{ended:?}");
     }
-    assert!(!list.has_changed().unwrap(), "the held page of the earlier prefix is dropped");
+    let after = list.borrow_and_update().clone();
+    assert_eq!((after.generation, &after.rows), (view.generation, &view.rows), "the held page is dropped");
+    assert_eq!(after, view, "nothing changed after both reads of the new prefix settled");
 }
 
 /// A search still waiting for the field to settle is cancelled when the window closes: its task ends cancelled, and
@@ -521,4 +526,44 @@ async fn a_then_b_then_a_shows_only_the_last_read_of_a() {
     assert_eq!(view.generation, generation);
     let Read::Ready(Some(details)) = &view.actor else { panic!("{:?}", view.actor) };
     assert!(details.state.text.contains("\"last\""), "the first read of A is dropped: {}", details.state.text);
+}
+
+/// A search whose prefix leaves out the selected actor unselects it: the pane empties under a new generation, and a
+/// read of it held at the server publishes nothing once let go. A prefix that still holds it keeps it.
+#[tokio::test]
+async fn a_search_that_leaves_out_the_selection_empties_the_pane() {
+    let actors = test_actors().await;
+    actors.create(&Bag { id: "a".into() }, &Contents::default()).await;
+    let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let held = Fake::Wait { arrived: arrived.clone(), release: release.clone() };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let rule = watches_rule(move |target| {
+        (target == "/actors/bag/a" && reads.fetch_add(1, Ordering::SeqCst) == 1).then(|| held.clone())
+    });
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let model = model(&server, Limits { debounce: Duration::from_millis(10), ..Limits::DEFAULT });
+    let mut pane = model.pane();
+    let address = ActorAddress::parse("bag/a").unwrap();
+
+    model.select(Some(address.clone()));
+    answered(&mut pane).await;
+    model.search("bag/");
+    assert_eq!(model.selected(), Some(address.clone()), "a prefix that holds the actor keeps it");
+    model.refresh();
+    timeout(WAIT, arrived.notified()).await.expect("the refreshed read of the actor is held");
+    let before = pane.borrow_and_update().generation;
+
+    model.search("counter/");
+    assert_eq!(model.selected(), None);
+    let emptied = pane.borrow_and_update().clone();
+    assert!(emptied.generation > before, "{emptied:?}");
+    assert_eq!(emptied, PaneView { generation: emptied.generation, ..PaneView::default() });
+
+    release.notify_waiters();
+    for task in model.take_aborted() {
+        let ended = timeout(WAIT, task).await.expect("an aborted read ends");
+        assert!(ended.as_ref().is_err_and(|e| e.is_cancelled()) || ended.is_ok(), "{ended:?}");
+    }
+    assert!(!pane.has_changed().unwrap(), "the held read of the unselected actor publishes nothing");
+    assert_eq!(pane.borrow().address, None);
 }

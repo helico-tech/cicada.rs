@@ -383,7 +383,10 @@ define_class!(
             }
             c.searched.replace(prefix.clone());
             c.session.actors().search(&prefix);
+            // A selected actor outside the prefix was unselected with its reads; the pane empties.
+            c.selected.replace(c.session.actors().selected());
             self.render_list();
+            self.render_pane();
         }
 
         // SAFETY: The Retry button of the table's status row sends this action with itself as the sender.

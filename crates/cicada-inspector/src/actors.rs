@@ -409,10 +409,14 @@ impl Actors {
     }
 
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
-    /// still for `limits.debounce`.
+    /// still for `limits.debounce`. A selected actor outside the new prefix leaves the list, so it is unselected: its
+    /// reads are dropped and the pane empties.
     pub fn search(&self, prefix: &str) {
         let mut state = self.shared.lock();
         state.prefix = prefix.to_owned();
+        if state.selected.as_ref().is_some_and(|address| !address.as_str().starts_with(prefix)) {
+            self.shared.select(&mut state, None);
+        }
         if state.client.is_none() {
             self.shared.list.send_modify(|list| list.prefix = prefix.to_owned());
             return;
@@ -448,6 +452,11 @@ impl Actors {
         let mut state = self.shared.lock();
         state.supersede_list();
         state.supersede_pane();
+    }
+
+    /// The selected actor.
+    pub fn selected(&self) -> Option<ActorAddress> {
+        self.shared.lock().selected.clone()
     }
 
     /// The tasks aborted so far; each ends once it has stopped.

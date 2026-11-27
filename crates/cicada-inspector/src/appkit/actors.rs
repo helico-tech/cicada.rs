@@ -417,8 +417,15 @@ fn header(layout: &mut Layout<'_>, pane: &PaneView) {
         Read::Ready(Some(turn)) => {
             let message = match pane.turn_message() {
                 Some(row) => format!("Running {} · attempt {}", row.message_type, row.attempt),
-                None if matches!(pane.mailbox, Read::Loading) => "Running".to_owned(),
-                None => format!("Running (its message is not among the first {MAILBOX_ROWS} of the mailbox)"),
+                None => match &pane.mailbox {
+                    Read::Loading => "Running".to_owned(),
+                    Read::Failed(_) => {
+                        "Running (its message type is unknown: the mailbox could not be read)".to_owned()
+                    }
+                    Read::Ready(_) => {
+                        format!("Running (its message is not among the first {MAILBOX_ROWS} of the mailbox)")
+                    }
+                },
             };
             layout.text(&message, Style::Plain);
             let cancel = if turn.cancel_requested { " · cancel requested" } else { "" };
@@ -430,7 +437,7 @@ fn header(layout: &mut Layout<'_>, pane: &PaneView) {
     }
 }
 
-/// The Mailbox tab: the pending messages among the first page, with the running one first.
+/// The Mailbox tab: the pending messages among the first page; the running one is matched for the turn above.
 fn mailbox(layout: &mut Layout<'_>, pane: &PaneView) {
     let mailbox = match &pane.mailbox {
         Read::Loading => return layout.text("Loading…", Style::Secondary),
@@ -438,14 +445,6 @@ fn mailbox(layout: &mut Layout<'_>, pane: &PaneView) {
         Read::Ready(mailbox) => mailbox,
     };
     let now = chrono::Utc::now();
-    if let Some(running) = mailbox.rows.iter().find(|row| row.running) {
-        layout.heading("Running");
-        layout.row(
-            &format!("{} · {}", running.message_type, running.id),
-            &format!("attempt {}", running.attempt),
-            None,
-        );
-    }
     let pending: Vec<_> = pane.pending().collect();
     layout.heading(&format!("Pending ({})", pending.len()));
     if pending.is_empty() {

@@ -22,11 +22,16 @@ now shows the Actors page and an inspector pane.
   attempt <n>" when the turn's message is among the first 50 messages of the mailbox, then message id, node, lease and
   "cancel requested"), or "Idle: no turn is running." Tabs: State (the state as pretty JSON, colour-highlighted in light
   and dark, cut at 256 KiB with the notice "The state is longer than 256 KiB; this shows its first 256 KiB."), Mailbox
-  (the running message and the pending messages among the first 50, with type, id, due time and attempt) and Watches
+  (the pending messages among the first 50, with type, id, due time and attempt; the running one is matched only for
+  the turn above) and Watches
   ("Watching", the targets it watches; "Watched by", the watchers whose stored target is exactly this actor).
 - An actor that is gone shows "Not found: this actor no longer exists." and nothing else; each other part shows its own
   error. Each read has 10 s.
-- The toolbar gains the search field and a "Show or Hide Pane" button; the View menu gains Hide Pane / Show Pane. The
+- When the mailbox cannot be read, the turn shows "Running (its message type is unknown: the mailbox could not be
+  read)" with its message id, and the Mailbox tab shows the error.
+- A search whose prefix leaves out the selected actor unselects it: the pane empties and its reads are dropped.
+- The toolbar gains the search field and a "Show or Hide Pane" button; in the standalone app only
+  (`Inspector::run`), the View menu gains Hide Pane / Show Pane; an embedded window has no such menu item. The
   pane shows only on the Actors page. ⌘R on the Actors page reloads the list from the top and the pane; on another
   page it refreshes the Overview as before.
 - A read that no longer matches the current prefix, selection or context is dropped (also when the user selects A, then
@@ -52,7 +57,8 @@ read once per reload, and `paused` when its mailbox is paused, or both; the foot
 only the first 200 running turns, or that it is unknown. A page that fails shows its error with a Retry button.
 Selecting an actor fills the pane on the right: its type, version, created time, parent, pinned node and paused flag,
 its running turn, and tabs for its state as highlighted JSON, its mailbox (the pending messages among its first 50)
-and its watches. Everything is read only. The toolbar's pane button, or View › Hide Pane, hides and shows the pane; ⌘R
+and its watches. Everything is read only. The toolbar's pane button hides and shows the pane (in the standalone app also
+View › Hide Pane); ⌘R
 reloads the list from the top and the pane.
 
 **Caveats.**
