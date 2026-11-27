@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
 
 use super::channel::{Channel, Opened};
-use super::{FALLBACK, GATHER, Live, LiveStatus, Pages};
+use super::{FALLBACK, GATHER, Live, LiveStatus, Pages, Reloaded};
 use crate::model::Section;
 use crate::refresh::Done;
 
@@ -32,6 +32,8 @@ struct FakePages {
     cancels: Mutex<Vec<Section>>,
     pane: Mutex<Option<ActorAddress>>,
     length: Mutex<Option<Duration>>,
+    /// How long a manual reload takes.
+    reload: Mutex<Duration>,
 }
 
 impl FakePages {
@@ -66,6 +68,10 @@ impl Pages for FakePages {
 
     fn pane_actor(&self, _: Section) -> Option<ActorAddress> {
         self.pane.lock().unwrap().clone()
+    }
+
+    fn reloaded(&self, _: Section) -> Reloaded {
+        Box::pin(sleep(*self.reload.lock().unwrap()))
     }
 }
 
@@ -402,12 +408,12 @@ async fn a_manual_refresh_arms_the_timer_again_unless_paused() {
     let (live, _source, _opened, _first, pages) = start(Section::Actors, "").await;
     let opened = Instant::now();
     sleep(Duration::from_secs(20)).await;
-    live.refreshed();
+    live.refreshed(Section::Actors);
     sleep(FALLBACK + Duration::from_secs(1)).await;
     assert_eq!(pages.times(), [opened + Duration::from_secs(20) + FALLBACK]);
 
     live.pause();
-    live.refreshed();
+    live.refreshed(Section::Actors);
     sleep(FALLBACK * 3).await;
     assert_eq!(pages.count(), 1, "⌘R while paused arms no timer");
 }
@@ -416,10 +422,75 @@ async fn a_manual_refresh_arms_the_timer_again_unless_paused() {
 fn the_pill_says_what_each_state_means() {
     let at = chrono::Utc::now();
     let reconnecting = LiveStatus::Reconnecting { at, reason: "refused".into() };
-    let titles = [LiveStatus::Live, reconnecting.clone(), LiveStatus::Paused].map(|status| status.title());
-    assert_eq!(titles, ["Live", "Reconnecting", "Paused"]);
+    let titles =
+        [LiveStatus::Off, LiveStatus::Live, reconnecting.clone(), LiveStatus::Paused].map(|status| status.title());
+    assert_eq!(titles, ["Offline", "Live", "Reconnecting", "Paused"]);
     let tip = reconnecting.tooltip();
     assert!(tip.contains("refused") && tip.contains(&at.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()));
     assert!(LiveStatus::Paused.tooltip().contains("⌘R"));
     assert!(LiveStatus::Live.tooltip().contains("30 s"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_after_a_manual_reload_counts_from_its_end() {
+    let pages = FakePages::new(LENGTH);
+    *pages.reload.lock().unwrap() = Duration::from_secs(10);
+    let (live, _source, _opened, _first, pages) = start_with(Section::Actors, "", pages).await;
+    sleep(Duration::from_secs(20)).await;
+    let reload = Instant::now();
+    live.refreshed(Section::Actors);
+    sleep(FALLBACK * 2).await;
+    assert_eq!(pages.times()[0], reload + Duration::from_secs(10) + FALLBACK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_prefix_waiting_for_the_debounce_survives_a_pause_and_a_context_switch() {
+    let (live, _source, mut opened, _first, _pages) = start(Section::Actors, "counter/").await;
+    live.show(Section::Actors, "counter/a");
+    settle().await;
+    live.pause();
+    live.resume();
+    assert_eq!(opened.recv().await.unwrap().prefix, "counter/a", "resume follows the prefix typed last");
+
+    live.show(Section::Actors, "counter/b");
+    settle().await;
+    let (other, mut other_opened) = Channel::new();
+    live.use_source(Some(other));
+    assert_eq!(other_opened.recv().await.unwrap().prefix, "counter/b", "the new context follows it too");
+    sleep(DEBOUNCE * 2).await;
+    no_try(&mut other_opened).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn pause_cancels_the_refresh_before_it_returns_and_no_batch_starts_after_it() {
+    let length = Duration::from_secs(2);
+    let (live, _source, mut opened, first, pages) =
+        start_with(Section::Watches, "", FakePages::new(Some(length))).await;
+    hint(&first, "counter/a");
+    sleep(GATHER + Duration::from_millis(100)).await;
+    assert_eq!(pages.count(), 1);
+    live.pause();
+    assert_eq!(*pages.cancels.lock().unwrap(), [Section::Watches], "cancelled before the model's task ran");
+    live.resume();
+    let resumed = opened.recv().await.unwrap();
+    settle().await;
+
+    // A batch that falls due as the click comes: started before it and cancelled, or not started at all.
+    hint(&resumed, "counter/b");
+    sleep(GATHER).await;
+    let at_click = pages.count();
+    live.pause();
+    sleep(Duration::from_secs(5)).await;
+    assert_eq!(pages.count(), at_click, "nothing starts after the click");
+    assert_eq!(pages.cancels.lock().unwrap().len(), at_click, "what started before it was cancelled");
+}
+
+#[tokio::test(start_paused = true)]
+async fn nothing_starts_once_the_model_is_stopped() {
+    let (live, _source, _opened, first, pages) = start(Section::Actors, "").await;
+    hint(&first, "counter/a");
+    settle().await;
+    live.stop();
+    sleep(FALLBACK * 2).await;
+    assert_eq!(pages.count(), 0);
 }

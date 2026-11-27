@@ -683,6 +683,38 @@ async fn types_soft_refresh_keeps_the_schema_by_name_and_keeps_its_json_during_f
     .await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn types_soft_refresh_cancelled_while_formatting_puts_the_pane_back() {
+    with_clock(async {
+        let mut changed = types::registered("counter");
+        changed["messages"] = json!({"Aardvark": {}, "Alpha": {"new": true}});
+        let routes = Script::new([("/types", vec![page([types::registered("counter")], None), page([changed], None)])]);
+        let server = serve(&actors().await, routes.rule(), Duration::ZERO).await;
+        let model = Types::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 1).await;
+        model.select(Some("counter"));
+        model.choose(1);
+        model.set_pane_visible(true);
+        let before = view_until(&mut pane, |pane| pane.json.is_some()).await;
+        let formatted = model.formatted();
+        let (formatting, release) = model.hold_format();
+        model.soft_refresh();
+        tokio::task::spawn_blocking(move || formatting.recv_timeout(HOLD_LIMIT)).await.unwrap().unwrap();
+        assert_eq!(pane.borrow().schemas(), ["State", "Aardvark", "Alpha"]);
+
+        // A pause cancels the refresh while its schema is being formatted: none of its pane applies.
+        model.cancel_soft_refresh();
+        release.send(()).unwrap();
+        let after = view_until(&mut pane, |pane| pane.schemas() == before.schemas()).await;
+        assert_eq!((after.schema, &after.json), (before.schema, &before.json));
+        assert_eq!(model.formatted(), formatted + 1, "the refresh's formatting finished and was dropped");
+    })
+    .await;
+}
+
 fn stats(actors: u64) -> Fake {
     Fake::Answer(StatusCode::OK, json!({"actors": actors, "pending": 0, "failed": 2}))
 }

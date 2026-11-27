@@ -257,12 +257,20 @@ impl Shared {
     }
 
     fn format_if_needed(self: &Arc<Self>, state: &mut State) {
+        self.format(state, None);
+    }
+
+    /// Formats the pane's schema off the main thread, unless one runs, the pane is hidden or it is formatted. With an
+    /// owner, the soft refresh `ticket` that changed the pane from `before`, the result applies only while that
+    /// refresh is current: once it is cancelled the pane is put back as it was before. The refresh awaits the
+    /// returned task.
+    fn format(self: &Arc<Self>, state: &mut State, owner: Option<(u64, TypePane)>) -> Option<JoinHandle<()>> {
         if state.formatting || !state.pane_visible || state.formatted_generation == Some(state.pane_generation) {
-            return;
+            return None;
         }
         let (row, schema) = {
             let pane = self.pane.borrow();
-            let Some(row) = pane.row.clone() else { return };
+            let row = pane.row.clone()?;
             (row, pane.schema)
         };
         state.formatting = true;
@@ -270,7 +278,7 @@ impl Shared {
         #[cfg(test)]
         let hold = state.hold.take();
         let shared = self.clone();
-        self.handle.spawn_blocking(move || {
+        Some(self.handle.spawn_blocking(move || {
             #[cfg(test)]
             if let Some((arrived, release)) = hold {
                 let _ = arrived.send(());
@@ -284,13 +292,19 @@ impl Shared {
             {
                 state.formatted += 1;
             }
-            if state.pane_generation == generation {
+            if state.pane_generation != generation {
+                shared.format_if_needed(&mut state);
+            } else if let Some((_, before)) = owner.filter(|(ticket, _)| !state.refresh.current(*ticket)) {
+                // The refresh was cancelled, by a pause or by leaving the page: none of its pane applies.
+                state.pane_generation += 1;
+                state.formatted_generation = before.json.is_some().then_some(state.pane_generation);
+                shared.pane.send_replace(before);
+                shared.format_if_needed(&mut state);
+            } else {
                 state.formatted_generation = Some(generation);
                 shared.pane.send_modify(|pane| pane.json = Some(json));
-            } else {
-                shared.format_if_needed(&mut state);
             }
-        });
+        }))
     }
 }
 
@@ -327,24 +341,40 @@ impl RefreshPage for Shared {
             client
         };
         let answer = budget.read(client.types()).await;
-        let mut state = self.lock_refresh();
+        let formatting = self.land_types(&mut self.lock_refresh(), ticket, answer);
+        // The refresh ends with its formatting, so a pause until then drops it.
+        if let Some(formatting) = formatting {
+            let _ = formatting.await;
+        }
+    }
+}
+
+impl Shared {
+    /// Lands a soft refresh's types and keeps the pane's type and schema by name; returns the formatting it started.
+    fn land_types(
+        self: &Arc<Self>,
+        state: &mut State,
+        ticket: u64,
+        answer: Part<Vec<TypeView>>,
+    ) -> Option<JoinHandle<()>> {
         if !state.refresh.current(ticket) {
-            return;
+            return None;
         }
         let rows = match answer {
             Part::Ready(rows) => rows,
             Part::Failed(error) => {
-                return self.list.send_modify(|list| {
+                self.list.send_modify(|list| {
                     list.stale = Some(Stale::failed(as_of(list.stale.as_ref(), state.read_at), error));
                 });
+                return None;
             }
         };
-        self.replace_types(&mut state, rows);
+        self.replace_types(state, rows);
         let before = self.pane.borrow().clone();
-        let Some(previous) = before.row else { return };
+        let previous = before.row.clone()?;
         let row = self.list.borrow().rows.iter().find(|row| row.name == previous.name).cloned();
         if row.as_ref() == Some(&previous) {
-            return;
+            return None;
         }
         // The schema popup lists message names in order, so an updated contract can move the selected schema.
         let message = before.schema.checked_sub(1).and_then(|index| previous.messages.keys().nth(index));
@@ -353,10 +383,10 @@ impl RefreshPage for Shared {
             .zip(message)
             .and_then(|(row, name)| row.messages.keys().position(|key| key == name))
             .map_or(0, |index| index + 1);
-        let json = row.as_ref().filter(|_| message.is_none() || schema > 0).and(before.json);
+        let json = row.as_ref().filter(|_| message.is_none() || schema > 0).and(before.json.clone());
         state.pane_generation += 1;
         self.pane.send_replace(TypePane { row, schema, json });
-        self.format_if_needed(&mut state);
+        self.format(state, Some((ticket, before)))
     }
 }
 

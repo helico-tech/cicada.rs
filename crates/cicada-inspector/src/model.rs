@@ -18,9 +18,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
 use crate::actors::{Actors, OutlineViewport};
+use crate::live::Reloaded;
 use crate::messages::Messages;
-use crate::nodes::{NodePlace, Nodes};
+use crate::nodes::{NodePlace, Nodes, NodesRead};
 use crate::outcomes::{OutcomePlace, Outcomes};
+use crate::pager::Paging;
 use crate::refresh::{Budget, Done, Readiness, Refresh, RefreshPage, Stale, as_of};
 use crate::turns::{RunningTurns, TurnPlace};
 use crate::types::Types;
@@ -293,6 +295,9 @@ impl View {
 pub struct Session {
     env: Env,
     shared: Arc<Shared>,
+    /// The page on screen. A live refresh starts and a page switch cancels the page left under this lock, so no live
+    /// refresh starts on a page already left.
+    shown: Mutex<Section>,
     actors: Actors,
     messages: Messages,
     turns: RunningTurns,
@@ -340,7 +345,7 @@ impl Session {
         let nodes = Nodes::new(handle.clone(), limits);
         let types = Types::new(handle.clone(), limits);
         let watches = Watches::new(handle.clone(), limits);
-        Self { env, shared, actors, messages, turns, nodes, types, watches }
+        Self { env, shared, shown: Mutex::default(), actors, messages, turns, nodes, types, watches }
     }
 
     /// The Actors page's reads, on the client of the context in use.
@@ -477,6 +482,39 @@ impl Session {
         }
     }
 
+    /// A live soft refresh of `section`: like [`Self::soft_refresh`], but none when another page is on screen.
+    pub(crate) fn live_refresh(&self, section: Section) -> Done {
+        let shown = self.shown.lock().expect("inspector session");
+        if *shown != section {
+            return Done::ready();
+        }
+        let done = self.soft_refresh(section, None);
+        drop(shown);
+        done
+    }
+
+    /// Resolves once the hard reload of `section` has ended: its list, or the Overview, is no longer loading.
+    pub(crate) fn reloaded(&self, section: Section) -> Reloaded {
+        fn until<T: Send + Sync + 'static>(
+            mut view: watch::Receiver<T>,
+            done: impl Fn(&T) -> bool + Send + 'static,
+        ) -> Reloaded {
+            Box::pin(async move {
+                let _ = view.wait_for(done).await;
+            })
+        }
+        match section {
+            Section::Overview => until(self.view(), |view| !view.refreshing),
+            Section::Actors => until(self.actors.list(), |list| list.paging != Paging::Loading),
+            Section::Messages => until(self.messages.list(), |list| list.paging != Paging::Loading),
+            Section::RunningTurns => until(self.turns.list(), |list| list.paging != Paging::Loading),
+            Section::Outcomes => until(self.shared.outcomes.list(), |list| list.paging != Paging::Loading),
+            Section::Nodes => until(self.nodes.list(), |list| list.read != NodesRead::Loading),
+            Section::Types => until(self.types.list(), |list| list.paging != Paging::Loading),
+            Section::Watches => until(self.watches.list(), |list| list.paging != Paging::Loading),
+        }
+    }
+
     /// Cancels a page's soft refresh and drops its results, the page staying as it is.
     pub(crate) fn cancel_live_refresh(&self, section: Section) {
         match section {
@@ -559,8 +597,12 @@ impl Session {
             navigation.current = recorded;
             return false;
         }
-        if left != navigation.current() {
-            self.cancel_soft_refresh(left);
+        {
+            let mut shown = self.shown.lock().expect("inspector session");
+            *shown = navigation.current();
+            if left != *shown {
+                self.cancel_soft_refresh(left);
+            }
         }
         if left == Section::Actors {
             self.actors.cancel_jump();

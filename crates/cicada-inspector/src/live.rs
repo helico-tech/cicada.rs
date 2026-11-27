@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use cicada::ActorAddress;
@@ -69,11 +69,16 @@ pub(crate) trait Pages: Send + Sync {
     fn cancel_soft_refresh(&self, section: Section);
     /// The actor the pane of `section` shows.
     fn pane_actor(&self, section: Section) -> Option<ActorAddress>;
+    /// Resolves once the hard reload of `section` that a manual Refresh started has ended.
+    fn reloaded(&self, section: Section) -> Reloaded;
 }
+
+/// The end of a hard reload, from [`Pages::reloaded`].
+pub(crate) type Reloaded = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 impl Pages for Session {
     fn soft_refresh(&self, section: Section) -> Done {
-        Session::soft_refresh(self, section, None)
+        self.live_refresh(section)
     }
 
     fn cancel_soft_refresh(&self, section: Section) {
@@ -82,6 +87,10 @@ impl Pages for Session {
 
     fn pane_actor(&self, section: Section) -> Option<ActorAddress> {
         Session::pane_actor(self, section)
+    }
+
+    fn reloaded(&self, section: Section) -> Reloaded {
+        Session::reloaded(self, section)
     }
 }
 
@@ -110,7 +119,8 @@ impl LiveStatus {
     /// The pill's text.
     pub fn title(&self) -> &'static str {
         match self {
-            Self::Off | Self::Live => "Live",
+            Self::Off => "Offline",
+            Self::Live => "Live",
             Self::Connecting => "Connecting",
             Self::Reconnecting { .. } => "Reconnecting",
             Self::Paused => "Paused",
@@ -150,13 +160,25 @@ enum Command<S> {
     Show(Section, String),
     Pause,
     Resume,
-    Refreshed,
+    Refreshed(Section),
+}
+
+/// What the caller's thread decides at once, before the model's task sees the command: no soft refresh starts while
+/// paused or after the stop, and pausing cancels the one that runs.
+#[derive(Default)]
+struct Gate {
+    paused: bool,
+    stopped: bool,
+    /// The page of the soft refresh this model started, until its attempt ends.
+    started: Option<Section>,
 }
 
 /// The live model of one window. Dropping it closes the stream.
 pub(crate) struct Live<S: ChangeSource = ActorClient> {
     commands: mpsc::UnboundedSender<Command<S>>,
     status: watch::Receiver<LiveStatus>,
+    pages: Weak<dyn Pages>,
+    gate: Arc<Mutex<Gate>>,
     task: JoinHandle<()>,
 }
 
@@ -166,10 +188,12 @@ impl<S: ChangeSource> Live<S> {
     pub fn new(handle: &Handle, pages: Weak<dyn Pages>, debounce: Duration) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (status, watcher) = watch::channel(LiveStatus::Off);
+        let gate = Arc::new(Mutex::new(Gate::default()));
         let driver = Driver {
             commands: receiver,
             status,
-            pages,
+            pages: pages.clone(),
+            gate: gate.clone(),
             debounce,
             source: None,
             section: Section::Overview,
@@ -180,9 +204,10 @@ impl<S: ChangeSource> Live<S> {
             backoff: 0,
             batch: None,
             refreshing: None,
+            reloading: None,
             timer: None,
         };
-        Self { commands, status: watcher, task: handle.spawn(driver.run()) }
+        Self { commands, status: watcher, pages, gate, task: handle.spawn(driver.run()) }
     }
 
     /// A context switch: the stream closes, and one opens on `source` when there is one.
@@ -198,22 +223,34 @@ impl<S: ChangeSource> Live<S> {
 
     /// Pauses automatic refreshes: the stream closes, the timer stops, the gathered hints are dropped and a soft
     /// refresh this model started is cancelled, its results dropped.
+    /// The soft refresh is cancelled before this returns, so none of its results applies after the click.
     pub fn pause(&self) {
+        let mut gate = self.gate.lock().expect("live gate");
+        gate.paused = true;
+        if let Some(section) = gate.started.take()
+            && let Some(pages) = self.pages.upgrade()
+        {
+            pages.cancel_soft_refresh(section);
+        }
+        drop(gate);
         let _ = self.commands.send(Command::Pause);
     }
 
     /// Resumes: a stream opens, and its first `resync` runs one soft refresh.
     pub fn resume(&self) {
+        self.gate.lock().expect("live gate").paused = false;
         let _ = self.commands.send(Command::Resume);
     }
 
-    /// A manual Refresh (⌘R) of the page: the timer starts again from now unless paused.
-    pub fn refreshed(&self) {
-        let _ = self.commands.send(Command::Refreshed);
+    /// A manual Refresh (⌘R) of `section` started: the timer starts again from the end of its reload, unless paused.
+    pub fn refreshed(&self, section: Section) {
+        let _ = self.commands.send(Command::Refreshed(section));
     }
 
-    /// Stops the model for good, as when its window closes.
+    /// Stops the model for good, as when its window closes: no soft refresh starts once this returns, so a session
+    /// stopped after it keeps no live read.
     pub fn stop(&self) {
+        self.gate.lock().expect("live gate").stopped = true;
         self.task.abort();
     }
 
@@ -244,6 +281,7 @@ enum Event<S> {
     Prefix,
     Batch,
     Ended,
+    Reloaded,
     Timer,
 }
 
@@ -260,6 +298,7 @@ struct Driver<S> {
     commands: mpsc::UnboundedReceiver<Command<S>>,
     status: watch::Sender<LiveStatus>,
     pages: Weak<dyn Pages>,
+    gate: Arc<Mutex<Gate>>,
     debounce: Duration,
     source: Option<Arc<S>>,
     section: Section,
@@ -274,6 +313,8 @@ struct Driver<S> {
     batch: Option<Batch>,
     /// The soft refresh this model started, until its attempt ends.
     refreshing: Option<Done>,
+    /// The hard reload of a manual Refresh, until it ends.
+    reloading: Option<Reloaded>,
     /// When the page refreshes without hints; none while a refresh runs.
     timer: Option<Instant>,
 }
@@ -305,7 +346,16 @@ impl<S: ChangeSource> Driver<S> {
                 }
                 Event::Ended => {
                     self.refreshing = None;
-                    self.arm();
+                    self.gate.lock().expect("live gate").started = None;
+                    if self.reloading.is_none() {
+                        self.arm();
+                    }
+                }
+                Event::Reloaded => {
+                    self.reloading = None;
+                    if self.refreshing.is_none() {
+                        self.arm();
+                    }
                 }
                 Event::Timer => {
                     self.timer = None;
@@ -316,7 +366,7 @@ impl<S: ChangeSource> Driver<S> {
     }
 
     async fn next(&mut self) -> Event<S> {
-        let Self { commands, link, pending_prefix, batch, refreshing, timer, .. } = self;
+        let Self { commands, link, pending_prefix, batch, refreshing, reloading, timer, .. } = self;
         let link = async {
             match link {
                 Link::Closed => std::future::pending().await,
@@ -334,8 +384,8 @@ impl<S: ChangeSource> Driver<S> {
                 None => std::future::pending().await,
             }
         };
-        // A batch and the timer wait while a refresh runs; its end lets them start.
-        let idle = refreshing.is_none();
+        // A batch and the timer wait while a refresh or a manual reload runs; its end lets them start.
+        let idle = refreshing.is_none() && reloading.is_none();
         let batch = async {
             match batch {
                 Some(batch) if idle => sleep_until(batch.due).await,
@@ -354,11 +404,18 @@ impl<S: ChangeSource> Driver<S> {
                 None => std::future::pending().await,
             }
         };
+        let reloaded = async {
+            match reloading {
+                Some(reload) => reload.await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             command = commands.recv() => Event::Command(command),
             event = link => event,
             () = prefix => Event::Prefix,
             () = ended => Event::Ended,
+            () = reloaded => Event::Reloaded,
             () = batch => Event::Batch,
             () = timer => Event::Timer,
         }
@@ -368,7 +425,7 @@ impl<S: ChangeSource> Driver<S> {
         match command {
             Command::Source(source) => {
                 self.source = source;
-                self.pending_prefix = None;
+                self.follow_pending_prefix();
                 self.restart();
             }
             Command::Show(section, prefix) if section != self.section => {
@@ -378,13 +435,10 @@ impl<S: ChangeSource> Driver<S> {
                 self.restart();
             }
             Command::Pause if !self.paused => {
+                // `Live::pause` cancelled the refresh already.
                 self.paused = true;
-                self.pending_prefix = None;
-                if self.refreshing.take().is_some()
-                    && let Some(pages) = self.pages.upgrade()
-                {
-                    pages.cancel_soft_refresh(self.section);
-                }
+                self.refreshing = None;
+                self.follow_pending_prefix();
                 self.restart();
             }
             Command::Resume if self.paused => {
@@ -392,9 +446,10 @@ impl<S: ChangeSource> Driver<S> {
                 self.restart();
             }
             Command::Pause | Command::Resume => {}
-            Command::Refreshed => {
-                if self.refreshing.is_none() {
-                    self.arm();
+            Command::Refreshed(section) => {
+                self.timer = None;
+                if let Some(pages) = self.pages.upgrade() {
+                    self.reloading = Some(pages.reloaded(section));
                 }
             }
             Command::Show(_, prefix) if prefix == self.prefix => self.pending_prefix = None,
@@ -403,6 +458,13 @@ impl<S: ChangeSource> Driver<S> {
                     self.pending_prefix = Some((prefix, Instant::now() + self.debounce));
                 }
             }
+        }
+    }
+
+    /// A new prefix still waiting for the debounce is the one to follow when the stream restarts for another reason.
+    fn follow_pending_prefix(&mut self) {
+        if let Some((prefix, _)) = self.pending_prefix.take() {
+            self.prefix = prefix;
         }
     }
 
@@ -451,12 +513,17 @@ impl<S: ChangeSource> Driver<S> {
         }
     }
 
-    /// Starts the page's soft refresh; the timer waits for its end.
+    /// Starts the page's soft refresh, unless the caller paused or stopped the model already; the timer waits for
+    /// its end.
     fn start(&mut self) {
         self.timer = None;
-        if let Some(pages) = self.pages.upgrade() {
-            self.refreshing = Some(pages.soft_refresh(self.section));
+        let Some(pages) = self.pages.upgrade() else { return };
+        let mut gate = self.gate.lock().expect("live gate");
+        if gate.paused || gate.stopped {
+            return;
         }
+        gate.started = Some(self.section);
+        self.refreshing = Some(pages.soft_refresh(self.section));
     }
 
     /// Arms the timer [`FALLBACK`] from now while there is a source to follow and the updates are not paused.
@@ -470,7 +537,7 @@ impl<S: ChangeSource> Driver<S> {
         self.link = Link::Closed;
         self.backoff = 0;
         self.batch = None;
-        if self.refreshing.is_none() {
+        if self.refreshing.is_none() && self.reloading.is_none() {
             self.arm();
         }
         self.status.send_replace(match &self.source {

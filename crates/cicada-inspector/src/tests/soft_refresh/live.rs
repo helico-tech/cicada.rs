@@ -332,3 +332,103 @@ async fn a_refresh_cancelled_after_its_root_rows_marks_only_the_parents_it_dropp
     })
     .await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn no_live_refresh_starts_on_a_page_already_left() {
+    with_clock(async {
+        let script = Script::new([(ROOTS, vec![roots(&["a"]), roots(&["a", "b"])]), (SAMPLE, vec![page([], None)])]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, mut nav, _live, mut opened) = live_session(&server.url, &dir, Section::Actors).await;
+        overview_read(&session).await;
+        let model = session.actors();
+        let mut list = model.list();
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 1).await;
+        let stream = opened.recv().await.unwrap();
+
+        // The user leaves Actors before the live model hears of it, and its batch falls due.
+        session.navigate(&mut nav, |n| {
+            n.select(Section::Nodes);
+            true
+        });
+        stream.hints.send(Ok(Change::Resync)).unwrap();
+        settle().await;
+        tokio::time::advance(GATHER).await;
+        settle().await;
+        assert_eq!(script.remaining(ROOTS), 1, "no read of the Actors page");
+        assert_eq!(list.borrow().rows.len(), 1);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_manual_reload_works_while_paused_and_arms_no_timer() {
+    with_clock(async {
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"]), roots(&["a", "b"]), roots(&["a", "b", "c"])]),
+            (SAMPLE, vec![page([], None), page([], None), page([], None)]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, _nav, live, mut opened) = live_session(&server.url, &dir, Section::Actors).await;
+        overview_read(&session).await;
+        let model = session.actors();
+        let mut list = model.list();
+        model.show();
+        let before = view_until(&mut list, |list| list.rows.len() == 1).await;
+        let stream = opened.recv().await.unwrap();
+        live.pause();
+        settle().await;
+        assert!(stream.hints.is_closed());
+
+        model.refresh();
+        live.refreshed(Section::Actors);
+        let reloaded = view_until(&mut list, |list| list.rows.len() == 2).await;
+        assert!(reloaded.generation > before.generation, "⌘R reloads while paused");
+        settle().await;
+        tokio::time::advance(FALLBACK * 3).await;
+        settle().await;
+        assert_eq!(script.remaining(ROOTS), 1, "no automatic refresh after it");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_of_a_child_page_marks_what_the_refresh_it_cancels_dropped() {
+    with_clock(async {
+        const CHILDREN_A: &str = "/actors/counter/a/children?limit=100";
+        const CHILDREN_B: &str = "/actors/counter/b/children?limit=100";
+        let (fresh_roots, roots_in, roots_out) = later(roots(&["a", "b", "c"]));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a", "b"]), fresh_roots]),
+            (SAMPLE, vec![page([], None), page([], None)]),
+            (CHILDREN_A, vec![page([json!("counter/x")], None)]),
+            (CHILDREN_B, vec![problem(503), page([json!("counter/y")], None)]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = crate::actors::Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let mut list = model.list();
+        model.show();
+        let generation = view_until(&mut list, |list| list.rows.len() == 2).await.generation;
+        let (a, b) = (root("a"), root("b"));
+        model.open(generation, &a);
+        model.open(generation, &b);
+        view_until(&mut list, |list| {
+            list.children.get(&a).is_some_and(|page| page.paging == Paging::Idle)
+                && list.children.get(&b).is_some_and(|page| matches!(page.paging, Paging::Failed(_)))
+        })
+        .await;
+
+        model.soft_refresh(OutlineViewport { generation, visible: 0..3, open: vec![(0, a.clone())] });
+        roots_in.notified().await;
+        assert!(model.retry_children(generation, &b), "Retry starts");
+        roots_out.notify_one();
+        let view = view_until(&mut list, |list| list.children[&b].rows.len() == 1).await;
+        assert_eq!(view.rows.len(), 2, "the cancelled refresh's rows were dropped");
+        assert!(view.footer().is_some_and(|footer| footer.contains("not refreshed")), "{:?}", view.footer());
+        assert!(view.children[&a].not_refreshed(), "the chosen parent's read was dropped");
+    })
+    .await;
+}

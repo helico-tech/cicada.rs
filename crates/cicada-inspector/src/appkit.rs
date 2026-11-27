@@ -759,6 +759,7 @@ define_class!(
                 _ => return,
             }
             self.render_section_pane(section);
+            self.sync_live();
         }
 
         // SAFETY: The Retry button of the Messages footer sends this action with itself as the sender.
@@ -1183,7 +1184,6 @@ impl Target {
     fn start(&self, context: Option<&str>) {
         self.ivars().session.use_context(context.map(str::to_owned));
         self.render();
-        self.sync_live();
         self.render_live();
         self.window().window.center();
         // SAFETY: inspectorTick: has NSTimer's one-argument signature, and the timer retains the target until teardown.
@@ -1236,7 +1236,7 @@ impl Target {
                 Section::Watches => c.session.watches().refresh(),
                 _ => c.session.refresh(),
             }
-            c.live.refreshed();
+            c.live.refreshed(section);
             self.render();
         }
     }
@@ -1993,6 +1993,8 @@ impl Target {
             _ => {}
         }
         self.render_section_pane(section);
+        // Every page or context switch renders: the live model hears of each one, not only of the page a tick sees.
+        self.sync_live();
     }
 
     /// The context pop-up: the names of the config file, the context in use picked; then, when the environment wins
@@ -2115,8 +2117,9 @@ impl Target {
         if let Some(timer) = timer {
             timer.invalidate();
         }
-        c.session.stop();
+        // No live refresh may start once the session has cancelled its reads.
         c.live.stop();
+        c.session.stop();
         let window = self.window();
         window.window.setDelegate(None);
         window.toolbar.setDelegate(None);
