@@ -63,7 +63,7 @@ impl ChangeSource for ActorClient {
 
 /// What the live model refreshes: the session's pages.
 pub(crate) trait Pages: Send + Sync {
-    /// Starts a soft refresh of `section` for the visit [`Live::show`] named; [`Done`] resolves when the attempt ends,
+    /// Starts a soft refresh of `section` for the visit [`Live::follow`] named; [`Done`] resolves when the attempt ends,
     /// also when it is skipped, as it is once that visit has ended.
     fn soft_refresh(&self, section: Section, visit: u64) -> Done;
     /// Cancels the soft refresh of `section` and drops its results.
@@ -339,7 +339,7 @@ struct Driver<S> {
     debounce: Duration,
     source: Option<Arc<S>>,
     section: Section,
-    /// The visit of `section` that [`Live::show`] named.
+    /// The visit of `section` that [`Live::follow`] named.
     visit: u64,
     /// The prefix subscribed to.
     prefix: String,

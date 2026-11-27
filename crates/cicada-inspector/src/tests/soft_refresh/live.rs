@@ -561,6 +561,10 @@ async fn a_gone_actor_ends_the_pane_reads_of_a_manual_reload() {
         view_until(&mut list, |list| list.rows.len() == 1).await;
         model.select(Some(root("a")));
         view_until(&mut pane, |pane| version(pane) == Some(1)).await;
+        // Every first read has reached the server, so ⌘R's reads take the scripted second answers.
+        while model.pane_reading() {
+            tokio::task::yield_now().await;
+        }
 
         // ⌘R as the actor disappears: the lookup answers 404 once the mailbox read has arrived, and is held.
         model.refresh();
