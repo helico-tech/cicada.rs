@@ -27,8 +27,8 @@ list and under a parent. Each row folds and selects independently.
 ⌘R reloads the root list and reopens surviving rows as their pages load. A different search prefix or context starts
 with all rows folded. If you type and erase text before the search settles, the original prefix keeps its folds.
 
-**Caveats.** Scroll to a later root page or choose **more…** under a parent to reach a previously open row on that page.
-A row that has disappeared is forgotten once a page passes its address or reaches the end of its list.
+**Caveats.** Scroll to a later root page or choose **more…** under a parent to reach a previously open row on that
+page. A row that has disappeared is forgotten once a page passes its address or reaches the end of its list.
 
 ## Blocking
 
@@ -40,7 +40,8 @@ Proposed app guide text. The inspector built and passed Clippy and all 19 Actors
 tests and 54 doctests passed. Workspace formatting, Clippy, 3,905 tests with PostgreSQL, and strict OpenSpec
 validation passed. The change loop runs the gate at landing.
 
-An AppKit smoke run exercised parent expansion and more…, arrow-key folding, independent fold and selection in
-duplicate rows, the child pane, fold restoration through the Refresh action, prefix reset, and root paging on
-scroll. The ⌘R shortcut dispatch, broader keyboard and VoiceOver checks, and visual checks in light and dark
-still need a manual pass.
+An uncommitted scratch script drove the real window by code against a fake server (parent expansion and more…,
+arrow-key folding, independent fold and selection in duplicate rows, the child pane, fold restoration through the
+Refresh action, prefix reset, root paging on scroll). Nobody saw the window, so these count as run by code, not
+seen. The whole manual check list, ⌘R, keyboard, VoiceOver and light and dark included, still needs the owner's
+pass before 0.26.0 is released.

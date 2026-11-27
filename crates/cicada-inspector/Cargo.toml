@@ -21,7 +21,8 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std", "NSAccessibilityProtocols", "NSApplication", "NSBox", "NSButton", "NSButtonCell", "NSCell", "NSColor",
     "NSControl", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSGraphicsContext", "NSImage",
-    "NSImageView", "NSLayoutConstraint", "NSMenu", "NSMenuItem", "NSOutlineView", "NSParagraphStyle", "NSPopUpButton", "NSResponder",
+    "NSImageView", "NSLayoutConstraint", "NSMenu", "NSMenuItem", "NSOutlineView", "NSParagraphStyle", "NSPopUpButton",
+    "NSResponder",
     "NSRunningApplication", "NSScrollView", "NSSearchField", "NSSplitView", "NSSplitViewController", "NSSplitViewItem",
     "NSTabView", "NSTabViewItem", "NSTableCellView", "NSTableColumn", "NSTableHeaderView", "NSTableView", "NSText",
     "NSTextField", "NSTextStorage", "NSTextView", "NSAttributedString", "NSToolbar",
@@ -29,7 +30,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
-    "std", "NSArray", "NSAttributedString", "NSDictionary", "NSGeometry", "NSIndexSet", "NSNotification", "NSObject", "NSProcessInfo",
+    "std", "NSArray", "NSAttributedString", "NSDictionary", "NSGeometry", "NSIndexSet", "NSNotification", "NSObject",
+    "NSProcessInfo",
     "NSRange", "NSRunLoop", "NSString", "NSTimer",
 ] }
 

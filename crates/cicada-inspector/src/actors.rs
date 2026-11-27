@@ -218,8 +218,8 @@ impl ListView {
         }
     }
 
-    /// True when the view should ask for the next page with `last` the last visible root index: it is within [`NEAR_END`]
-    /// of the end, the server has more, and no page is asked for or failed.
+    /// True when the view should ask for the next page with `last` the last visible root index: it is within
+    /// [`NEAR_END`] of the end, the server has more, and no page is asked for or failed.
     pub fn wants_more(&self, last: usize) -> bool {
         self.more && self.paging == Paging::Idle && last + NEAR_END >= self.rows.len()
     }
