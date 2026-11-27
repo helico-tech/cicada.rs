@@ -267,17 +267,20 @@ async fn sixty_types_count_fifty_at_most_eight_at_a_time() {
     assert!((2..=8).contains(&most), "{most} counts at a time");
 }
 
+/// The longest real time the deadline test holds the paused clock while it waits for the server.
+const HOLD_LIMIT: Duration = Duration::from_secs(30);
+
 /// At the deadline the answers that came are kept, a base route still out has failed and a type still uncounted is
 /// not counted; a count that failed is failed, not "not counted". Tokio's clock is paused and held still by a
 /// blocking task until the server has served every answering route and the stalled ones have come in; the counts run
 /// one at a time, so the slow count coming in proves the two before it were read. Then the clock runs to the deadline:
-/// it moves only when no task and no socket has work left, so the answers already sent are read first.
+/// it moves only when no task and no socket has work left, so the answers already sent are read first. The hold ends
+/// after 30 real seconds at most: then the test fails and names the server events that never came.
 #[tokio::test(start_paused = true)]
 async fn the_deadline_keeps_what_answered() {
     let (hold, release) = std::sync::mpsc::channel::<()>();
-    let holding = tokio::task::spawn_blocking(move || {
-        let _ = release.recv();
-    });
+    // True when released, false when the 30 s ran out first.
+    let mut holding = tokio::task::spawn_blocking(move || release.recv_timeout(HOLD_LIMIT).is_ok());
     let actors = actors().await;
     let answer = types_answer(["fast", "broken", "slow"].map(String::from));
     let rule: Rule = Arc::new(move |target| match target {
@@ -303,11 +306,19 @@ async fn the_deadline_keeps_what_answered() {
     ];
     let mut seen = std::collections::BTreeSet::new();
     while !expected.iter().all(|event| seen.contains(*event)) {
-        seen.insert(server.events.recv().await.expect("the server runs"));
+        tokio::select! {
+            event = server.events.recv() => {
+                seen.insert(event.expect("the server runs"));
+            }
+            _ = &mut holding => {
+                let missing: Vec<_> = expected.iter().filter(|event| !seen.contains(**event)).collect();
+                panic!("the server events {missing:?} never came within {HOLD_LIMIT:?}");
+            }
+        }
     }
     assert_eq!(tokio::time::Instant::now(), start, "the clock was held still");
-    drop(hold);
-    holding.await.unwrap();
+    hold.send(()).unwrap();
+    assert!(holding.await.unwrap(), "the hold was released before its limit");
 
     let overview = refresh.await.unwrap();
     assert!(tokio::time::Instant::now() >= start + limits.deadline);
