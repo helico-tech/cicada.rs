@@ -153,8 +153,13 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
     /// Requests a refresh, remembering it once if a read is already in progress.
     fn request(self: &Arc<Self>) {
         let mut state = self.lock_refresh();
-        Self::refresh(&mut state).pending = true;
-        self.resume(&mut state);
+        self.request_locked(&mut state);
+    }
+
+    /// Requests a refresh with the state already locked, alongside any inputs that belong to this request.
+    fn request_locked(self: &Arc<Self>, state: &mut Self::State) {
+        Self::refresh(state).pending = true;
+        self.resume(state);
     }
 
     /// Gives a remembered request a chance to start after a read finishes.

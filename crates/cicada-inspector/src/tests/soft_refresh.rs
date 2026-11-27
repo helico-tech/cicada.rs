@@ -546,14 +546,14 @@ async fn soft_refresh_cancels_on_refresh_prefix_status_page_and_context() {
         model.show();
         let first = view_until(&mut list, |list| list.index(&id("start")).is_some()).await;
 
-        session.soft_refresh(Section::Messages);
+        session.soft_refresh(Section::Messages, None);
         refresh_started.notified().await;
         model.refresh();
         let hard = view_until(&mut list, |list| list.index(&id("hard")).is_some()).await;
         release_refresh.notify_one();
         assert!(hard.generation > first.generation && hard.stale.is_none());
 
-        session.soft_refresh(Section::Messages);
+        session.soft_refresh(Section::Messages, None);
         prefix_started.notified().await;
         model.search("counter/");
         tokio::time::advance(Duration::from_millis(1)).await;
@@ -561,7 +561,7 @@ async fn soft_refresh_cancels_on_refresh_prefix_status_page_and_context() {
         release_prefix.notify_one();
         assert!(searched.generation > hard.generation);
 
-        session.soft_refresh(Section::Messages);
+        session.soft_refresh(Section::Messages, None);
         page_started.notified().await;
         session.navigate(&mut nav, |n| {
             n.select(Section::Outcomes);
@@ -572,7 +572,7 @@ async fn soft_refresh_cancels_on_refresh_prefix_status_page_and_context() {
         outcomes.show();
         view_until(&mut outcomes_list, |list| list.paging == Paging::Idle).await;
         release_page.notify_one();
-        session.soft_refresh(Section::Outcomes);
+        session.soft_refresh(Section::Outcomes, None);
         status_started.notified().await;
         outcomes.set_status(StatusFilter::Done);
         view_until(&mut outcomes_list, |list| list.index(&id("done")).is_some()).await;
@@ -583,7 +583,7 @@ async fn soft_refresh_cancels_on_refresh_prefix_status_page_and_context() {
             n.select(Section::Messages);
             true
         });
-        session.soft_refresh(Section::Messages);
+        session.soft_refresh(Section::Messages, None);
         context_started.notified().await;
         session.switch_context(&mut nav, Some("after".into()));
         model.show();
@@ -711,7 +711,7 @@ async fn overview_soft_refresh_shares_four_slots_and_keeps_the_part_that_misses_
         session.use_context(None);
         let before = view_until(&mut view, |view| view.overview.is_some()).await;
         let start = Instant::now();
-        session.soft_refresh(Section::Overview);
+        session.soft_refresh(Section::Overview, None);
         stats_in.notified().await;
         health_in.notified().await;
         turns_in.notified().await;
@@ -737,7 +737,8 @@ async fn overview_soft_refresh_shares_four_slots_and_keeps_the_part_that_misses_
 
 mod actors_refresh {
     use super::*;
-    use crate::actors::Actors;
+    use crate::actors::{ActorPath, Actors, ListView, OutlineViewport};
+    use tokio::sync::watch;
 
     const ROOTS: &str = "/actors/states?limit=100";
 
@@ -751,6 +752,114 @@ mod actors_refresh {
             }),
             next,
         )
+    }
+
+    fn actor_path(key: &str) -> ActorPath {
+        ActorPath::root(ActorAddress::parse(&format!("counter/{key}")).unwrap())
+    }
+
+    fn children(keys: &[&str], next: Option<&str>) -> Fake {
+        page(keys.iter().map(|key| json!(format!("counter/{key}"))), next)
+    }
+
+    fn viewport(generation: u64, visible: std::ops::Range<usize>, open: Vec<(usize, ActorPath)>) -> OutlineViewport {
+        OutlineViewport { generation, visible, open }
+    }
+
+    async fn open(model: &Actors, list: &mut watch::Receiver<ListView>, generation: u64, path: &ActorPath) {
+        model.open(generation, path);
+        list.wait_for(|list| list.children.get(path).is_some_and(|page| page.paging == Paging::Idle)).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nested_reads_wait_for_the_parent_and_skip_a_pruned_path() {
+        with_clock(async {
+            let (parent_refresh, arrived, release) = later(children(&["keep"], None));
+            let script = Script::new([
+                (ROOTS, vec![roots(&["a"], None), roots(&["a"], None)]),
+                ("/actors/counter/a/children?limit=100", vec![children(&["gone", "keep"], None), parent_refresh]),
+                ("/actors/counter/gone/children?limit=100", vec![children(&["grandchild"], None)]),
+                ("/actors/counter/keep/children?limit=100", vec![children(&[], None), children(&["new"], None)]),
+            ]);
+            let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+            let model = Actors::new(Handle::current(), Limits::DEFAULT);
+            model.use_client(Some(server.client));
+            let mut list = model.list();
+            model.show();
+            let generation = list.wait_for(|list| list.rows.len() == 1).await.unwrap().generation;
+            let root = actor_path("a");
+            let gone = root.child(actor_path("gone").address().clone());
+            let keep = root.child(actor_path("keep").address().clone());
+            for path in [&root, &gone, &keep] {
+                open(&model, &mut list, generation, path).await;
+            }
+            model.select(Some(gone.child(actor_path("grandchild").address().clone())));
+            model.soft_refresh(viewport(
+                generation,
+                1..3,
+                vec![(0, root.clone()), (1, gone.clone()), (2, keep.clone())],
+            ));
+            arrived.notified().await;
+            assert_eq!(script.remaining("/actors/counter/keep/children?limit=100"), 1);
+            release.notify_one();
+            let view = list.wait_for(|list| list.children[&keep].rows.len() == 1).await.unwrap();
+            assert_eq!(view.open, std::collections::BTreeSet::from([root, keep]));
+            assert!(!view.children.contains_key(&gone));
+            drop(view);
+            assert!(model.selected().is_none() && model.pane().borrow().address.is_none());
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn soft_marks_closed_and_retained_children_until_their_ranges_are_read() {
+        with_clock(async {
+            let script = Script::new([
+                (ROOTS, vec![roots(&["a", "b"], None), roots(&["a", "b"], None), roots(&["a", "b"], None)]),
+                (
+                    "/actors/counter/a/children?limit=100",
+                    vec![children(&["a", "d"], Some("old")), children(&["b"], Some("new"))],
+                ),
+                ("/actors/counter/a/children?cursor=old&limit=100", vec![children(&["e", "g"], None)]),
+                ("/actors/counter/a/children?cursor=new&limit=100", vec![children(&["e", "f"], None)]),
+                ("/actors/counter/b/children?limit=100", vec![children(&["x"], None), children(&["y"], None)]),
+            ]);
+            let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+            let model = Actors::new(Handle::current(), Limits::DEFAULT);
+            model.use_client(Some(server.client));
+            let mut list = model.list();
+            model.show();
+            let generation = list.wait_for(|list| list.rows.len() == 2).await.unwrap().generation;
+            let (a, b) = (actor_path("a"), actor_path("b"));
+            open(&model, &mut list, generation, &a).await;
+            open(&model, &mut list, generation, &b).await;
+            assert!(model.more_children(generation, &a));
+            list.wait_for(|list| !list.children[&a].more).await.unwrap();
+            model.close(generation, &b);
+
+            model.soft_refresh(viewport(generation, 0..1, vec![(0, a.clone())]));
+            let view = list.wait_for(|list| list.children[&a].rows[0].as_str() == "counter/b").await.unwrap();
+            assert!(view.children[&a].not_refreshed() && view.children[&b].not_refreshed());
+            assert_eq!(view.children[&a].rows.len(), 4);
+            drop(view);
+            // More uses the refresh cursor, covers the kept range once and removes its missing rows.
+            model.more_children(generation, &a);
+            let view = list.wait_for(|list| !list.children[&a].more).await.unwrap();
+            assert_eq!(
+                view.children[&a].rows.iter().map(ActorAddress::as_str).collect::<Vec<_>>(),
+                ["counter/b", "counter/e", "counter/f"]
+            );
+            assert!(!view.children[&a].not_refreshed());
+            drop(view);
+            open(&model, &mut list, generation, &b).await;
+            assert!(list.borrow().children[&b].not_refreshed());
+
+            model.soft_refresh(viewport(generation, 1..2, vec![(1, b.clone())]));
+            let view = list.wait_for(|list| !list.children[&b].not_refreshed()).await.unwrap();
+            assert_eq!(view.children[&b].rows[0].as_str(), "counter/y");
+            assert!(view.children[&a].not_refreshed());
+        })
+        .await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -767,7 +876,7 @@ mod actors_refresh {
             let mut list = model.list();
             model.show();
             let generation = list.wait_for(|list| list.paging == Paging::Idle && list.more).await.unwrap().generation;
-            model.soft_refresh();
+            model.soft_refresh(OutlineViewport::default());
             let view = list.wait_for(|list| list.rows.len() == 4).await.unwrap();
             let keys = view.rows.iter().map(|row| row.address.as_str()).collect::<Vec<_>>();
             assert_eq!(keys, ["counter/a", "counter/b", "counter/c", "counter/e"]);

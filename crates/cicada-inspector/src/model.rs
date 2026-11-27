@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
-use crate::actors::Actors;
+use crate::actors::{Actors, OutlineViewport};
 use crate::messages::Messages;
 use crate::nodes::{NodePlace, Nodes};
 use crate::outcomes::{OutcomePlace, Outcomes};
@@ -461,10 +461,10 @@ impl Session {
 
     /// Re-reads a page without clearing its cached rows or selection.
     #[allow(dead_code, reason = "used by the live refresh change")]
-    pub fn soft_refresh(&self, section: Section) {
+    pub fn soft_refresh(&self, section: Section, viewport: Option<OutlineViewport>) {
         match section {
             Section::Overview => self.shared.request(),
-            Section::Actors => self.actors.soft_refresh(),
+            Section::Actors => self.actors.soft_refresh(viewport.unwrap_or_default()),
             Section::Messages => self.messages.soft_refresh(),
             Section::RunningTurns => self.turns.soft_refresh(),
             Section::Outcomes => self.shared.outcomes.soft_refresh(),

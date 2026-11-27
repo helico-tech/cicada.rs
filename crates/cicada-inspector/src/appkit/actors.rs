@@ -16,7 +16,7 @@ use objc2_foundation::{NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, n
 
 use super::content::{FlippedView, Layout, Style, color, label};
 use super::json_text::JsonText;
-use crate::actors::{ActorPath, ListView, MAILBOX_ROWS, Paging, PaneView, Read, WATCH_ROWS};
+use crate::actors::{ActorPath, ListView, MAILBOX_ROWS, OutlineViewport, Paging, PaneView, Read, WATCH_ROWS};
 use crate::json::Json;
 use crate::model::age;
 
@@ -114,6 +114,7 @@ enum StatusRow<'a> {
     NoActors,
     NoChildren,
     NotFound,
+    Stale,
     More { loading: bool },
 }
 
@@ -134,6 +135,7 @@ fn child_status_row<'a>(list: &'a ListView, parent: &ActorPath) -> Option<Status
         Paging::Loading => Some(StatusRow::Loading),
         Paging::Idle if page.not_found => Some(StatusRow::NotFound),
         Paging::Idle if page.rows.is_empty() => Some(StatusRow::NoChildren),
+        Paging::Idle if page.not_refreshed() => Some(StatusRow::Stale),
         Paging::Idle => None,
     }
 }
@@ -235,6 +237,22 @@ impl Page {
         self.footer.setStringValue(&NSString::from_str(&footer));
         self.footer.setToolTip(Some(&NSString::from_str(&footer)));
         self.footer.setTextColor(Some(&color(style)));
+    }
+
+    /// Reports expanded paths in the rendered outline and the visible row range.
+    pub(super) fn refresh_viewport(&self, generation: u64) -> OutlineViewport {
+        let count = self.table.numberOfRows() as usize;
+        let range = self.table.rowsInRect(self.table.visibleRect());
+        let visible = range.location.min(count)..range.location.saturating_add(range.length).min(count);
+        let open = (0..count)
+            .filter_map(|row| {
+                let item = self.table.itemAtRow(row as NSInteger)?;
+                let ItemId::Actor(path) = Item::id(&item)? else { return None };
+                // SAFETY: This retained item belongs to the outline that returned it.
+                unsafe { self.table.isItemExpanded(Some(&item)) }.then(|| (row, path.clone()))
+            })
+            .collect();
+        OutlineViewport { generation, visible, open }
     }
 
     /// The last root actor currently in the viewport, regardless of how many children are open.
@@ -346,7 +364,7 @@ impl CellContent {
             ItemId::Status(Some(parent)) if column == "address" => (child_status_row(list, parent)?, false),
             ItemId::Status(Some(_)) => return None,
         };
-        let (text, style, button) = match status {
+        let (mut text, mut style, button) = match status {
             StatusRow::Loading => ("Loading…".into(), Style::Secondary, None),
             StatusRow::Failed(error) => {
                 let text = if is_root {
@@ -360,8 +378,21 @@ impl CellContent {
             StatusRow::NoActors => (format!("No actors under “{}”.", list.prefix), Style::Secondary, None),
             StatusRow::NoChildren => ("No children.".into(), Style::Secondary, None),
             StatusRow::NotFound => ("Not found.".into(), Style::Error, None),
+            StatusRow::Stale => (String::new(), Style::Secondary, None),
             StatusRow::More { loading } => (String::new(), Style::Secondary, Some(Button::More { loading })),
         };
+        if let ItemId::Status(Some(parent)) = item
+            && let Some(page) = list.children.get(parent).filter(|page| page.not_refreshed())
+        {
+            if !text.is_empty() {
+                text.push_str(" · ");
+            }
+            text.push_str("not refreshed");
+            if let Some(error) = &page.refresh_error {
+                text.push_str(&format!(" ({error})"));
+                style = Style::Error;
+            }
+        }
         Some(Self::Status { text, style, button })
     }
 

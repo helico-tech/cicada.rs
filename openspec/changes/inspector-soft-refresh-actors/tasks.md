@@ -9,7 +9,7 @@ landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the de
   caches, open state, rows and reads in flight before the selection is checked (decisions 1 and 2). Verify: the merge
   and pruning tests, including "more…" that exhausts the cursor dropping kept children absent from the newly covered
   range.
-- [ ] 2. **Which open rows, in which order.** The view's report of open paths in screen order and the first visible
+- [x] 2. **Which open rows, in which order.** The view's report of open paths in screen order and the first visible
   row; at most 20 parents, re-read depth by depth with the visible-first ranking within a depth, each path checked
   against its parent's new children first; marks shown and cleared (decision 3). Verify: the ranking, depth and mark
   tests.

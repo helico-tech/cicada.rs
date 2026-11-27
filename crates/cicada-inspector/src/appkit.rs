@@ -1224,6 +1224,17 @@ impl Target {
         }
     }
 
+    /// Re-reads the current page with the Actors outline's viewport when it is shown.
+    #[allow(dead_code, reason = "used by the live refresh change")]
+    fn soft_refresh(&self, section: Section) {
+        let c = self.ivars();
+        let viewport = (section == Section::Actors).then(|| {
+            let generation = c.list_shown.borrow().generation;
+            self.window().page.refresh_viewport(generation)
+        });
+        c.session.soft_refresh(section, viewport);
+    }
+
     /// Reloads the outline, reopens its loaded paths and restores selection by identity.
     fn render_list(&self) {
         let c = self.ivars();
