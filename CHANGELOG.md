@@ -143,9 +143,11 @@ directly or use `..` in matches.
   refreshes it once after an open, a reconnect or a resume. A stream that ends or fails opens again after 1, 2, 4, 8,
   16, then every 30 s, from 1 s again once a stream stayed up for 60 s after its first event. The toolbar's pill shows
   Live from the stream's first event, Connecting before it, Reconnecting with the next try and the reason in its
-  tooltip, or Paused. A click pauses: the stream closes, the timer stops and a refresh in flight is cancelled with its
-  results dropped; a click resumes. Refresh (⌘R) works in every state. An Actors refresh cancelled by a pause, by
-  leaving the page or by Retry marks the root rows and the open parents whose reads it dropped "not refreshed".
+  tooltip, Paused, or Offline without a context. A click pauses: the stream closes, the timer stops and a refresh in
+  flight is cancelled at the click with its results dropped (on Types, a pane it changed goes back as it was); a click
+  resumes. Refresh (⌘R) works in every state, and the next automatic refresh comes 30 s after its reload ended. No live
+  refresh starts on a page already left or after the window closed. An Actors refresh cancelled by a pause, by leaving
+  the page or by Retry marks the root rows and the open parents whose reads it dropped "not refreshed".
   Covered by the tests in `crates/cicada-inspector/src/live/tests.rs`, `src/tests/soft_refresh/live.rs` and
   `src/tests/live.rs`; the pill has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens

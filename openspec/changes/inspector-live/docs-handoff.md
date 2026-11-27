@@ -35,16 +35,19 @@ The toolbar's pill shows the state of the updates:
 - **Reconnecting**: the stream ended or failed. Its tooltip says why, and when the next try is. Tries come after 1, 2,
   4, 8 and 16 s, then every 30 s. The page still refreshes every 30 s meanwhile. A new stream refreshes the page once
   as it starts.
-- **Paused**: you clicked the pill. Nothing reloads by itself, and a refresh that was running is cancelled. Click again
-  to resume: the page refreshes once as the stream starts.
+- **Paused**: you clicked the pill. Nothing reloads by itself, and a refresh that was running is cancelled at the
+  click: none of its results shows. Click again to resume: the page refreshes once as the stream starts.
+- **Offline** (greyed out): no context is in use, for example when the picked context is not valid.
 
-Refresh (⌘R) reloads the page in every state, also while paused.
+Refresh (⌘R) reloads the page in every state, also while paused. The next automatic refresh comes 30 s after that
+reload has ended.
 
 **Caveats.** Each refresh has the limits of a soft refresh: four requests at once, ten seconds, at most 300 root rows
 and the first children page of up to 20 open parents on Actors. An Actors refresh that a pause, leaving the page or a
 Retry cancels marks the rows and the open parents it did not reach "not refreshed". Rows beyond what a refresh reads can
-be older than the page's other rows. The updates need a server with `GET /changes` (0.26.0 or later): an older server
-answers 404, and the pill stays on Reconnecting while the page still refreshes every 30 s.
+be older than the page's other rows. On Types, a refresh cancelled while it formats the schema it changed puts the pane
+back as it was. The updates need a server with `GET /changes` (0.16.11 or later): an older server answers 404, and the
+pill stays on Reconnecting while the page still refreshes every 30 s.
 
 ## Blocking
 
@@ -53,9 +56,10 @@ None.
 ## Status
 
 The wording for the app guide is proposed; no protected file was edited. The changelog's 0.26.0 section names live
-updates. Checks: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` passed; `cargo
-test --workspace` with PostgreSQL passed 4,028 tests in 138 suites, none failed; `cicada-examples` `--test docs` passed
-11 and `--doc` 55; `openspec validate inspector-live --strict` passed. The manual AppKit checks of the pill are
-outstanding: a node following a change on the Actors page within about a second with the selection, scroll and open rows
-kept; Live, then Reconnecting when the server stops and Live again when it comes back; Paused stopping updates while ⌘R
-still reloads; one reload on resume; light and dark; VoiceOver reading the pill.
+updates. After code review round 1: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
+warnings` passed; `cargo test -p cicada-inspector` passed 151 tests and 1 doctest; `cicada-examples --test docs` passed
+11; `openspec validate inspector-live --strict` passed. Before the fix round, `cargo test --workspace` with PostgreSQL
+passed 4,028 tests. The manual AppKit checks of the pill are outstanding: a node following a change on the Actors page
+within about a second with the selection, scroll and open rows kept; Live, then Reconnecting when the server stops and
+Live again when it comes back; Paused stopping updates while ⌘R still reloads; one reload on resume; Offline with an
+invalid context; light and dark; VoiceOver reading the pill.
