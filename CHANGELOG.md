@@ -28,7 +28,8 @@ its menu.
 
 The inspector's actor pane can pause or resume a mailbox, cancel a running turn, purge pending messages, and delete
 the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask for confirmation. A successful action
-refreshes the Actors page even while Live is paused.
+refreshes the Actors page even while Live is paused. Send Message… sends a message to the selected actor: pick one of
+its type's message types and type a JSON payload, which is checked against that type's schema before Send is enabled.
 
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
@@ -162,6 +163,15 @@ directly or use `..` in matches.
 - `cicada-inspector`: `Embedded::new(mtm, env, handle)` opens an inspector in a host's AppKit application with
   `show(context)`. The host supplies its environment and Tokio runtime handle. `close()` and dropping the controller
   close the window and request cancellation of its refresh. Reopening starts a fresh session.
+- `cicada-inspector`: Send Message… in the actor pane opens a sheet with the message types of the actor's type (from
+  the Types page's list when it holds the type, else one read of `/types`), the chosen type's schema beside a plain
+  JSON editor, and Send (⌘Return). The payload is checked 300 ms after the last edit by the server's own validator
+  settings (draft 2020-12, no `format`, nothing loaded from outside the schema), after its size (1 MiB), parse and
+  depth (64 levels); a schema the validator cannot compile is noted and lets Send through, as the server does. Send
+  keeps one message id until the type or the parsed payload changes, so Send after a timeout shows "already sent"
+  rather than sending twice. A success closes the sheet with "sent <id>" and reads the pane again; the server's 400
+  or 422 and "actor not found" show in the sheet with the payload kept, other refusals in an alert. Covered by the
+  tests in `crates/cicada-inspector/src/tests/send.rs`; the sheet has a manual check list.
 - `cicada-app`: `context_client(&Env, Option<&str>)`, a client for a context of the config file resolved as the
   operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
   the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL

@@ -450,7 +450,9 @@ define_class!(
         /// Escape in the editor cancels the sheet, instead of offering completions.
         #[unsafe(method(textView:doCommandBySelector:))]
         fn text_view_command(&self, view: &NSTextView, command: Sel) -> bool {
-            let id = self.ivars().send_sheet.borrow().as_ref().filter(|sheet| sheet.is_editor(view)).map(|sheet| sheet.id);
+            let sheet = self.ivars().send_sheet.borrow();
+            let id = sheet.as_ref().filter(|sheet| sheet.is_editor(view)).map(|sheet| sheet.id);
+            drop(sheet);
             match id {
                 Some(id) if command == sel!(cancelOperation:) => {
                     self.cancel_send(id);

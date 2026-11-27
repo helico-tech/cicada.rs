@@ -81,8 +81,8 @@ impl SendSheet {
         place(&content, &chooser, MARGIN + 104.0, 52.0, 260.0, 26.0);
         let note = label(mtm, "", NSFont::systemFontOfSize(13.0), Style::Secondary);
         place(&content, &note, MARGIN + 104.0, 54.0, inner - 104.0 - 100.0, 22.0);
-        // SAFETY: Retry sends inspectorSendRetry: to the target, which implements it with the button as sender and clears
-        // the button's target when the sheet closes.
+        // SAFETY: Retry sends inspectorSendRetry: to the target, which implements it with the button as sender and
+        // clears the button's target when the sheet closes.
         let retry = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Retry"),
