@@ -310,7 +310,13 @@ impl Config {
                 let at = line.map(|line| format!(" at line {line}")).unwrap_or_default();
                 anyhow!("cannot read {}: not a valid config file{at}", path.display())
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            // Missing only if nothing is at the checked target now either: a link put there after the check, whose
+            // target is missing, is refused rather than read as an empty config.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::symlink_metadata(&target) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+                Ok(_) => bail!("cannot read {}: it changed while it was read; try again", path.display()),
+                Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+            },
             Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
         }
     }
