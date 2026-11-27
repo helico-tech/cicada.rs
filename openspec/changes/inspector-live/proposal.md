@@ -20,7 +20,7 @@ mockup's Live pill (https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Insp
 
 ## Order
 
-After `inspector-outcomes`, before `inspector-actions`.
+After `inspector-nodes`, before `inspector-actions`.
 
 ## Impact
 

@@ -14,7 +14,8 @@ Mockup: https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Inspector, "Outc
   envelope (to, from, correlation id, finished), the payload as highlighted JSON, and the chain that caused it
   (`causedBy`, one step at a time) and the messages its turn sent (`/caused`).
 - Show Actor jumps to the actor in Actors. Back and forward follow these jumps.
-- Running Turns and Nodes get their tables, with the running turns of a node in the pane (`/nodes/{node}`).
+- Running Turns and Nodes moved to the next change, `inspector-nodes` (design, 2026-11-27: all of it did not fit five
+  tasks).
 - Read only, as in `inspector-actors`.
 
 ## Out of scope
@@ -23,7 +24,7 @@ Mockup: https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Inspector, "Outc
 
 ## Order
 
-After `inspector-types-watches`, before `inspector-live`.
+After `inspector-types-watches`, before `inspector-nodes`.
 
 ## Impact
 
