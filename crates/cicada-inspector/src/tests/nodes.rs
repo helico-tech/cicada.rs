@@ -39,18 +39,18 @@ async fn until<T: Clone>(view: &mut watch::Receiver<T>, done: impl FnMut(&T) -> 
 }
 
 /// A served node.
-fn node(id: &str, status: &str) -> Value {
+pub(super) fn node(id: &str, status: &str) -> Value {
     json!({"id": id, "hosted": ["counter"], "startedAt": "2026-11-27T09:00:00.000Z",
            "lastSeen": "2026-11-27T09:59:30.123Z", "status": status, "runningTurns": 0, "hostname": "box-1",
            "label": "blue"})
 }
 
-fn nodes_answer(items: &[Value]) -> Fake {
+pub(super) fn nodes_answer(items: &[Value]) -> Fake {
     Fake::Answer(StatusCode::OK, json!({ "items": items }))
 }
 
 /// A served `GET /nodes/{node}` with the turns of `actors`.
-fn detail(id: &str, label: &str, actors: &[&str]) -> Fake {
+pub(super) fn detail(id: &str, label: &str, actors: &[&str]) -> Fake {
     let mut body = node(id, "alive");
     body["label"] = json!(label);
     body["runningTurns"] = json!(actors.len());
@@ -74,11 +74,11 @@ fn ids(view: &NodesView) -> Vec<String> {
     view.rows.iter().map(|row| row.id.to_string()).collect()
 }
 
-fn node_id(id: &str) -> NodeId {
+pub(super) fn node_id(id: &str) -> NodeId {
     NodeId::try_from(id.to_owned()).unwrap()
 }
 
-fn label(pane: &NodePane) -> Option<String> {
+pub(super) fn label(pane: &NodePane) -> Option<String> {
     match &pane.read {
         NodeRead::Found(node) => node.node.label.clone(),
         _ => None,

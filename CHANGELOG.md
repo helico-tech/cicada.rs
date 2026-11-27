@@ -191,6 +191,8 @@ directly or use `..` in matches.
 
 ### Changed
 
+- `cicada-inspector` keeps the first visible row in place when a table reloads. If that row is gone, it keeps
+  the previous scroll offset as far as the new table allows.
 - `cicada-app`: an unreadable config file is reported as `cannot read <path>: not a valid config file at line N` by
   every command, the worker included, without the parser's text, which can quote a token. `ContextEntry`, the config
   and `ContextFile` print the token, header values and a password in the server URL as `***` in `Debug`.

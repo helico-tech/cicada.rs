@@ -47,7 +47,7 @@ async fn until<T: Clone>(view: &mut watch::Receiver<T>, done: impl FnMut(&T) -> 
 }
 
 /// A served outcome whose message `caused_by` sent.
-fn outcome(id: &str, actor: &str, status: &str, caused_by: Option<&str>) -> Value {
+pub(super) fn outcome(id: &str, actor: &str, status: &str, caused_by: Option<&str>) -> Value {
     let error = (status == "failed").then(|| format!("broken {id}\n  at handler"));
     let mut message = envelope(id, actor, 2);
     message["causedBy"] = json!(caused_by);
@@ -58,7 +58,7 @@ fn outcome(id: &str, actor: &str, status: &str, caused_by: Option<&str>) -> Valu
 }
 
 /// A served `GET /messages/{id}`.
-fn status(id: &str, state: &str) -> Value {
+pub(super) fn status(id: &str, state: &str) -> Value {
     let finished = (state != "pending").then_some("2026-11-27T10:06:00.000Z");
     json!({"id": id, "status": state, "finishedAt": finished, "message": envelope(id, "bag/cause", 1)})
 }

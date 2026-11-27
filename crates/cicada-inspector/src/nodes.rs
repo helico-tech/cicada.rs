@@ -2,8 +2,8 @@
 //! the pane of the selected node, read with `/nodes/{node}`, with its running turns. The cache is read on the first
 //! visit, on the page's Refresh and after a context switch (at once when the page is visible, else at its next visit),
 //! never on the Overview's refresh. Health and the last heartbeat show as the server gave them: the answer carries no
-//! store time, so no age is measured on the Mac's clock. The list's generation grows at every read and context switch;
-//! the pane's at every selection, Refresh, context switch, and when the filter hides the selected node.
+//! store time, so no age is measured on the Mac's clock. The list's generation grows on a new list, Refresh or
+//! context switch, and the pane's at every selection, Refresh, context switch and when the filter hides the node.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::model::{Limits, Part, within};
+use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
 
 /// The footer's note on how current the health is.
 pub const AS_OF: &str = "as of the last read";
@@ -41,7 +42,7 @@ pub enum NodesRead {
 pub struct NodesView {
     /// The id prefix the rows are filtered by.
     pub prefix: String,
-    /// Grows at every read and context switch.
+    /// Grows on a new list, Refresh or context switch.
     pub generation: u64,
     /// The cached nodes whose id starts with the prefix, in the server's order; shared with the cache.
     pub rows: Vec<Arc<NodeView>>,
@@ -49,6 +50,8 @@ pub struct NodesView {
     pub loaded: usize,
     /// The state of the last read.
     pub read: NodesRead,
+    /// The mark on a list or pane a soft refresh could not update.
+    pub stale: Option<Stale>,
 }
 
 impl NodesView {
@@ -118,6 +121,7 @@ struct State {
     cache: Vec<Arc<NodeView>>,
     list_generation: u64,
     list_task: Option<JoinHandle<()>>,
+    refresh: Refresh,
     pane_generation: u64,
     pane_task: Option<JoinHandle<()>>,
     /// The tasks aborted so far, for tests that await their end.
@@ -136,6 +140,7 @@ impl State {
 
     fn supersede_list(&mut self) {
         self.list_generation += 1;
+        self.refresh.cancel();
         let task = self.list_task.take();
         self.abort(task);
     }
@@ -197,7 +202,14 @@ impl Nodes {
 
     /// Another page is shown: a context switch then waits for the next visit to read.
     pub fn hide(&self) {
-        self.shared.lock().visible = false;
+        let mut state = self.shared.lock();
+        state.visible = false;
+        state.refresh.cancel();
+    }
+
+    /// Re-reads the cached nodes and the current selection without clearing them.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
     }
 
     /// Refresh: reads the list again; the selection is cleared, as its node may be gone.
@@ -299,6 +311,7 @@ impl Shared {
             list.rows.clear();
             list.loaded = 0;
             list.read = NodesRead::Loading;
+            list.stale = None;
         });
         let (shared, deadline) = (self.clone(), self.limits.deadline);
         state.list_task = Some(self.handle.spawn(async move {
@@ -310,21 +323,28 @@ impl Shared {
             state.list_task = None;
             match answer {
                 Part::Ready(nodes) => {
-                    state.cache = nodes.into_iter().map(Arc::new).collect();
-                    let read = NodesRead::Ready(chrono::Utc::now());
-                    shared.list.send_modify(|list| {
-                        list.rows =
-                            state.cache.iter().filter(|n| n.id.as_str().starts_with(&list.prefix)).cloned().collect();
-                        list.loaded = state.cache.len();
-                        list.read = read;
-                    });
+                    shared.replace_nodes(&mut state, nodes);
                 }
                 Part::Failed(error) => shared.list.send_modify(|list| list.read = NodesRead::Failed(error)),
             }
+            shared.resume(&mut state);
         }));
     }
 
+    fn replace_nodes(&self, state: &mut State, nodes: Vec<NodeView>) {
+        state.cache = nodes.into_iter().map(Arc::new).collect();
+        self.list.send_modify(|list| {
+            list.rows = state.cache.iter().filter(|node| node.id.as_str().starts_with(&list.prefix)).cloned().collect();
+            list.loaded = state.cache.len();
+            list.read = NodesRead::Ready(chrono::Utc::now());
+            list.stale = None;
+        });
+    }
+
     fn filter(self: &Arc<Self>, state: &mut State, prefix: &str) {
+        if self.list.borrow().prefix != prefix {
+            state.refresh.cancel();
+        }
         self.list.send_modify(|list| {
             list.prefix = prefix.to_owned();
             list.rows = state.cache.iter().filter(|n| n.id.as_str().starts_with(prefix)).cloned().collect();
@@ -354,13 +374,96 @@ impl Shared {
                 return;
             }
             state.pane_task = None;
-            let read = match answer {
-                Part::Ready(Some(node)) => NodeRead::Found(Arc::new(node)),
-                Part::Ready(None) => NodeRead::NotFound,
-                Part::Failed(error) => NodeRead::Failed(error),
-            };
+            let read = node_read(answer);
             shared.pane.send_modify(|pane| pane.read = read);
         }));
+    }
+}
+
+impl RefreshPage for Shared {
+    type State = State;
+
+    fn lock_refresh(&self) -> MutexGuard<'_, State> {
+        self.lock()
+    }
+
+    fn refresh(state: &mut State) -> &mut Refresh {
+        &mut state.refresh
+    }
+
+    fn runtime(&self) -> (&Handle, std::time::Duration) {
+        (&self.handle, self.limits.deadline)
+    }
+
+    fn readiness(&self, state: &State) -> Readiness {
+        match self.list.borrow().read {
+            NodesRead::Loading => Readiness::Wait,
+            NodesRead::Ready(_) if state.client.is_some() => Readiness::Ready,
+            _ => Readiness::Skip,
+        }
+    }
+
+    async fn run(self: &Arc<Self>, ticket: u64, budget: Budget) {
+        let client = {
+            let state = self.lock();
+            if !state.refresh.current(ticket) {
+                return;
+            }
+            let Some(client) = state.client.clone() else { return };
+            client
+        };
+        let answer = budget.read(client.nodes()).await;
+        let (id, generation) = {
+            let mut state = self.lock();
+            if !state.refresh.current(ticket) {
+                return;
+            }
+            match answer {
+                Part::Ready(nodes) => self.replace_nodes(&mut state, nodes),
+                Part::Failed(error) => {
+                    self.mark_failure(error);
+                    return;
+                }
+            }
+            let Some(id) = self.pane.borrow().node.clone() else { return };
+            if self.list.borrow().index(&id).is_none() {
+                self.select(&mut state, None);
+                return;
+            }
+            // An ordinary selection read already out for this node is sufficient.
+            if state.pane_task.is_some() {
+                return;
+            }
+            (id, state.pane_generation)
+        };
+        let answer = budget.read(client.node(&id)).await;
+        let state = self.lock();
+        if state.refresh.current(ticket) && state.pane_generation == generation {
+            match answer {
+                Part::Failed(error) => self.mark_failure(error),
+                ready => self.pane.send_modify(|pane| pane.read = node_read(ready)),
+            }
+        }
+    }
+}
+
+impl Shared {
+    fn mark_failure(&self, error: String) {
+        self.list.send_modify(|list| {
+            let read_at = match list.read {
+                NodesRead::Ready(at) => Some(at),
+                _ => None,
+            };
+            list.stale = Some(Stale::failed(as_of(list.stale.as_ref(), read_at), error));
+        });
+    }
+}
+
+fn node_read(answer: Part<Option<NodeDetailView>>) -> NodeRead {
+    match answer {
+        Part::Ready(Some(node)) => NodeRead::Found(Arc::new(node)),
+        Part::Ready(None) => NodeRead::NotFound,
+        Part::Failed(error) => NodeRead::Failed(error),
     }
 }
 

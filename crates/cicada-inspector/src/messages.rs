@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::api::MessageView;
 use cicada::store::MessageId;
+use cicada::time::Timestamp;
 use cicada_client::ActorClient;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
@@ -15,19 +16,22 @@ use tokio::task::JoinHandle;
 
 use crate::json::{self, Json};
 use crate::model::{Limits, Part};
-use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging};
+use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::refresh::{RefreshPage, Stale};
 
 /// What the Messages table shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MessagesView {
     /// The prefix of the target addresses the rows are under.
     pub prefix: String,
-    /// Grows whenever the rows are replaced rather than appended to.
+    /// Grows on a new list, prefix, status, Refresh or context.
     pub generation: u64,
     /// The messages read so far, each once, in the server's order; shared with the pane and with later views.
     pub rows: Vec<Arc<MessageView>>,
     /// Whether a page is asked for or failed.
     pub paging: Paging,
+    /// The mark on rows carried over by a soft refresh.
+    pub stale: Option<Stale>,
     /// True when the server has rows past these.
     pub more: bool,
 }
@@ -167,6 +171,16 @@ impl Messages {
         if !state.loaded && state.client.is_some() {
             self.shared.reload(&mut state, false);
         }
+    }
+
+    /// Re-reads the loaded range without clearing the view or changing the list generation.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
+    }
+
+    /// Cancels a soft refresh when this page is left.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock().pager.cancel_refresh();
     }
 
     /// Refresh: reads the list again from the top under its prefix; the selection is cleared, as its row may be gone.
@@ -318,7 +332,13 @@ impl Shared {
         state.supersede_list();
         state.loaded = true;
         let (generation, prefix) = (state.pager.generation(), state.prefix.clone());
-        self.list.send_replace(MessagesView { prefix, generation, paging: Paging::Loading, more: true, rows: vec![] });
+        self.list.send_replace(MessagesView {
+            prefix,
+            generation,
+            paging: Paging::Loading,
+            more: true,
+            ..MessagesView::default()
+        });
         if debounce {
             Pager::debounce(self, state, self.limits, |shared, state| shared.request_page(state));
         } else {
@@ -328,10 +348,8 @@ impl Shared {
 
     fn request_page(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let prefix = state.prefix.clone();
-        let read = move |cursor: Option<String>| async move {
-            client.list_pending(&prefix, cursor.as_deref(), Some(PAGE)).await
-        };
+        let query = state.prefix.clone();
+        let read = move |cursor| Self::read_page(client, query, cursor);
         if Pager::request(self, state, self.limits, read, Self::land_page) {
             self.list.send_modify(|list| list.paging = Paging::Loading);
         }
@@ -342,7 +360,10 @@ impl Shared {
     fn land_page(self: &Arc<Self>, state: &mut State, landed: Landed<MessageView>) {
         let (items, more) = match landed.page {
             Part::Ready(page) => page,
-            Part::Failed(error) => return self.list.send_modify(|list| list.paging = Paging::Failed(error)),
+            Part::Failed(error) => {
+                self.list.send_modify(|list| list.paging = Paging::Failed(error));
+                return self.resume(state);
+            }
         };
         let fresh: Vec<_> = items.into_iter().filter(|m| state.seen.insert(m.id.clone())).map(Arc::new).collect();
         let added = !fresh.is_empty();
@@ -366,11 +387,16 @@ impl Shared {
         if !added && more {
             self.request_page(state);
         }
+        self.resume(state);
     }
 
     /// Selects a row under a new pane generation and formats its payload on a blocking thread; the result is published
     /// only while that row is still the selection, so one that finishes after a later selection is dropped.
     fn select(self: &Arc<Self>, state: &mut State, id: Option<&MessageId>) {
+        self.fill_pane(state, id, None);
+    }
+
+    fn fill_pane(self: &Arc<Self>, state: &mut State, id: Option<&MessageId>, payload: Option<Arc<Json>>) {
         state.supersede_pane();
         let generation = state.pane_generation;
         let row = id.and_then(|id| {
@@ -378,7 +404,11 @@ impl Shared {
             list.index(id).map(|index| list.rows[index].clone())
         });
         state.selected = row.as_ref().map(|row| row.id.clone());
-        self.pane.send_replace(MessagePane { generation, message: row.clone(), payload: None });
+        self.pane.send_replace(MessagePane {
+            generation,
+            message: row.clone(),
+            payload: if row.is_some() { payload } else { None },
+        });
         let Some(row) = row else { return };
         let shared = self.clone();
         #[cfg(test)]
@@ -400,5 +430,88 @@ impl Shared {
                 shared.pane.send_modify(|pane| pane.payload = Some(payload));
             }
         }));
+    }
+}
+
+impl SoftPaged for Shared {
+    type Row = MessageView;
+    type Key = MessageId;
+    // `list_pending`'s documented order, `(to, deliver_at, seq)`; addresses compare bytewise there (`COLLATE "C"`).
+    type Sort = (String, Timestamp, i64, MessageId);
+    type Query = String;
+
+    fn key(row: &Self::Row) -> Self::Key {
+        row.id.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        (row.to.as_str().to_owned(), row.deliver_at, row.seq, row.id.clone())
+    }
+
+    fn rows(&self, _state: &State) -> Vec<Arc<Self::Row>> {
+        self.list.borrow().rows.clone()
+    }
+
+    fn paging(&self) -> Paging {
+        self.list.borrow().paging.clone()
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    fn stale(&self) -> Option<Stale> {
+        self.list.borrow().stale.clone()
+    }
+
+    fn query(state: &State) -> Option<(ActorClient, Self::Query)> {
+        Some((state.client.clone().filter(|_| state.loaded)?, state.prefix.clone()))
+    }
+
+    async fn read_page(
+        client: ActorClient,
+        query: Self::Query,
+        cursor: Option<String>,
+    ) -> Result<cicada::api::PageView<Self::Row>, cicada_client::ClientError> {
+        client.list_pending(&query, cursor.as_deref(), Some(PAGE)).await
+    }
+
+    fn land_refresh(
+        self: &Arc<Self>,
+        state: &mut State,
+        rows: Option<Vec<Arc<Self::Row>>>,
+        more: bool,
+        stale: Option<Stale>,
+    ) {
+        let Some(rows) = rows else {
+            return self.list.send_modify(|list| list.stale = stale);
+        };
+        state.seen = rows.iter().map(|row| row.id.clone()).collect();
+        self.list.send_modify(|list| {
+            list.rows = rows;
+            list.more = more;
+            list.stale = stale;
+        });
+        let selected = state.selected.clone();
+        let pending = state.pending.take_if(|id| self.list.borrow().index(id).is_some());
+        if let Some(id) = pending.or(selected) {
+            let previous = self.pane.borrow().message.clone();
+            let current = self.list.borrow().rows.iter().find(|row| row.id == id).cloned();
+            if previous != current {
+                let payload = if previous.as_ref().is_some_and(|row| row.id == id) {
+                    self.pane.borrow().payload.clone()
+                } else {
+                    None
+                };
+                self.fill_pane(state, Some(&id), payload);
+            }
+        }
+        if !more {
+            state.pending = None;
+        }
+    }
+
+    fn page(self: &Arc<Self>, state: &mut State) {
+        self.request_page(state);
     }
 }

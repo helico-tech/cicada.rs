@@ -144,12 +144,13 @@ impl MessagesPage {
                 (format!("{} pending messages{more}.", list.rows.len()), Style::Secondary, false)
             }
         };
+        let (text, tip) = super::browse::freshness(text, list.stale.as_ref());
         self.retry.setHidden(!failed);
         let x = if failed { 88.0 } else { 12.0 };
         let width = self.root.frame().size.width;
         self.footer.setFrame(NSRect::new(NSPoint::new(x, 5.0), NSSize::new((width - x - 12.0).max(40.0), 16.0)));
         self.footer.setStringValue(&NSString::from_str(&text));
-        self.footer.setToolTip(Some(&NSString::from_str(&text)));
+        self.footer.setToolTip(Some(&NSString::from_str(&tip)));
         self.footer.setTextColor(Some(&color(style)));
     }
 

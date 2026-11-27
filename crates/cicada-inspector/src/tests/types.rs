@@ -14,7 +14,7 @@ use crate::model::Limits;
 use crate::pager::Paging;
 use crate::types::Types;
 
-fn registered(name: &str) -> Value {
+pub(super) fn registered(name: &str) -> Value {
     json!({
         "name": name, "hash": "sha256:0123456789abcdef",
         "state": {"title": format!("{name} state")},

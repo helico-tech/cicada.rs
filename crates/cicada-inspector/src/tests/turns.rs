@@ -47,7 +47,7 @@ async fn until<T: Clone>(view: &mut watch::Receiver<T>, done: impl FnMut(&T) -> 
 }
 
 /// A served running turn.
-fn turn(actor: &str, message: &str) -> Value {
+pub(super) fn turn(actor: &str, message: &str) -> Value {
     json!({"actor": actor, "messageId": message, "node": "n1", "leaseUntil": "2026-11-27T10:00:00.000Z",
            "cancelRequested": false})
 }

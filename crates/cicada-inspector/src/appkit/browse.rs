@@ -138,6 +138,20 @@ impl BrowseTable {
     }
 }
 
+/// Appends the freshness mark and keeps the details of a failed read in the tooltip.
+pub(super) fn freshness(text: String, mark: Option<&crate::refresh::Stale>) -> (String, String) {
+    let text = match mark {
+        Some(mark) if text.is_empty() => mark.text(),
+        Some(mark) => format!("{} · {text}", mark.text()),
+        None => text,
+    };
+    let tip = match mark.and_then(|mark| mark.error.as_deref()) {
+        Some(error) => format!("{text}\n{error}"),
+        None => text.clone(),
+    };
+    (text, tip)
+}
+
 /// A table cell with the full value available to VoiceOver and in its tooltip.
 pub(super) fn cell(mtm: MainThreadMarker, text: &str, full: &str) -> Retained<NSView> {
     let field = label(mtm, text, NSFont::systemFontOfSize(13.0), Style::Plain);

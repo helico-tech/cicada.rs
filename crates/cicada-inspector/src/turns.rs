@@ -16,19 +16,22 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::model::{Limits, Part, within};
-use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging};
+use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::refresh::{RefreshPage, Stale};
 
 /// What the Running Turns table shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TurnsView {
     /// The prefix of the actor addresses the rows are under.
     pub prefix: String,
-    /// Grows whenever the rows are replaced rather than appended to.
+    /// Grows on a new list, prefix, status, Refresh or context.
     pub generation: u64,
     /// The turns read so far, in the server's order; shared with the pane and with later views.
     pub rows: Vec<Arc<RunningTurnView>>,
     /// Whether a page is asked for or failed.
     pub paging: Paging,
+    /// The mark on rows carried over by a soft refresh.
+    pub stale: Option<Stale>,
     /// True when the server has rows past these.
     pub more: bool,
 }
@@ -180,6 +183,16 @@ impl RunningTurns {
         }
     }
 
+    /// Re-reads the loaded range without clearing the view or changing the list generation.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
+    }
+
+    /// Cancels a soft refresh when this page is left.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock().pager.cancel_refresh();
+    }
+
     /// Refresh: reads the list again from the top under its prefix; the selection is cleared, as its turn may have
     /// ended.
     pub fn refresh(&self) {
@@ -321,7 +334,13 @@ impl Shared {
         state.supersede_list();
         state.loaded = true;
         let (generation, prefix) = (state.pager.generation(), state.prefix.clone());
-        self.list.send_replace(TurnsView { prefix, generation, paging: Paging::Loading, more: true, rows: vec![] });
+        self.list.send_replace(TurnsView {
+            prefix,
+            generation,
+            paging: Paging::Loading,
+            more: true,
+            ..TurnsView::default()
+        });
         if debounce {
             Pager::debounce(self, state, self.limits, |shared, state| shared.request_page(state));
         } else {
@@ -331,10 +350,8 @@ impl Shared {
 
     fn request_page(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let prefix = state.prefix.clone();
-        let read = move |cursor: Option<String>| async move {
-            client.turns(None, &prefix, cursor.as_deref(), Some(PAGE)).await
-        };
+        let query = state.prefix.clone();
+        let read = move |cursor| Self::read_page(client, query, cursor);
         if Pager::request(self, state, self.limits, read, Self::land_page) {
             self.list.send_modify(|list| list.paging = Paging::Loading);
         }
@@ -345,26 +362,34 @@ impl Shared {
     fn land_page(self: &Arc<Self>, state: &mut State, landed: Landed<RunningTurnView>) {
         let (items, more) = match landed.page {
             Part::Ready(page) => page,
-            Part::Failed(error) => return self.list.send_modify(|list| list.paging = Paging::Failed(error)),
+            Part::Failed(error) => {
+                self.list.send_modify(|list| list.paging = Paging::Failed(error));
+                return self.resume(state);
+            }
         };
-        let empty = items.is_empty();
-        let rows: Vec<_> = items.into_iter().map(Arc::new).collect();
+        let arrived = state.pending.take_if(|actor| items.iter().any(|row| &row.actor == actor));
         // The row of a turn a return found running arrived: it is selected, and the pane keeps the turn as read.
-        let arrived = state.pending.take_if(|actor| rows.iter().any(|row| &row.actor == actor));
         if arrived.is_none() && !more {
             state.pending = None;
         }
+        let mut added = 0;
         self.list.send_modify(|list| {
-            list.rows.extend(rows);
+            if list.stale.is_some() {
+                added = crate::pager::insert_ordered(&mut list.rows, items, Self::key);
+            } else {
+                added = items.len();
+                list.rows.extend(items.into_iter().map(Arc::new));
+            }
             list.paging = Paging::Idle;
             list.more = more;
         });
         if let Some(actor) = arrived {
             self.pane.send_modify(|pane| pane.selected = Some(actor));
         }
-        if empty && more {
+        if added == 0 && more {
             self.request_page(state);
         }
+        self.resume(state);
     }
 
     /// Shows `turn` in the pane under a new generation, with `selected` the row selected; the read of a turn before
@@ -417,5 +442,84 @@ impl Shared {
                 pane.selected = selected;
             });
         }));
+    }
+}
+
+impl SoftPaged for Shared {
+    type Row = RunningTurnView;
+    type Key = ActorAddress;
+    type Sort = Self::Key;
+    type Query = String;
+
+    fn key(row: &Self::Row) -> Self::Key {
+        row.actor.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        row.actor.clone()
+    }
+
+    fn rows(&self, _state: &State) -> Vec<Arc<Self::Row>> {
+        self.list.borrow().rows.clone()
+    }
+
+    fn paging(&self) -> Paging {
+        self.list.borrow().paging.clone()
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    fn stale(&self) -> Option<Stale> {
+        self.list.borrow().stale.clone()
+    }
+
+    fn query(state: &State) -> Option<(ActorClient, Self::Query)> {
+        Some((state.client.clone().filter(|_| state.loaded)?, state.prefix.clone()))
+    }
+
+    async fn read_page(
+        client: ActorClient,
+        query: Self::Query,
+        cursor: Option<String>,
+    ) -> Result<cicada::api::PageView<Self::Row>, cicada_client::ClientError> {
+        client.turns(None, &query, cursor.as_deref(), Some(PAGE)).await
+    }
+
+    fn land_refresh(
+        self: &Arc<Self>,
+        state: &mut State,
+        rows: Option<Vec<Arc<Self::Row>>>,
+        more: bool,
+        stale: Option<Stale>,
+    ) {
+        let Some(rows) = rows else {
+            return self.list.send_modify(|list| list.stale = stale);
+        };
+        self.list.send_modify(|list| {
+            list.rows = rows;
+            list.more = more;
+            list.stale = stale;
+        });
+        let selected = state
+            .pending
+            .take_if(|actor| self.list.borrow().index(actor).is_some())
+            .or_else(|| self.pane.borrow().selected.clone());
+        if let Some(actor) = selected {
+            let row = self.list.borrow().rows.iter().find(|row| row.actor == actor).cloned();
+            if let Some(row) = row {
+                self.show(state, Some(row), TurnState::Running, Some(actor));
+            } else {
+                self.show(state, None, TurnState::Running, None);
+            }
+        }
+        if !more {
+            state.pending = None;
+        }
+    }
+
+    fn page(self: &Arc<Self>, state: &mut State) {
+        self.request_page(state);
     }
 }

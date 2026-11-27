@@ -46,6 +46,8 @@ mod nodes;
 mod outcomes;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod pager;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod refresh;
 #[cfg(test)]
 mod tests;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

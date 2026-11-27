@@ -58,7 +58,9 @@ impl TurnsPage {
                 (format!("{} running turns{more}.", list.rows.len()), Style::Secondary, false)
             }
         };
+        let (text, tip) = super::browse::freshness(text, list.stale.as_ref());
         self.list.footer(&text, style, retry, None);
+        self.list.footer_tip(&tip);
     }
 
     /// Fills the pane from `pane`.

@@ -20,7 +20,8 @@ use tokio::time::Instant;
 
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, within};
-use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager, Paging};
+use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
+use crate::refresh::{Budget, RefreshPage, Stale};
 
 /// The messages of one page of "Caused".
 pub const CAUSED_PAGE: usize = 50;
@@ -73,12 +74,14 @@ pub struct OutcomesView {
     pub prefix: String,
     /// The status the rows have; [`StatusFilter::All`] shows a status column.
     pub status: StatusFilter,
-    /// Grows whenever the rows are replaced rather than appended to.
+    /// Grows on a new list, prefix, status, Refresh or context.
     pub generation: u64,
     /// The outcomes read so far, each message once, in the server's order; shared with the pane and later views.
     pub rows: Vec<Arc<OutcomeView>>,
     /// Whether a page is asked for or failed.
     pub paging: Paging,
+    /// The mark on rows carried over by a soft refresh.
+    pub stale: Option<Stale>,
     /// True when the server has rows past these.
     pub more: bool,
 }
@@ -298,6 +301,7 @@ struct State {
     pending: Option<MessageId>,
     pane_generation: u64,
     format_task: Option<JoinHandle<()>>,
+    format_generation: u64,
     link_task: Option<JoinHandle<()>>,
     /// Where the next page of "Caused" starts, and the one read out for it.
     caused_cursor: Cursor,
@@ -402,6 +406,16 @@ impl Outcomes {
         if !state.loaded && state.client.is_some() {
             self.shared.reload(&mut state, false);
         }
+    }
+
+    /// Re-reads the loaded range without clearing the view or changing the list generation.
+    pub fn soft_refresh(&self) {
+        self.shared.request();
+    }
+
+    /// Cancels a soft refresh when this page is left.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock().pager.cancel_refresh();
     }
 
     /// Refresh: reads the list again from the top and the failed count. An outcome in the pane is cleared, as its row
@@ -620,7 +634,7 @@ impl Shared {
             generation,
             paging: Paging::Loading,
             more: true,
-            rows: vec![],
+            ..OutcomesView::default()
         });
         if debounce {
             Pager::debounce(self, state, self.limits, |shared, state| shared.request_page(state));
@@ -631,10 +645,8 @@ impl Shared {
 
     fn request_page(self: &Arc<Self>, state: &mut State) {
         let Some(client) = state.client.clone() else { return };
-        let (prefix, status) = (state.prefix.clone(), state.status.status());
-        let read = move |cursor: Option<String>| async move {
-            client.outcomes(status, &prefix, None, cursor.as_deref(), Some(PAGE)).await
-        };
+        let query = (state.prefix.clone(), state.status.status());
+        let read = move |cursor| Self::read_page(client, query, cursor);
         if Pager::request(self, state, self.limits, read, Self::land_page) {
             self.list.send_modify(|list| list.paging = Paging::Loading);
         }
@@ -646,7 +658,10 @@ impl Shared {
     fn land_page(self: &Arc<Self>, state: &mut State, landed: Landed<OutcomeView>) {
         let (items, more) = match landed.page {
             Part::Ready(page) => page,
-            Part::Failed(error) => return self.list.send_modify(|list| list.paging = Paging::Failed(error)),
+            Part::Failed(error) => {
+                self.list.send_modify(|list| list.paging = Paging::Failed(error));
+                return self.resume(state);
+            }
         };
         let fresh: Vec<_> = items.into_iter().filter(|o| state.seen.insert(o.id.clone())).map(Arc::new).collect();
         let added = !fresh.is_empty();
@@ -669,6 +684,7 @@ impl Shared {
         if !added && more {
             self.request_page(state);
         }
+        self.resume(state);
     }
 
     /// Shows `subject` under a new pane generation, with `selected` the row selected: an outcome's payload is
@@ -701,7 +717,10 @@ impl Shared {
         source: Arc<T>,
         payload: fn(&T) -> &Value,
     ) {
-        let (generation, shared) = (state.pane_generation, self.clone());
+        let previous = state.format_task.take();
+        state.abort(previous);
+        state.format_generation += 1;
+        let (generation, format, shared) = (state.pane_generation, state.format_generation, self.clone());
         state.format_task = Some(self.handle.spawn_blocking(move || {
             let json = Arc::new(json::format(payload(&source)));
             let mut state = shared.lock();
@@ -709,7 +728,7 @@ impl Shared {
             {
                 state.formatted += 1;
             }
-            if state.pane_generation == generation {
+            if state.pane_generation == generation && state.format_generation == format {
                 state.format_task = None;
                 shared.pane.send_modify(|pane| pane.payload = Some(json));
             }
@@ -773,35 +792,55 @@ impl Shared {
                 return;
             }
             state.caused_task = None;
-            let follow = match answer {
-                Part::Ready(None) => {
-                    state.caused_cursor = Cursor::End;
-                    shared.pane.send_modify(|pane| {
-                        pane.caused = Caused { gone: true, ..Caused::default() };
-                    });
-                    false
-                }
-                Part::Ready(Some(page)) => {
-                    state.caused_cursor = page.next.map_or(Cursor::End, Cursor::Next);
-                    let more = state.caused_cursor != Cursor::End;
-                    let empty = page.items.is_empty();
-                    shared.pane.send_modify(|pane| {
-                        pane.caused.rows.extend(page.items.into_iter().map(Arc::new));
-                        pane.caused.more = more;
-                        pane.caused.paging = if empty && more { Paging::Loading } else { Paging::Idle };
-                    });
-                    empty && more
-                }
-                Part::Failed(error) => {
-                    shared.pane.send_modify(|pane| pane.caused.paging = Paging::Failed(error));
-                    false
-                }
-            };
+            let follow = shared.land_caused(&mut state, answer);
             if follow {
                 shared.request_caused(&mut state, parent);
             }
         }));
         self.pane.send_modify(|pane| pane.caused.paging = Paging::Loading);
+    }
+
+    fn land_caused(&self, state: &mut State, answer: Part<Option<cicada::api::PageView<MessageStatusView>>>) -> bool {
+        match answer {
+            Part::Ready(None) => {
+                state.caused_cursor = Cursor::End;
+                self.pane.send_modify(|pane| {
+                    pane.caused = Caused { gone: true, ..Caused::default() };
+                });
+                false
+            }
+            Part::Ready(Some(page)) => {
+                state.caused_cursor = page.next.map_or(Cursor::End, Cursor::Next);
+                let more = state.caused_cursor != Cursor::End;
+                let empty = page.items.is_empty();
+                self.pane.send_modify(|pane| {
+                    pane.caused.rows.extend(page.items.into_iter().map(Arc::new));
+                    pane.caused.more = more;
+                    pane.caused.paging = if empty && more { Paging::Loading } else { Paging::Idle };
+                });
+                empty && more
+            }
+            Part::Failed(error) => {
+                self.pane.send_modify(|pane| pane.caused.paging = Paging::Failed(error));
+                false
+            }
+        }
+    }
+
+    fn mark_pane_failure(&self, state: &mut State, error: String) {
+        let mark = self.list.borrow().stale.clone();
+        let as_of = crate::refresh::as_of(mark.as_ref(), state.pager.read_at());
+        self.list.send_modify(|list| {
+            let mark = list.stale.get_or_insert_with(|| Stale::failed(as_of, error.clone()));
+            match &mut mark.error {
+                Some(before) if !before.contains(&error) => {
+                    before.push('\n');
+                    before.push_str(&error);
+                }
+                None => mark.error = Some(error),
+                _ => {}
+            }
+        });
     }
 
     /// Publishes a count read's answer unless a later read landed first or the context changed since it started; a
@@ -844,5 +883,153 @@ pub fn retry_text(policy: Option<&RetryPolicy>) -> String {
             format!("Up to {attempts} attempts, backoff from {initial:?} ×{factor} to at most {max:?}")
         }
         Backoff::Fixed { delay } => format!("Up to {attempts} attempts, {delay:?} apart"),
+    }
+}
+
+impl SoftPaged for Shared {
+    type Row = OutcomeView;
+    type Key = MessageId;
+    // The store's documented order of outcomes, `(finished_at, message_id)`.
+    type Sort = (Timestamp, MessageId);
+    type Query = (String, Option<OutcomeStatus>);
+
+    fn key(row: &Self::Row) -> Self::Key {
+        row.id.clone()
+    }
+
+    fn sort(row: &Self::Row) -> Self::Sort {
+        (row.finished_at, row.id.clone())
+    }
+
+    fn rows(&self, _state: &State) -> Vec<Arc<Self::Row>> {
+        self.list.borrow().rows.clone()
+    }
+
+    fn paging(&self) -> Paging {
+        self.list.borrow().paging.clone()
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    fn stale(&self) -> Option<Stale> {
+        self.list.borrow().stale.clone()
+    }
+
+    fn query(state: &State) -> Option<(ActorClient, Self::Query)> {
+        Some((state.client.clone().filter(|_| state.loaded)?, (state.prefix.clone(), state.status.status())))
+    }
+
+    async fn read_page(
+        client: ActorClient,
+        query: Self::Query,
+        cursor: Option<String>,
+    ) -> Result<cicada::api::PageView<Self::Row>, cicada_client::ClientError> {
+        client.outcomes(query.1, &query.0, None, cursor.as_deref(), Some(PAGE)).await
+    }
+
+    fn land_refresh(
+        self: &Arc<Self>,
+        state: &mut State,
+        rows: Option<Vec<Arc<Self::Row>>>,
+        more: bool,
+        stale: Option<Stale>,
+    ) {
+        let Some(rows) = rows else {
+            return self.list.send_modify(|list| list.stale = stale);
+        };
+        state.seen = rows.iter().map(|row| row.id.clone()).collect();
+        self.list.send_modify(|list| {
+            list.rows = rows;
+            list.more = more;
+            list.stale = stale;
+        });
+        let selected = state.pending.take_if(|id| self.list.borrow().index(id).is_some()).or(state.selected.clone());
+        if let Some(id) = selected {
+            let current = self.list.borrow().rows.iter().find(|row| row.id == id).cloned();
+            match current {
+                Some(row) => {
+                    state.selected = Some(id);
+                    let same =
+                        matches!(&self.pane.borrow().subject, Some(Subject::Outcome(before)) if **before == *row);
+                    if !same {
+                        self.pane.send_modify(|pane| pane.subject = Some(Subject::Outcome(row.clone())));
+                        self.format(state, row, |o| &o.message.payload);
+                    }
+                }
+                None => self.show(state, None, None),
+            }
+        }
+        if !more {
+            state.pending = None;
+        }
+    }
+
+    async fn refresh_pane(self: &Arc<Self>, ticket: u64, budget: Budget) {
+        let (client, id, generation, had_details) = {
+            let state = self.lock();
+            if !state.pager.refresh.current(ticket) || state.link_task.is_some() {
+                return;
+            }
+            let pane = self.pane.borrow();
+            let Some(Subject::Linked(id, read)) = &pane.subject else { return };
+            let Some(client) = state.client.clone() else { return };
+            (client, id.clone(), state.pane_generation, matches!(read, Read::Found(_)))
+        };
+        let answer = budget.read(client.status(&id)).await;
+        // A previously unresolved link has no Caused page yet. Keep the old pane until its first page has answered.
+        let caused = if !had_details && matches!(answer, Part::Ready(Some(_))) {
+            let mut cursor = None;
+            loop {
+                let answer = budget.read(client.caused_by(&id, cursor.as_deref(), Some(CAUSED_PAGE))).await;
+                match answer {
+                    Part::Ready(Some(page)) if page.items.is_empty() && page.next.is_some() => cursor = page.next,
+                    _ => break Some((cursor, answer)),
+                }
+            }
+        } else {
+            None
+        };
+        let mut state = self.lock();
+        if !state.pager.refresh.current(ticket) || state.pane_generation != generation {
+            return;
+        }
+        match answer {
+            Part::Ready(Some(status)) => {
+                let status = Arc::new(status);
+                let payload_changed = self
+                    .pane
+                    .borrow()
+                    .subject
+                    .as_ref()
+                    .and_then(Subject::details)
+                    .is_none_or(|details| details.message.payload != status.message.payload);
+                if let Some((cursor, caused)) = caused {
+                    if let Part::Failed(error) = &caused {
+                        self.mark_pane_failure(&mut state, error.clone());
+                    }
+                    state.caused_cursor = cursor.map_or(Cursor::Start, Cursor::Next);
+                    self.land_caused(&mut state, caused);
+                }
+                self.pane.send_modify(|pane| pane.subject = Some(Subject::Linked(id, Read::Found(status.clone()))));
+                if payload_changed {
+                    self.format(&mut state, status, |s| &s.message.payload);
+                }
+            }
+            Part::Ready(None) => {
+                state.supersede_pane();
+                self.pane.send_replace(OutcomePane {
+                    generation: state.pane_generation,
+                    subject: Some(Subject::Linked(id, Read::NotFound)),
+                    ..OutcomePane::default()
+                });
+            }
+            Part::Failed(error) => self.mark_pane_failure(&mut state, error),
+        }
+    }
+
+    fn page(self: &Arc<Self>, state: &mut State) {
+        self.request_page(state);
     }
 }
