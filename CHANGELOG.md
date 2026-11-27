@@ -17,8 +17,9 @@ context in `tray.toml` next to the config file.
 `cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
 reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
-health, the nodes, the running turns and the types with their actor counts, and an Actors page that lists the actors
-under an address prefix with a read-only pane of the selected actor, for a context of `cicada config`.
+health, the nodes, the running turns and the types with their actor counts, an Actors page that lists the actors
+under an address prefix with a read-only pane of the selected actor, and a Messages page of the pending messages with
+Show Actor, for a context of `cicada config`.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
 
@@ -35,7 +36,7 @@ directly or use `..` in matches.
   dependency and supersedes ADR 0011 in part for a native macOS console. `Inspector::new().run()` owns the main
   thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
   elsewhere, or before macOS 14, it prints an error and returns exit code 1. The window has a sidebar (Overview;
-  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, which say "Coming soon" for now), a
+  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches; those without a page say "Coming soon"), a
   toolbar with back and forward, the title, a context pop-up and Refresh, and the Overview: tiles for actors, pending,
   oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
   turns with a mark when there are more, and the types with their actor counts. A refresh is by hand and bounded: at
@@ -62,6 +63,20 @@ directly or use `..` in matches.
   choose `more…` for the next page. An actor shown both at the root and under its parent has separate selection and
   fold state for each row. Refresh reopens surviving rows as their pages load. A different search prefix or context
   starts with all rows folded.
+- `cicada-inspector`: the Messages page. Its table lists the pending messages to the actors under the prefix in the
+  search field, which it shares with Actors and keeps per page, 100 at a time as it scrolls, with their id, target,
+  type, delivery time and attempt. Pages are not a snapshot: a message retried between two pages shows once, as first
+  read, and a page of only such messages still moves on to the next. The footer shows the count, an empty prefix, or a
+  failed page with Retry. Selecting a message fills the pane from its row, with no read of its own: the target,
+  sender, type, delivery time, correlation id, headers, attempt and failures, and the payload as highlighted JSON
+  (cut at 256 KiB), formatted only then. ⌘R reloads the list from the top and clears the selection. Show Actor in the
+  pane goes to the Actors page, searches for the message's exact target address and selects that root row once the
+  first page has loaded; a gone actor shows "not found", and a failed page shows its Retry row with nothing
+  selected. The jump is recorded in back and forward: Back returns to Messages with its prefix, its loaded pages and
+  the message, and Forward goes to the actor again. Leaving the Actors page or typing a search cancels a jump still
+  waiting for its page. The Actors list's paging is now a pager the two pages share. Covered by the tests in
+  `crates/cicada-inspector/src/tests/messages.rs` and, unchanged, `tests/actors.rs`; the window has a manual check
+  list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before

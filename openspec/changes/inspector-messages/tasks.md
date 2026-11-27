@@ -20,7 +20,7 @@ onto it when it landed first). Follow `design.md`; the spec is `specs/inspector/
   the pane with Show Actor; every `unsafe` with its reason (decision 5). Verify: `cargo build -p cicada-inspector`,
   `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done or not
   done in the report.
-- [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Messages page and Show Actor;
+- [x] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names the Messages page and Show Actor;
   `docs-handoff.md` carries the design's Docs section; no edit to `README.md`, `AGENTS.md` or the handwritten docs.
   Then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, `cargo test -p
   cicada-examples --test docs` and `--doc`, `openspec validate inspector-messages --strict`, commit. The change loop
