@@ -168,6 +168,8 @@ pub(super) struct State {
     pending: Option<Pending>,
     /// The open Send Message sheet, which holds the slot of [`Self::pending`] until it closes.
     sheet: Option<send::Sheet>,
+    /// The check thread the sheets share, started with the first sheet.
+    checker: Option<send::Checker>,
     pub(super) redactions: Redactions,
 }
 

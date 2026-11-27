@@ -3,9 +3,12 @@
 //! schema. As the door, it refuses a payload nested deeper than [`MAX_DEPTH`] before the schema, and asks only
 //! `is_valid`, which builds no error. The server's check stays the authority.
 //!
-//! One thread per sheet, with the door's stack of 64 MiB, runs one check at a time: it takes the newest job, skipping
-//! older ones still queued, and the sheet drops a result for an older payload or message type.
+//! One thread per Actors page, with the door's stack of 64 MiB, runs one check at a time for every sheet: it takes the
+//! newest job, skips a job that is no longer the newest posted (its sheet closed, or a newer edit came), and the sheet
+//! drops a result for an older payload or message type. A check already running cannot be stopped; the next sheet's
+//! check waits for it.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Weak};
 
@@ -43,7 +46,7 @@ impl Verdict {
 /// A payload to check against the schema of a chosen message type.
 pub(super) struct Job {
     pub sheet: u64,
-    /// Grows each time a message type is chosen; the schema is compiled once per value.
+    /// Grows each time a message type is chosen in the sheet; the schema is compiled once per sheet and value.
     pub choice: u64,
     /// Grows at every edit and choice.
     pub edit: u64,
@@ -59,11 +62,17 @@ pub(super) enum Landed {
     Verdict { sheet: u64, choice: u64, edit: u64, verdict: Verdict, value: Option<Arc<Value>> },
 }
 
-/// The sheet's check thread. It ends when this is dropped, after the check it runs, if any.
-pub(super) struct Checker {
-    jobs: Sender<Job>,
+/// The check thread shared by the sheets of one Actors page. It ends when this is dropped, after the check it runs.
+pub(in crate::actors::actions) struct Checker {
+    jobs: Sender<(u64, Job)>,
+    /// The serial of the last job posted, or 0 once its sheet closed: the thread skips every other job.
+    newest: Arc<AtomicU64>,
+    posted: u64,
     #[cfg(test)]
     pub holds: Arc<std::sync::Mutex<std::collections::VecDeque<Hold>>>,
+    /// The checks the thread ran, for tests.
+    #[cfg(test)]
+    pub ran: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -76,16 +85,21 @@ pub(super) trait Land: Send + Sync + 'static {
 
 impl Checker {
     /// Starts the thread; `None` when it cannot be started.
-    pub fn start<L: Land>(land: Weak<L>) -> Option<Self> {
+    pub(super) fn start<L: Land>(land: Weak<L>) -> Option<Self> {
         let (jobs, queue) = channel();
+        let newest = Arc::new(AtomicU64::new(0));
+        let current = newest.clone();
         #[cfg(test)]
-        let holds = Arc::<std::sync::Mutex<std::collections::VecDeque<Hold>>>::default();
+        let (holds, ran) = (
+            Arc::<std::sync::Mutex<std::collections::VecDeque<Hold>>>::default(),
+            Arc::<std::sync::atomic::AtomicUsize>::default(),
+        );
         #[cfg(test)]
-        let held = holds.clone();
+        let (held, counted) = (holds.clone(), ran.clone());
         let thread = std::thread::Builder::new().name("cicada-inspector-check".into()).stack_size(STACK);
         thread
             .spawn(move || {
-                // A test holds a check until it releases it, to order results.
+                // A test holds a check until it releases it, to order results, and counts the checks run.
                 #[cfg(test)]
                 let before = move || {
                     let hold = held.lock().unwrap().pop_front();
@@ -93,41 +107,59 @@ impl Checker {
                         let _ = arrived.send(());
                         let _ = release.recv_timeout(std::time::Duration::from_secs(10));
                     }
+                    counted.fetch_add(1, Ordering::SeqCst);
                 };
                 #[cfg(not(test))]
                 let before = || {};
-                run(queue, land, before)
+                run(queue, &current, land, before)
             })
             .ok()?;
         Some(Self {
             jobs,
+            newest,
+            posted: 0,
             #[cfg(test)]
             holds,
+            #[cfg(test)]
+            ran,
         })
     }
 
-    pub fn post(&self, job: Job) {
+    /// Queues `job`, which makes every job posted before it stale.
+    pub(super) fn post(&mut self, job: Job) {
+        self.posted += 1;
+        self.newest.store(self.posted, Ordering::SeqCst);
         // The thread only ends when this sender is dropped, or a check panicked; then nothing lands.
-        let _ = self.jobs.send(job);
+        let _ = self.jobs.send((self.posted, job));
+    }
+
+    /// Its sheet closed: the thread skips the jobs still queued.
+    pub(super) fn abandon(&self) {
+        self.newest.store(0, Ordering::SeqCst);
     }
 }
 
-fn run<L: Land>(queue: Receiver<Job>, land: Weak<L>, before: impl Fn()) {
-    let mut compiled: Option<(u64, Result<Validator, String>)> = None;
-    while let Ok(mut job) = queue.recv() {
+fn run<L: Land>(queue: Receiver<(u64, Job)>, newest: &AtomicU64, land: Weak<L>, before: impl Fn()) {
+    let mut compiled: Option<((u64, u64), Result<Validator, String>)> = None;
+    while let Ok(mut next) = queue.recv() {
         while let Ok(newer) = queue.try_recv() {
-            job = newer;
+            next = newer;
+        }
+        let (serial, job) = next;
+        if serial != newest.load(Ordering::SeqCst) {
+            continue;
         }
         before();
+        let key = (job.sheet, job.choice);
         let validator = match &compiled {
-            Some((choice, validator)) if *choice == job.choice => validator,
+            Some((compiled_for, validator)) if *compiled_for == key => validator,
             _ => {
                 let validator = validator(&job.schema);
                 let json = Arc::new(json::format(&job.schema));
                 let compiles = validator.is_ok();
                 let Some(land) = land.upgrade() else { return };
                 land.land(Landed::Schema { sheet: job.sheet, choice: job.choice, json, compiles });
-                &compiled.insert((job.choice, validator)).1
+                &compiled.insert((key, validator)).1
             }
         };
         let (verdict, value) = check(validator, &job.text);

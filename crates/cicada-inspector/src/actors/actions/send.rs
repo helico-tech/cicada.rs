@@ -1,6 +1,6 @@
 //! The actor pane's Send Message sheet: the message types of the actor's type, a JSON payload checked locally against
-//! the chosen type's schema, and the send. The sheet holds the action slot from opening to closing, so no other action
-//! runs while it is open.
+//! the chosen type's schema, and the send. The sheet holds the action slot from opening until it closes and its send,
+//! if one is out, has ended, so no other action runs meanwhile. The draft is frozen while a send is out.
 
 mod check;
 
@@ -15,10 +15,11 @@ use serde_json::Value;
 use tokio::{sync::watch, task::JoinHandle, time::Instant, time::timeout};
 
 use crate::json::Json;
+pub(super) use check::Checker;
 #[cfg(test)]
 pub(crate) use check::MAX_TEXT;
 pub(crate) use check::Verdict;
-use check::{Checker, Job, Land, Landed};
+use check::{Job, Land, Landed};
 
 use super::{Alert, Feedback, Target, View};
 use crate::actors::{Actors, PaneView, Read, Shared, State as ActorState};
@@ -73,10 +74,10 @@ pub(crate) struct SendView {
     pub compiles: bool,
     /// The local check of the payload in the editor.
     pub verdict: Verdict,
-    /// The id Send uses: the same until the message type or the parsed payload changes, so that a second Send after
-    /// a lost answer is not delivered twice.
+    /// The id Send uses: the same until another message type is chosen or the parsed payload changes, so that a second
+    /// Send after a lost answer is not delivered twice.
     pub message_id: MessageId,
-    /// True while a send is out.
+    /// True while a send is out: the draft and the message type cannot change.
     pub sending: bool,
     /// The last send's refusal shown in the sheet: the server's 400 or 422 text, an absent actor or a timeout.
     pub refusal: Option<Alert>,
@@ -119,12 +120,16 @@ pub(super) struct Sheet {
     target: Target,
     row: Option<Arc<TypeView>>,
     types_task: Option<JoinHandle<()>>,
-    /// `None` when its thread could not be started: nothing passes the check.
-    checker: Option<Checker>,
+    /// False when the check thread could not be started: nothing passes the check.
+    checks: bool,
     /// Grows at each choice of a message type.
     choice: u64,
     /// Grows at each edit and choice.
     edit: u64,
+    /// Grows at each edit only: the delay of the last edit is kept across a choice of message type.
+    typed: u64,
+    /// Cancelled while its send was out: the view is gone, and the slot is held until the send ends.
+    closed: bool,
     schema: Option<Arc<Value>>,
     text: Arc<str>,
     delay: Option<JoinHandle<()>>,
@@ -173,8 +178,11 @@ impl Actors {
             alert: None,
             sends: 0,
         };
-        let checker = Checker::start(Arc::downgrade(&self.shared));
-        if checker.is_none() {
+        if state.actions.checker.is_none() {
+            state.actions.checker = Checker::start(Arc::downgrade(&self.shared));
+        }
+        let checks = state.actions.checker.is_some();
+        if !checks {
             view.verdict = Verdict::Refused("the check could not start".into());
         }
         state.actions.sheet = Some(Sheet {
@@ -182,9 +190,11 @@ impl Actors {
             target,
             row: None,
             types_task: None,
-            checker,
+            checks,
             choice: 0,
             edit: 0,
+            typed: 0,
+            closed: false,
             schema: None,
             text: START.into(),
             delay: None,
@@ -203,43 +213,41 @@ impl Actors {
     /// Reads `/types` again after a failed read.
     pub(crate) fn retry_send_types(&self, id: u64) {
         let mut state = self.shared.lock();
-        if state
-            .actions
-            .sheet
-            .as_ref()
-            .is_some_and(|sheet| sheet.view.id == id && matches!(sheet.view.choices, Choices::Failed(_)))
-        {
+        if state.actions.open(id).is_some_and(|sheet| matches!(sheet.view.choices, Choices::Failed(_))) {
             self.shared.read_types(&mut state);
         }
     }
 
-    /// Chooses the message type at `index` of the pop-up: its schema is compiled and the payload checked at once.
+    /// Chooses the message type at `index` of the pop-up, with a fresh message id: its schema is compiled and the
+    /// payload checked at once, or when the delay of an edit before it ends. Ignored while a send is out.
     pub(crate) fn choose_send_type(&self, id: u64, index: usize) {
         let mut state = self.shared.lock();
-        let Some(sheet) = state.actions.sheet.as_mut().filter(|sheet| sheet.view.id == id) else { return };
+        let Some(sheet) = state.actions.open(id).filter(|sheet| !sheet.view.sending) else { return };
         if matches!(&sheet.view.choices, Choices::Ready(names) if index < names.len() && index != sheet.view.chosen) {
             sheet.view.chosen = index;
-            sheet.choose();
+            if sheet.choose() {
+                state.actions.post_check();
+            }
             self.shared.publish_sheet(&state);
         }
     }
 
     /// An edit of the payload: Send is off at once, and the payload is checked once the editor has been still for
-    /// [`CHECK_DELAY`].
+    /// [`CHECK_DELAY`]. Ignored while a send is out.
     pub(crate) fn edit_send_payload(&self, id: u64, text: &str) {
         let mut state = self.shared.lock();
-        let Some(sheet) = state.actions.sheet.as_mut().filter(|sheet| sheet.view.id == id) else { return };
+        let Some(sheet) = state.actions.open(id).filter(|sheet| !sheet.view.sending) else { return };
         sheet.text = text.into();
         sheet.changed();
-        let edit = sheet.edit;
+        sheet.typed += 1;
+        let typed = sheet.typed;
         let (shared, due) = (self.shared.clone(), Instant::now() + CHECK_DELAY);
         let task = self.shared.handle.spawn(async move {
             tokio::time::sleep_until(due).await;
             let mut state = shared.lock();
-            if let Some(sheet) = state.actions.sheet.as_mut().filter(|sheet| sheet.view.id == id && sheet.edit == edit)
-            {
+            if let Some(sheet) = state.actions.open(id).filter(|sheet| sheet.typed == typed) {
                 sheet.delay = None;
-                sheet.post();
+                state.actions.post_check();
             }
         });
         let old = state.actions.sheet.as_mut().and_then(|sheet| sheet.delay.replace(task));
@@ -251,7 +259,9 @@ impl Actors {
     /// the pane again; a refusal keeps the sheet and the payload.
     pub(crate) fn send_message(&self, id: u64) {
         let mut state = self.shared.lock();
-        let Some(sheet) = state.actions.sheet.as_ref().filter(|sheet| sheet.view.id == id) else { return };
+        let Some(sheet) = state.actions.sheet.as_ref().filter(|sheet| sheet.view.id == id && !sheet.closed) else {
+            return;
+        };
         let (Some(value), Some(message_type)) = (sheet.checked.clone(), sheet.view.message_type()) else { return };
         if !sheet.view.can_send() {
             return;
@@ -274,23 +284,46 @@ impl Actors {
         let shared = self.shared.clone();
         let deadline = self.shared.limits.deadline;
         let task = self.shared.handle.spawn(async move {
+            {
+                // Dispatch: the selection may have changed, or the sheet closed, since Send was pressed.
+                let mut state = shared.lock();
+                let Some(sheet) = state.actions.current_send(id, sends) else { return };
+                let (closed, matches) = (sheet.closed, sheet.target.matches(&state));
+                if closed || !matches {
+                    let feedback = (!closed).then(|| Feedback::selection_changed(state.pane_generation));
+                    shared.drop_sheet(&mut state);
+                    shared.finish_action(&mut state, feedback);
+                    return;
+                }
+            }
             let payload = Value::clone(&value);
             let answer = timeout(deadline, client.send_message(&address, &message_type, payload, options)).await;
             let mut state = shared.lock();
-            if !state.actions.sheet.as_ref().is_some_and(|sheet| sheet.view.id == id && sheet.view.sends == sends) {
-                return;
+            if state.actions.current_send(id, sends).is_some() {
+                shared.land_send(&mut state, answer.ok());
             }
-            shared.land_send(&mut state, answer.ok());
         });
         let old = state.actions.sheet.as_mut().and_then(|sheet| sheet.send_task.replace(task));
         state.abort(old);
         self.shared.publish_sheet(&state);
     }
 
-    /// Cancel: closes the sheet and drops what it was doing.
+    /// Cancel: closes the sheet and drops what it was doing. A send that is out keeps the slot until it ends or times
+    /// out, and its answer is dropped.
     pub(crate) fn cancel_send(&self, id: u64) {
         let mut state = self.shared.lock();
-        if state.actions.sheet.as_ref().is_some_and(|sheet| sheet.view.id == id) {
+        let Some(sheet) = state.actions.open(id) else { return };
+        if sheet.view.sending {
+            sheet.closed = true;
+            let tasks = [sheet.types_task.take(), sheet.delay.take()];
+            for task in tasks {
+                state.abort(task);
+            }
+            if let Some(checker) = &state.actions.checker {
+                checker.abandon();
+            }
+            self.shared.send.send_replace(None);
+        } else {
             self.shared.drop_sheet(&mut state);
             self.shared.finish_action(&mut state, None);
         }
@@ -300,6 +333,9 @@ impl Actors {
 impl Shared {
     /// Closes the sheet, if one is open, and cancels its work; the caller frees the slot.
     pub(super) fn drop_sheet(&self, state: &mut ActorState) {
+        if let Some(checker) = &state.actions.checker {
+            checker.abandon();
+        }
         if let Some(sheet) = state.actions.sheet.take() {
             state.abort(sheet.types_task);
             state.abort(sheet.delay);
@@ -309,7 +345,8 @@ impl Shared {
     }
 
     fn publish_sheet(&self, state: &ActorState) {
-        self.send.send_replace(state.actions.sheet.as_ref().map(|sheet| sheet.view.clone()));
+        self.send
+            .send_replace(state.actions.sheet.as_ref().filter(|sheet| !sheet.closed).map(|sheet| sheet.view.clone()));
     }
 
     fn read_types(self: &Arc<Self>, state: &mut ActorState) {
@@ -322,7 +359,7 @@ impl Shared {
         let task = self.handle.spawn(async move {
             let answer = within(Instant::now() + deadline, client.types()).await;
             let mut state = shared.lock();
-            let Some(sheet) = state.actions.sheet.as_mut().filter(|sheet| sheet.view.id == id) else { return };
+            let Some(sheet) = state.actions.open(id) else { return };
             sheet.types_task = None;
             match answer {
                 Part::Ready(rows) => {
@@ -347,6 +384,15 @@ impl Shared {
         answer: Option<cicada_client::ClientResult<cicada_client::SendReceipt>>,
     ) {
         let selected = state.actions.sheet.as_ref().is_some_and(|sheet| sheet.target.matches(state));
+        if state.actions.sheet.as_ref().is_some_and(|sheet| sheet.closed) {
+            // Cancelled while out: drop the answer and free the slot, but read the pane if the message may be in.
+            self.drop_sheet(state);
+            if matches!(answer, None | Some(Ok(_))) {
+                self.refresh_after_write(state);
+            }
+            self.finish_action(state, None);
+            return;
+        }
         let sheet = state.actions.sheet.as_mut().expect("the caller checked the sheet");
         sheet.send_task = None;
         sheet.view.sending = false;
@@ -393,8 +439,8 @@ impl Shared {
         };
         sheet.view.chosen = 0;
         sheet.row = row;
-        if matches!(sheet.view.choices, Choices::Ready(_)) {
-            sheet.choose();
+        if matches!(sheet.view.choices, Choices::Ready(_)) && sheet.choose() {
+            state.actions.post_check();
         }
         self.publish_sheet(state);
     }
@@ -407,24 +453,27 @@ impl Sheet {
         self.checked = None;
         self.view.refusal = None;
         self.view.alert = None;
-        if self.checker.is_some() {
+        if self.checks {
             self.view.verdict = Verdict::Checking;
         }
     }
 
-    /// The chosen message type changed: compile its schema and check the payload now.
-    fn choose(&mut self) {
+    /// The chosen message type changed: a fresh message id, and its schema to compile. True when the payload is to be
+    /// checked now; false while the delay of an edit runs, which then checks it.
+    fn choose(&mut self) -> bool {
         self.choice += 1;
+        self.view.message_id = MessageId::random();
+        self.identified = None;
         self.schema =
             self.row.as_ref().and_then(|row| row.messages.values().nth(self.view.chosen)).cloned().map(Arc::new);
         self.view.schema = None;
         self.view.compiles = true;
         self.changed();
-        self.post();
+        self.delay.is_none()
     }
 
-    fn post(&self) {
-        let (Some(checker), Some(schema)) = (&self.checker, &self.schema) else { return };
+    fn post(&self, checker: &mut Checker) {
+        let Some(schema) = &self.schema else { return };
         checker.post(Job {
             sheet: self.view.id,
             choice: self.choice,
@@ -435,10 +484,30 @@ impl Sheet {
     }
 }
 
+impl super::State {
+    /// The sheet `id`, unless it closed.
+    fn open(&mut self, id: u64) -> Option<&mut Sheet> {
+        self.sheet.as_mut().filter(|sheet| sheet.view.id == id && !sheet.closed)
+    }
+
+    /// The sheet `id` while its send number `sends` is the one out, closed or not.
+    fn current_send(&self, id: u64, sends: u64) -> Option<&Sheet> {
+        self.sheet.as_ref().filter(|sheet| sheet.view.id == id && sheet.view.sends == sends && sheet.view.sending)
+    }
+
+    /// Queues a check of the open sheet's payload against its chosen schema.
+    fn post_check(&mut self) {
+        if let (Some(sheet), Some(checker)) = (self.sheet.as_ref().filter(|sheet| !sheet.closed), self.checker.as_mut())
+        {
+            sheet.post(checker);
+        }
+    }
+}
+
 impl Land for Shared {
     fn land(&self, landed: Landed) {
         let mut state = self.lock();
-        let Some(sheet) = state.actions.sheet.as_mut() else { return };
+        let Some(sheet) = state.actions.sheet.as_mut().filter(|sheet| !sheet.closed) else { return };
         match landed {
             Landed::Schema { sheet: id, choice, json, compiles } if id == sheet.view.id && choice == sheet.choice => {
                 sheet.view.schema = Some(json);
@@ -471,8 +540,14 @@ impl Actors {
         let (arrived, arrival) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let state = self.shared.lock();
-        let checker = state.actions.sheet.as_ref().and_then(|sheet| sheet.checker.as_ref()).expect("an open sheet");
+        let checker = state.actions.checker.as_ref().expect("a sheet was opened");
         checker.holds.lock().unwrap().push_back((arrived, released));
         (arrival, release)
+    }
+
+    /// The checks the shared thread ran.
+    pub(crate) fn send_checks_run(&self) -> usize {
+        let state = self.shared.lock();
+        state.actions.checker.as_ref().map_or(0, |checker| checker.ran.load(std::sync::atomic::Ordering::SeqCst))
     }
 }

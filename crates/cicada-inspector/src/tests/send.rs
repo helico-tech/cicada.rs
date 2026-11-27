@@ -505,3 +505,177 @@ async fn the_sheet_and_the_actions_take_turns_and_a_context_switch_or_close_drop
     })
     .await;
 }
+
+/// Code review 1, finding 1: a sheet reopened during a slow check waits for it on the same thread, and the closed
+/// sheet's queued check is skipped.
+#[tokio::test(start_paused = true)]
+async fn sheets_share_one_check_thread_and_a_closed_sheets_queued_check_is_skipped() {
+    with_clock(async {
+        let actors = actors().await;
+        let server = serve(&actors, no_rule(), Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        passing(&model, id, r#"{"n": 1}"#).await;
+        let (slow, release_slow) = model.hold_send_check();
+        model.edit_send_payload(id, r#"{"n": 2}"#);
+        tokio::time::advance(CHECK_DELAY).await;
+        wait_for_hold(slow).await;
+        let ran = model.send_checks_run();
+        model.edit_send_payload(id, r#"{"n": 3}"#);
+        tokio::time::advance(CHECK_DELAY).await;
+        model.cancel_send(id);
+
+        let (next, release_next) = model.hold_send_check();
+        let pane = model.pane().borrow().clone();
+        let id = model.open_send(&pane, &no_types()).expect("the sheet opens again");
+        choices(&model).await;
+        let not_yet = tokio::task::spawn_blocking(move || {
+            let early = next.recv_timeout(Duration::from_millis(200)).is_ok();
+            (early, next)
+        });
+        let (early, next) = not_yet.await.unwrap();
+        assert!(!early, "the new sheet's check waits for the running one");
+        release_slow.send(()).unwrap();
+        wait_for_hold(next).await;
+        assert_eq!(model.send_checks_run(), ran + 1, "the closed sheet's queued check was skipped");
+        release_next.send(()).unwrap();
+        let view = sheet_until(&model, |view| view.verdict != Verdict::Checking && view.schema.is_some()).await;
+        assert_eq!((view.id, view.chosen, view.verdict), (id, ANY, Verdict::Passes), "the new sheet's `{{}}` as Any");
+    })
+    .await;
+}
+
+/// Code review 1, findings 2 and 6: the draft and the type are frozen while a send is out, and Cancel then closes the
+/// sheet but holds the slot until the send ends, dropping its answer.
+#[tokio::test(start_paused = true)]
+async fn the_draft_is_frozen_while_sending_and_cancel_holds_the_slot_until_the_send_ends() {
+    with_clock(async {
+        let actors = actors().await;
+        let (rule, ready, release) = first_send_held();
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let before = passing(&model, id, r#"{"n": 1}"#).await;
+        model.send_message(id);
+        ready.notified().await;
+        model.edit_send_payload(id, r#"{"n": 2}"#);
+        model.choose_send_type(id, ANY);
+        let frozen = model.send_sheet().borrow().clone().unwrap();
+        assert!(frozen.sending);
+        assert_eq!(
+            (frozen.chosen, &frozen.verdict, &frozen.message_id),
+            (REQUIRED, &Verdict::Passes, &before.message_id)
+        );
+
+        model.cancel_send(id);
+        assert!(model.send_sheet().borrow().is_none(), "the sheet closes");
+        assert!(model.actions().borrow().busy, "the slot is held while the send is out");
+        let pane = model.pane().borrow().clone();
+        assert!(model.press_action(&pane, Action::Purge).is_none());
+        assert_eq!(model.open_send(&pane, &no_types()), None);
+        release.notify_one();
+        let view = model.actions().wait_for(|view| !view.busy).await.unwrap().clone();
+        assert_eq!(view.feedback, None, "the answer is dropped");
+        assert!(model.send_sheet().borrow().is_none());
+        let mailbox = server.client.mailbox(&ActorAddress::parse("form/a").unwrap(), None, None).await.unwrap();
+        assert_eq!(mailbox.unwrap().items[0].message.id, before.message_id, "the frozen draft was sent");
+    })
+    .await;
+}
+
+/// Code review 1, finding 6, with a timeout: the slot is freed when the send times out.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_send_that_times_out_frees_the_slot() {
+    with_clock(async {
+        let actors = actors().await;
+        let (rule, ready, _release) = first_send_held();
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        passing(&model, id, r#"{"n": 1}"#).await;
+        model.send_message(id);
+        ready.notified().await;
+        model.cancel_send(id);
+        assert!(model.actions().borrow().busy);
+        tokio::time::advance(Limits::DEFAULT.deadline).await;
+        let view = model.actions().wait_for(|view| !view.busy).await.unwrap().clone();
+        assert_eq!(view.feedback, None);
+    })
+    .await;
+}
+
+/// Code review 1, finding 3: Send pressed for `counter/a`, then `counter/b` selected before the send is dispatched,
+/// sends nothing.
+#[tokio::test(start_paused = true)]
+async fn a_selection_changed_before_dispatch_sends_nothing() {
+    with_clock(async {
+        let actors = actors().await;
+        create(&actors, "a").await;
+        create(&actors, "b").await;
+        let mut server = serve(&actors, no_rule(), Duration::ZERO).await;
+        let (model, id) = open(&server, &no_types()).await;
+        choices(&model).await;
+        model.edit_send_payload(id, r#"{}"#);
+        tokio::time::advance(CHECK_DELAY).await;
+        let view = sheet_until(&model, |view| view.verdict != Verdict::Checking).await;
+        assert!(view.can_send(), "{:?}", view.verdict);
+        model.send_message(id);
+        model.select(Some(ActorPath::root(ActorAddress::parse("counter/b").unwrap())));
+        let generation = model.pane().borrow().generation;
+        let view = model.actions().wait_for(|view| !view.busy).await.unwrap().clone();
+        assert_eq!(view.feedback, Some(notice(generation, "selection changed; nothing done")));
+        assert!(model.send_sheet().borrow().is_none());
+        while let Ok(event) = server.events.try_recv() {
+            assert!(!event.contains("/messages"), "{event}");
+        }
+    })
+    .await;
+}
+
+/// Code review 1, finding 4: after a lost answer, a round trip through another message type gives a fresh id.
+#[tokio::test(start_paused = true)]
+async fn another_message_type_and_back_gives_a_fresh_id() {
+    with_clock(async {
+        let actors = actors().await;
+        let (rule, ready, release) = first_send_held();
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        let first = passing(&model, id, r#"{"n": 1}"#).await;
+        model.send_message(id);
+        ready.notified().await;
+        tokio::time::advance(Limits::DEFAULT.deadline).await;
+        sheet_until(&model, |view| !view.sending).await;
+        release.notify_one();
+        model.choose_send_type(id, DRAFT7);
+        let other = model.send_sheet().borrow().clone().unwrap();
+        assert_ne!(other.message_id, first.message_id, "a fresh id at the choice");
+        let back = passing(&model, id, r#"{"n": 1}"#).await;
+        assert_ne!(back.message_id, first.message_id);
+        assert_ne!(back.message_id, other.message_id);
+    })
+    .await;
+}
+
+/// Code review 1, finding 5: a choice of message type within the delay of an edit keeps the edit's deadline.
+#[tokio::test(start_paused = true)]
+async fn a_type_chosen_within_the_delay_of_an_edit_checks_at_the_edits_deadline() {
+    with_clock(async {
+        let actors = actors().await;
+        let server = serve(&actors, no_rule(), Duration::ZERO).await;
+        let (model, id) = open_form(&server).await;
+        sheet_until(&model, |view| view.verdict != Verdict::Checking).await;
+        let (held, release) = model.hold_send_check();
+        model.edit_send_payload(id, r#"{"n": 1}"#);
+        tokio::time::advance(CHECK_DELAY / 2).await;
+        model.choose_send_type(id, REQUIRED);
+        let early = tokio::task::spawn_blocking(move || (held.recv_timeout(Duration::from_millis(200)).is_ok(), held));
+        let (early, held) = early.await.unwrap();
+        assert!(!early, "no check before the edit's deadline");
+        tokio::time::advance(CHECK_DELAY / 2).await;
+        wait_for_hold(held).await;
+        release.send(()).unwrap();
+        let view = sheet_until(&model, |view| view.verdict != Verdict::Checking).await;
+        assert_eq!((view.chosen, view.verdict), (REQUIRED, Verdict::Passes));
+        // Without an edit's delay running, a choice checks at once.
+        model.choose_send_type(id, ANY);
+        assert_eq!(sheet_until(&model, |view| view.verdict != Verdict::Checking).await.verdict, Verdict::Passes);
+    })
+    .await;
+}

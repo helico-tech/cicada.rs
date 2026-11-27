@@ -206,6 +206,9 @@ impl SendSheet {
             self.chooser.selectItemAtIndex(view.chosen as NSInteger);
         }
         self.chooser.setHidden(!ready);
+        // The draft and the type stay as sent while a send is out.
+        self.chooser.setEnabled(!view.sending);
+        self.editor.setEditable(!view.sending);
         let note = view.choices.note();
         self.note.setHidden(note.is_none());
         self.note.setStringValue(&NSString::from_str(note.as_deref().unwrap_or("")));
@@ -240,6 +243,8 @@ impl SendSheet {
             None => alert.title.clone(),
         });
         self.refusal.setStringValue(&NSString::from_str(refusal.as_deref().unwrap_or("")));
+        // No Send where nothing can be sent: no message types, an unknown type, or types not read.
+        self.send.setHidden(!ready);
         self.send.setEnabled(view.can_send());
 
         if let Some(alert) = &view.alert
