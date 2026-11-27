@@ -29,14 +29,15 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSControl, NSControlStateValueOn,
-    NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem,
-    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton, NSScrollView, NSSearchField,
-    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
-    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification,
-    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControl,
+    NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
+    NSImageView, NSMenu, NSMenuItem, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPopUpButton,
+    NSScrollView, NSSearchField, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewDataSource,
+    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
+    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -47,6 +48,7 @@ use tokio::{runtime::Handle, sync::watch};
 use crate::actors::{ListView, PaneView};
 use crate::json::Json;
 use crate::lifecycle::WindowSlot;
+use crate::live::{Live, LiveStatus, Pages};
 use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
 use crate::nodes::{NodePane, NodesRead, NodesView};
@@ -89,6 +91,8 @@ const REFRESH: &str = "inspector.refresh";
 const REFRESH_KEY: &str = "r";
 const SEARCH: &str = "inspector.search";
 const PANE: &str = "inspector.pane";
+/// The Live pill: live updates' state, and pause or resume.
+const LIVE: &str = "inspector.live";
 /// The status switch, in the toolbar only on the Outcomes page.
 const STATUS: &str = "inspector.status";
 /// The identifiers of the lists sharing the sidebar's data source and delegate.
@@ -210,7 +214,19 @@ enum RowKey {
 type ContextsShown = (Vec<String>, Option<String>, Vec<&'static str>);
 
 struct Controller {
-    session: Session,
+    session: Arc<Session>,
+    /// The live updates of the page on screen, and their state for the pill.
+    live: Live,
+    live_status: RefCell<watch::Receiver<LiveStatus>>,
+    /// The page and search text, and the context, the live model was last told about.
+    live_screen: RefCell<Option<(Section, String)>>,
+    live_context: Cell<Option<u64>>,
+    /// True while the user has paused live updates.
+    live_paused: Cell<bool>,
+    /// The Actors outline's generation, visible rows and row count when its viewport was last reported, and whether
+    /// its folds changed since.
+    viewport_key: Cell<Option<(u64, usize, usize, usize)>>,
+    viewport_dirty: Cell<bool>,
     /// Only embedded windows return ownership to a host when closed.
     owner: Option<Weak<Windows>>,
     view: RefCell<watch::Receiver<View>>,
@@ -629,6 +645,7 @@ define_class!(
         // SAFETY: NSTimer sends inspectorTick: with the timer as the only argument.
         #[unsafe(method(inspectorTick:))]
         fn tick(&self, _: &NSTimer) {
+            self.sync_live();
             let c = self.ivars();
             if c.view.borrow().has_changed().unwrap_or(false) {
                 self.render();
@@ -645,6 +662,7 @@ define_class!(
                     self.render_pane();
                 }
                 self.check_more();
+                self.report_viewport();
             } else if section == Section::Messages {
                 if c.messages_list.borrow().has_changed().unwrap_or(false) {
                     self.render_messages();
@@ -1029,6 +1047,22 @@ define_class!(
             self.refresh_view();
         }
 
+        // SAFETY: The Live pill sends this action with itself as the sender.
+        #[unsafe(method(inspectorLive:))]
+        fn toggle_live(&self, _: &NSButton) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let paused = !c.live_paused.get();
+            c.live_paused.set(paused);
+            if paused {
+                c.live.pause();
+            } else {
+                c.live.resume();
+            }
+        }
+
         // SAFETY: Only the context NSPopUpButton is wired to this action.
         #[unsafe(method(inspectorContext:))]
         fn pick_context(&self, sender: &NSPopUpButton) {
@@ -1068,6 +1102,11 @@ define_class!(
 
 impl Target {
     fn new(mtm: MainThreadMarker, session: Session, owner: Option<Weak<Windows>>) -> Retained<Self> {
+        let session = Arc::new(session);
+        let pages: Arc<dyn Pages> = session.clone();
+        let (handle, limits) = session.runtime();
+        let live = Live::new(handle, Arc::downgrade(&pages), limits.debounce);
+        let live_status = live.status();
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
         let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
@@ -1079,6 +1118,13 @@ impl Target {
         let (nodes_list, nodes_pane) = (session.nodes().list(), session.nodes().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
             session,
+            live,
+            live_status: RefCell::new(live_status),
+            live_screen: RefCell::default(),
+            live_context: Cell::new(None),
+            live_paused: Cell::new(false),
+            viewport_key: Cell::new(None),
+            viewport_dirty: Cell::new(true),
             owner,
             view: RefCell::new(view),
             navigation: RefCell::default(),
@@ -1137,6 +1183,8 @@ impl Target {
     fn start(&self, context: Option<&str>) {
         self.ivars().session.use_context(context.map(str::to_owned));
         self.render();
+        self.sync_live();
+        self.render_live();
         self.window().window.center();
         // SAFETY: inspectorTick: has NSTimer's one-argument signature, and the timer retains the target until teardown.
         let timer = unsafe {
@@ -1188,6 +1236,7 @@ impl Target {
                 Section::Watches => c.session.watches().refresh(),
                 _ => c.session.refresh(),
             }
+            c.live.refreshed();
             self.render();
         }
     }
@@ -1205,6 +1254,7 @@ impl Target {
         }
         let item = notification.userInfo().and_then(|info| info.objectForKey(ns_string!("NSObject").as_ref()));
         let Some(ItemId::Actor(path)) = item.as_deref().and_then(Item::id) else { return };
+        c.viewport_dirty.set(true);
         let generation = c.list_shown.borrow().generation;
         if open {
             c.session.actors().open(generation, path);
@@ -1224,15 +1274,61 @@ impl Target {
         }
     }
 
-    /// Re-reads the current page with the Actors outline's viewport when it is shown.
-    #[allow(dead_code, reason = "used by the live refresh change")]
-    fn soft_refresh(&self, section: Section) {
+    /// Tells the live model the page on screen, its search text and the context in use, each when it changed, and
+    /// shows the pill's state when that changed.
+    fn sync_live(&self) {
         let c = self.ivars();
-        let viewport = (section == Section::Actors).then(|| {
-            let generation = c.list_shown.borrow().generation;
-            self.window().page.refresh_viewport(generation)
-        });
-        c.session.soft_refresh(section, viewport);
+        if c.finished.get() {
+            return;
+        }
+        let section = c.navigation.borrow().current();
+        let screen = (section, self.search_prefix(section).unwrap_or_default());
+        if c.live_screen.borrow().as_ref() != Some(&screen) {
+            c.live.show(screen.0, &screen.1);
+            c.live_screen.replace(Some(screen));
+        }
+        let (context, client) = c.session.client();
+        if c.live_context.get() != Some(context) {
+            c.live_context.set(Some(context));
+            c.live.use_source(client);
+        }
+        if c.live_status.borrow().has_changed().unwrap_or(false) {
+            self.render_live();
+        }
+    }
+
+    /// The pill: its text, symbol, colour, tooltip and accessibility label from the live model's state.
+    fn render_live(&self) {
+        let c = self.ivars();
+        let status = c.live_status.borrow_mut().borrow_and_update().clone();
+        let (symbol, color) = match status {
+            LiveStatus::Live => ("circle.fill", NSColor::systemGreenColor()),
+            LiveStatus::Reconnecting { .. } => ("arrow.triangle.2.circlepath", NSColor::systemOrangeColor()),
+            LiveStatus::Connecting => ("arrow.triangle.2.circlepath", NSColor::secondaryLabelColor()),
+            LiveStatus::Paused => ("pause.circle", NSColor::secondaryLabelColor()),
+            LiveStatus::Off => ("circle", NSColor::secondaryLabelColor()),
+        };
+        let title = status.title();
+        let button = &self.window().live;
+        button.setTitle(&NSString::from_str(title));
+        button.setImage(symbol_image(symbol, title).as_deref());
+        button.setContentTintColor(Some(&color));
+        button.setToolTip(Some(&NSString::from_str(&status.tooltip())));
+        button.setAccessibilityLabel(Some(&NSString::from_str(&format!("Live updates: {title}"))));
+        button.setEnabled(status != LiveStatus::Off);
+    }
+
+    /// Reports the Actors outline's viewport to the page for live refreshes, when its rows, scroll or folds changed.
+    fn report_viewport(&self) {
+        let c = self.ivars();
+        let page = &self.window().page;
+        let generation = c.list_shown.borrow().generation;
+        let (first, count, rows) = page.visible_rows();
+        let key = Some((generation, first, count, rows));
+        if c.viewport_dirty.replace(false) || c.viewport_key.get() != key {
+            c.viewport_key.set(key);
+            c.session.actors().set_viewport(page.refresh_viewport(generation));
+        }
     }
 
     /// Reloads the outline, reopens its loaded paths and restores selection by identity.
@@ -1242,6 +1338,8 @@ impl Target {
             return;
         }
         let Some(window) = c.window.get() else { return };
+        // Reopened rows change the folds the live refresh reads.
+        c.viewport_dirty.set(true);
         let list = c.list.borrow_mut().borrow_and_update().clone();
         let target_error = c.view.borrow().borrow().target_error.clone();
         window.page.show_footer(&list, target_error.as_deref());
@@ -1986,6 +2084,10 @@ impl Target {
                 button("sidebar.right", "Show or Hide Pane", sel!(inspectorTogglePane:));
                 c.pane_toggle.replace(Some(item.clone()));
             }
+            LIVE => {
+                item.setLabel(ns_string!("Live Updates"));
+                item.setView(Some(&self.window().live));
+            }
             STATUS => {
                 item.setLabel(ns_string!("Status"));
                 item.setToolTip(Some(ns_string!("The status of the outcomes listed")));
@@ -2014,6 +2116,7 @@ impl Target {
             timer.invalidate();
         }
         c.session.stop();
+        c.live.stop();
         let window = self.window();
         window.window.setDelegate(None);
         window.toolbar.setDelegate(None);
@@ -2023,6 +2126,7 @@ impl Target {
             window.sidebar.setDelegate(None);
             NSControl::setTarget(&window.search, None);
             NSControl::setTarget(&window.status, None);
+            NSControl::setTarget(&window.live, None);
         }
         window.page.clear_actions();
         window.messages.clear_actions();
@@ -2061,6 +2165,8 @@ struct Window {
     search: Retained<NSSearchField>,
     /// The status switch of the Outcomes page.
     status: Retained<NSPopUpButton>,
+    /// The Live pill.
+    live: Retained<NSButton>,
     /// The Actors page, next to the Overview's scroll view in the content.
     page: Page,
     messages: MessagesPage,
@@ -2268,6 +2374,14 @@ impl Window {
             NSControl::setAction(&status, Some(sel!(inspectorStatus:)));
         }
 
+        // SAFETY: The target implements inspectorLive: with the button as the sender, and clears it during teardown.
+        let live = unsafe {
+            NSButton::buttonWithTitle_target_action(ns_string!("Live"), Some(target), Some(sel!(inspectorLive:)), mtm)
+        };
+        live.setBezelStyle(NSBezelStyle::Push);
+        live.setImagePosition(NSCellImagePosition::ImageLeading);
+        live.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(132.0, 24.0)));
+
         let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("CicadaInspectorToolbar"));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(target)));
@@ -2282,6 +2396,7 @@ impl Window {
             contexts,
             search,
             status,
+            live,
             page,
             messages,
             turns,
@@ -2306,7 +2421,8 @@ fn toolbar_identifiers() -> Retained<NSArray<NSToolbarItemIdentifier>> {
     let refresh = NSString::from_str(REFRESH);
     let search = NSString::from_str(SEARCH);
     let pane = NSString::from_str(PANE);
-    NSArray::from_slice(&[tracking, &*back, &*forward, flexible, &*search, &*context, &*refresh, &*pane])
+    let live = NSString::from_str(LIVE);
+    NSArray::from_slice(&[tracking, &*back, &*forward, flexible, &*search, &*context, &*live, &*refresh, &*pane])
 }
 
 /// A cell of the sidebar: a group's heading, or an item with its symbol; Outcomes with the failed count.

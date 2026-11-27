@@ -496,6 +496,11 @@ impl Session {
         }
     }
 
+    /// The runtime the session's reads run on, and their limits.
+    pub(crate) fn runtime(&self) -> (&Handle, Limits) {
+        (&self.shared.handle, self.shared.limits)
+    }
+
     /// The client of the context in use, and a number that grows with every [`Self::use_context`].
     pub fn client(&self) -> (u64, Option<ActorClient>) {
         let current = self.shared.current.lock().expect("inspector session");

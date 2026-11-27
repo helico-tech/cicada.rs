@@ -5,6 +5,7 @@
 
 mod actors;
 mod json;
+mod live;
 mod messages;
 mod nodes;
 mod outcomes;

@@ -7,26 +7,28 @@
 //! ```
 //!
 //! The window has a sidebar (Overview; Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches), a
-//! toolbar with back and forward, a search field, a context pop-up, Refresh (⌘R) and a toggle of the pane, and the
-//! Overview: the store's counts, the health, the nodes, the running turns and the types with their actor counts.
-//! Actors lists the actors under the searched address prefix, 100 at a time as the table scrolls, with their type,
-//! version, created time and status (running from one sample of the first 200 running turns, paused from the actor);
-//! the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB), mailbox and
-//! watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at a time,
-//! each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's envelope
-//! and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and forward.
-//! Outcomes lists the finished messages under the prefix by status (Failed by default, Cancelled, Done or All), 100
-//! at a time, each once, and the sidebar shows the store's failed count; the pane shows the selected outcome's error,
-//! attempts, retry policy, envelope and payload, the message recorded as its cause and those that record it as theirs,
-//! each a link recorded in back and forward. Running Turns lists the turns running under the prefix, 100 at a time,
-//! with their actor, message, node, lease end and a cancel request; the pane shows the selected turn with Show Actor,
-//! and back to it reads the actor's turn again, marking one that ended "no longer running". Nodes lists every node
-//! with its status and last heartbeat as the server gave them, read on the first visit, on the page's Refresh and
-//! after a context switch, and filtered by id prefix; the pane reads the selected node with its running turns, each
-//! with Show Actor. Types lists registered contracts and displays one schema at a time. Watches lists the stored
-//! watches, with a filter over the loaded rows and Show Actor for the watcher and any single-actor target. Every page
-//! is read only. The server comes from the contexts of `cicada config`, resolved as `cicada` resolves them. Refresh is
-//! by hand.
+//! toolbar with back and forward, a search field, a context pop-up, the Live pill, Refresh (⌘R) and a toggle of the
+//! pane, and the Overview: the store's counts, the health, the nodes, the running turns and the types with their actor
+//! counts. Actors lists the actors under the searched address prefix, 100 at a time as the table scrolls, with their
+//! type, version, created time and status (running from one sample of the first 200 running turns, paused from the
+//! actor); the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB),
+//! mailbox and watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at
+//! a time, each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's
+//! envelope and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and
+//! forward. Outcomes lists the finished messages under the prefix by status (Failed by default, Cancelled, Done or
+//! All), 100 at a time, each once, and the sidebar shows the store's failed count; the pane shows the selected
+//! outcome's error, attempts, retry policy, envelope and payload, the message recorded as its cause and those that
+//! record it as theirs, each a link recorded in back and forward. Running Turns lists the turns running under the
+//! prefix, 100 at a time, with their actor, message, node, lease end and a cancel request; the pane shows the selected
+//! turn with Show Actor, and back to it reads the actor's turn again, marking one that ended "no longer running". Nodes
+//! lists every node with its status and last heartbeat as the server gave them, read on the first visit, on the page's
+//! Refresh and after a context switch, and filtered by id prefix; the pane reads the selected node with its running
+//! turns, each with Show Actor. Types lists registered contracts and displays one schema at a time. Watches lists the
+//! stored watches, with a filter over the loaded rows and Show Actor for the watcher and any single-actor target. Every
+//! page is read only. The server comes from the contexts of `cicada config`, resolved as `cicada` resolves them. The
+//! page on screen follows the server's change hints (`GET /changes`) and refreshes in place, keeping its selection,
+//! scroll and open rows: at most about twice a second, and 30 s after its last refresh, as hints are best effort. The
+//! Live pill shows Live, Reconnecting or Paused; a click pauses or resumes. Refresh (⌘R) reloads the page by hand.
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod actors;

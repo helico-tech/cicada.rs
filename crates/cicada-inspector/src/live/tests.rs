@@ -411,3 +411,15 @@ async fn a_manual_refresh_arms_the_timer_again_unless_paused() {
     sleep(FALLBACK * 3).await;
     assert_eq!(pages.count(), 1, "⌘R while paused arms no timer");
 }
+
+#[test]
+fn the_pill_says_what_each_state_means() {
+    let at = chrono::Utc::now();
+    let reconnecting = LiveStatus::Reconnecting { at, reason: "refused".into() };
+    let titles = [LiveStatus::Live, reconnecting.clone(), LiveStatus::Paused].map(|status| status.title());
+    assert_eq!(titles, ["Live", "Reconnecting", "Paused"]);
+    let tip = reconnecting.tooltip();
+    assert!(tip.contains("refused") && tip.contains(&at.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()));
+    assert!(LiveStatus::Paused.tooltip().contains("⌘R"));
+    assert!(LiveStatus::Live.tooltip().contains("30 s"));
+}

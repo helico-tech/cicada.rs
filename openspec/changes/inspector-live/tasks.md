@@ -18,7 +18,7 @@ of both soft-refresh changes; rebase onto them when they landed first). Follow `
   cancelled by pause or Retry marks the Actors page's root rows and the chosen parents whose reads it dropped "not
   refreshed" (a code review note of `inspector-soft-refresh-actors`). Verify: the pause tests, and the marks after a
   cancelled refresh.
-- [ ] 4. **The Live pill.** The toolbar pill: Live from the first valid event, Reconnecting with its tooltip, Paused;
+- [x] 4. **The Live pill.** The toolbar pill: Live from the first valid event, Reconnecting with its tooltip, Paused;
   clicking toggles; every `unsafe` with its reason, borrows released before AppKit calls. Verify: `cargo build -p
   cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, the in-process server test of a real change
   starting the Actors page's soft refresh within a second of the hint, and the manual check list below, each item

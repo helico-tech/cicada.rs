@@ -240,6 +240,12 @@ impl Page {
     }
 
     /// Reports expanded paths in the rendered outline and the visible row range.
+    /// The first visible row, the number of visible rows and the number of rows, cheap to compare.
+    pub(super) fn visible_rows(&self) -> (usize, usize, usize) {
+        let range = self.table.rowsInRect(self.table.visibleRect());
+        (range.location, range.length, self.table.numberOfRows().max(0) as usize)
+    }
+
     pub(super) fn refresh_viewport(&self, generation: u64) -> OutlineViewport {
         let count = self.table.numberOfRows() as usize;
         let range = self.table.rowsInRect(self.table.visibleRect());

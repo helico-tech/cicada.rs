@@ -106,6 +106,36 @@ pub enum LiveStatus {
     Paused,
 }
 
+impl LiveStatus {
+    /// The pill's text.
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Off | Self::Live => "Live",
+            Self::Connecting => "Connecting",
+            Self::Reconnecting { .. } => "Reconnecting",
+            Self::Paused => "Paused",
+        }
+    }
+
+    /// The pill's tooltip: what the state means, and what a click does.
+    pub fn tooltip(&self) -> String {
+        match self {
+            Self::Off => "No server to follow".into(),
+            Self::Connecting => "Opening the change stream. Click to pause live updates.".into(),
+            Self::Live => {
+                "Following changes as they happen, best effort; the page also refreshes every 30 s. Click to pause."
+                    .into()
+            }
+            Self::Reconnecting { at, reason } => format!(
+                "The change stream ended ({reason}). Next try at {}; the page still refreshes every 30 s. Click to \
+                 pause.",
+                at.with_timezone(&chrono::Local).format("%H:%M:%S")
+            ),
+            Self::Paused => "Live updates are paused; Refresh (⌘R) still reloads. Click to resume.".into(),
+        }
+    }
+}
+
 /// The prefix the stream of `section` subscribes to: the search prefix on the pages the server lists by prefix, else
 /// every actor. A local filter, as on Types, Watches and Nodes, leaves the subscription alone.
 pub(crate) fn subscription(section: Section, search: &str) -> &str {
@@ -180,6 +210,11 @@ impl<S: ChangeSource> Live<S> {
     /// A manual Refresh (⌘R) of the page: the timer starts again from now unless paused.
     pub fn refreshed(&self) {
         let _ = self.commands.send(Command::Refreshed);
+    }
+
+    /// Stops the model for good, as when its window closes.
+    pub fn stop(&self) {
+        self.task.abort();
     }
 
     /// The pill's states, newest last.
