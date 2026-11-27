@@ -574,8 +574,8 @@ impl ActorClient {
         self.call(Method::GET, self.url("/outcomes", &query)?, None).await?.ok()
     }
 
-    /// The number of actors and pending messages under the URI `prefix` (empty: all), and the delivery time of the
-    /// oldest due message (`GET /stats`).
+    /// The number of actors, pending messages and visible failed outcomes under the URI `prefix` (empty: all), and
+    /// the delivery time of the oldest due message (`GET /stats`). Older servers may omit the failed count.
     pub async fn stats(&self, prefix: &str) -> ClientResult<StatsView> {
         let query = listing(prefix, None, None, None);
         self.call(Method::GET, self.url("/stats", &query)?, None).await?.ok()

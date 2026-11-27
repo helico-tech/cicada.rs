@@ -335,10 +335,15 @@ impl Columns for TypeView {
 
 impl Columns for StatsView {
     fn headers(_: bool) -> Vec<&'static str> {
-        vec!["ACTORS", "PENDING", "OLDEST-DUE"]
+        vec!["ACTORS", "PENDING", "OLDEST-DUE", "FAILED"]
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
-        vec![self.actors.to_string(), self.pending.to_string(), maybe_when(self.oldest_due, wide, now)]
+        vec![
+            self.actors.to_string(),
+            self.pending.to_string(),
+            maybe_when(self.oldest_due, wide, now),
+            dash(self.failed),
+        ]
     }
 }
 

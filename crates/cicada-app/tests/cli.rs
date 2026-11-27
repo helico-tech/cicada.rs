@@ -210,6 +210,40 @@ fn rows(table: &str) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn stats_shows_the_failed_count_or_a_dash_when_the_server_omits_it() {
+    let s = server().await;
+    cicada(&s, &["create", "actor", "account/acme:7", "--state", "{}"]).await;
+    let sent = json(&s, &["send", "account/acme:7", "--type", "Explode", "--payload", "{}"]).await;
+    eventually_status(&s, sent["id"].as_str().unwrap(), "failed").await;
+
+    let args = ["stats", "--prefix", "account/"];
+    let table = cicada(&s, &args).await;
+    assert_eq!(
+        table.split_whitespace().collect::<Vec<_>>(),
+        ["ACTORS", "PENDING", "OLDEST-DUE", "FAILED", "1", "0", "-", "1"]
+    );
+    assert_eq!(json(&s, &args).await["failed"], 1);
+    let yaml = cicada(&s, &["stats", "--prefix", "account/", "-o", "yaml"]).await;
+    let yaml: Value = serde_norway::from_str(&yaml).unwrap();
+    assert_eq!(yaml["failed"], 1);
+
+    let old = server_with(|_| {
+        Router::new().route(
+            "/stats",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"actors": 1, "pending": 0, "oldestDue": null}))
+            }),
+        )
+    })
+    .await;
+    let table = cicada(&old, &args).await;
+    assert_eq!(
+        table.split_whitespace().collect::<Vec<_>>(),
+        ["ACTORS", "PENDING", "OLDEST-DUE", "FAILED", "1", "0", "-", "-"]
+    );
+}
+
+#[tokio::test]
 async fn create_send_and_read_back() {
     let s = server().await;
     let created = cicada(&s, &["create", "actor", "account/acme:7", "--state", r#"{"balance":1}"#]).await;

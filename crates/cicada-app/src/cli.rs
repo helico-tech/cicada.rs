@@ -77,7 +77,7 @@ pub enum Command {
         #[arg(value_parser = address)]
         actor: ActorAddress,
     },
-    /// Count actors and pending messages under a prefix.
+    /// Count actors, pending messages and visible failed outcomes under a prefix.
     Stats {
         /// Address prefix.
         #[arg(long, default_value = "")]

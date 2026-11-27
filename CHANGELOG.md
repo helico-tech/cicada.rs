@@ -20,10 +20,15 @@ reads and writes the config file with the code of `cicada config`.
 **BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, gains `stop_now`, loses
 `Copy`, `PartialEq` and `Eq`, and is now non-exhaustive. Read its fields directly or match with `..`, and compare
 fields instead of whole values. Use `clone()` when another owned value is needed. Only `App::on_worker_ready` supplies
-the value.
+the value. `cicada::store::StoreStats` and `cicada::api::StatsView` gain a `failed` field and become non-exhaustive.
+Replace external struct literals with stats returned by `ActorSystem::stats` or `ActorClient::stats`. Read fields
+directly or use `..` in matches.
 
 ### Added
 
+- `cicada`, `cicada-client`, `cicada-app`: `GET /stats` and `cicada stats` report the number of failed outcomes
+  currently visible under the address prefix, using the visibility rules of `GET /outcomes`. The CLI table shows
+  `-` when an older server omits the count.
 - `cicada`: `Worker::end_grace()` ends the grace period of a stop that has begun, as if it had run out: the running
   turns are cancelled at once, their leases are released where the worker still holds them and can, and otherwise
   expire, and the stop returns within the cancel timeout (a wait for the polling loop ends too). Before a stop begins or

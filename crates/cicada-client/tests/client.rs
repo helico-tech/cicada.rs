@@ -569,6 +569,7 @@ async fn stats_count_what_is_stored() {
     let (actors, _, _) = client_test(|r| r).await;
     let none = actors.stats("").await.unwrap();
     assert_eq!((none.actors, none.pending, none.oldest_due), (0, 0, None));
+    assert_eq!(none.failed, Some(0));
     actors.create(&acme(), &AccountState::default()).await.unwrap();
     actors.create(&account("other", 1), &AccountState::default()).await.unwrap();
     actors.send_with(&acme(), AccountMsg::Deposit { amount: 1 }, hour()).await.unwrap();
@@ -577,6 +578,17 @@ async fn stats_count_what_is_stored() {
     let mine = actors.stats("account/acme:").await.unwrap();
     assert_eq!((mine.actors, mine.pending), (1, 1));
     assert_eq!(actors.stats("beacon/").await.unwrap().actors, 0);
+}
+
+#[tokio::test]
+async fn stats_accepts_a_response_without_the_failed_count_from_an_older_server() {
+    let app = Router::new().route(
+        "/stats",
+        axum::routing::get(|| async { axum::Json(json!({"actors": 3, "pending": 1, "oldestDue": null})) }),
+    );
+    let actors = ActorClient::new(serve(app).await);
+    let stats = actors.stats("").await.unwrap();
+    assert_eq!((stats.actors, stats.pending, stats.oldest_due, stats.failed), (3, 1, None, None));
 }
 
 #[tokio::test]

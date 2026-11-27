@@ -28,7 +28,7 @@ Commands:
   pause        Pause an actor's mailbox: messages queue up, no turn starts
   resume       Resume a paused actor
   purge        Give outcome `purged` to every pending message of an actor
-  stats        Count actors and pending messages under a prefix
+  stats        Count actors, pending messages and visible failed outcomes under a prefix
   health       Whether the node runs and its store answers
   config       Read and change the config file
   tui          Browse and act in a terminal UI
@@ -1721,7 +1721,7 @@ Global options:
 ## `cicada stats`
 
 ```text
-Count actors and pending messages under a prefix
+Count actors, pending messages and visible failed outcomes under a prefix
 
 Usage: cicada stats [OPTIONS]
 
