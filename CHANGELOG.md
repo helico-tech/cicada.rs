@@ -21,7 +21,8 @@ health, the nodes, the running turns and the types with their actor counts, an A
 under an address prefix with a read-only pane of the selected actor, a Messages page of the pending messages with
 Show Actor, a Running Turns page with Show Actor, an Outcomes page of the finished messages by status with their
 cause chain and the failed count in the sidebar, a Nodes page with each node's running turns, a Types page with
-registered schemas, and a Watches page with a filter and Show Actor, for a context of `cicada config`.
+registered schemas, and a Watches page with a filter and Show Actor, for a context of `cicada config`. The page on
+screen updates live from the server's change hints, and its Live pill pauses and resumes the updates.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
 
@@ -44,7 +45,7 @@ directly or use `..` in matches.
   Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, each with a page), a
   toolbar with back and forward, the title, a context pop-up and Refresh, and the Overview: tiles for actors, pending,
   oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
-  turns with a mark when there are more, and the types with their actor counts. A refresh is by hand and bounded: at
+  turns with a mark when there are more, and the types with their actor counts. A refresh is bounded: at
   most 50 types counted, 8 counts at a time, 10 s in all; a part that fails shows its error alone, and a type past
   the 50 or the deadline shows as not counted, and a count still queued at the deadline never starts. A refresh
   superseded by another or by a context switch is cancelled, also while in flight, and its result discarded.
@@ -133,6 +134,20 @@ directly or use `..` in matches.
   found", a failed read shows Retry, and a read is dropped when the selection changes, the filter hides the node, on ⌘R
   and on a context switch. Back to a Nodes place selects its node and reads it fresh. Every read has the 10 s deadline.
   Covered by the tests in `crates/cicada-inspector/src/tests/nodes.rs`; the window has a manual check list.
+- `cicada-inspector`: live updates. The page on screen follows one change stream of `GET /changes`: under the
+  search prefix on Actors, Messages, Running Turns and Outcomes, and for every actor on the Overview, Nodes, Types and
+  Watches. Hints are gathered for 500 ms (at most 1,000 addresses; more count as everything) and run the page's soft
+  refresh, which keeps the selection, the scroll position and the open rows, one at a time, so at most about twice a
+  second; on Actors, Messages, Running Turns and Outcomes only hints under the prefix or for the pane's actor do. Hints
+  are best effort, so a page also refreshes 30 s after its last refresh ended, and a new stream's first `resync`
+  refreshes it once after an open, a reconnect or a resume. A stream that ends or fails opens again after 1, 2, 4, 8,
+  16, then every 30 s, from 1 s again once a stream stayed up for 60 s after its first event. The toolbar's pill shows
+  Live from the stream's first event, Connecting before it, Reconnecting with the next try and the reason in its
+  tooltip, or Paused. A click pauses: the stream closes, the timer stops and a refresh in flight is cancelled with its
+  results dropped; a click resumes. Refresh (⌘R) works in every state. An Actors refresh cancelled by a pause, by
+  leaving the page or by Retry marks the root rows and the open parents whose reads it dropped "not refreshed".
+  Covered by the tests in `crates/cicada-inspector/src/live/tests.rs`, `src/tests/soft_refresh/live.rs` and
+  `src/tests/live.rs`; the pill has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
