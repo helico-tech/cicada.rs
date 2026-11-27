@@ -472,6 +472,9 @@ fn header(layout: &mut Layout<'_>, pane: &PaneView) {
             }
         }
     }
+    if let Some(error) = &pane.errors.actor {
+        layout.text(&format!("Actor: not refreshed ({error})."), Style::Error);
+    }
     let now = chrono::Utc::now();
     match &pane.turn {
         Read::Loading => layout.text("Turn: loading…", Style::Secondary),
@@ -498,6 +501,9 @@ fn header(layout: &mut Layout<'_>, pane: &PaneView) {
             );
         }
     }
+    if let Some(error) = &pane.errors.turn {
+        layout.text(&format!("Turn: not refreshed ({error})."), Style::Error);
+    }
 }
 
 /// The Mailbox tab: the pending messages among the first page; the running one is matched for the turn above.
@@ -507,6 +513,9 @@ fn mailbox(layout: &mut Layout<'_>, pane: &PaneView) {
         Read::Failed(error) => return layout.text(error, Style::Error),
         Read::Ready(mailbox) => mailbox,
     };
+    if let Some(error) = &pane.errors.mailbox {
+        layout.text(&format!("Mailbox: not refreshed ({error})."), Style::Error);
+    }
     let now = chrono::Utc::now();
     let pending: Vec<_> = pane.pending().collect();
     layout.heading(&format!("Pending ({})", pending.len()));
@@ -543,6 +552,9 @@ fn watches(layout: &mut Layout<'_>, pane: &PaneView) {
             }
         }
     }
+    if let Some(error) = &pane.errors.watching {
+        layout.text(&format!("Not refreshed ({error})."), Style::Error);
+    }
     layout.heading("Watched by");
     match &pane.watched_by {
         Read::Loading => layout.text("Loading…", Style::Secondary),
@@ -558,6 +570,9 @@ fn watches(layout: &mut Layout<'_>, pane: &PaneView) {
                 layout.text(&format!("More watchers; this lists the first {WATCH_ROWS}."), Style::Secondary);
             }
         }
+    }
+    if let Some(error) = &pane.errors.watched_by {
+        layout.text(&format!("Not refreshed ({error})."), Style::Error);
     }
     layout.text(
         "Only watches on this exact actor are listed: a watch on its type or on every type (*) is not.",

@@ -17,7 +17,7 @@ landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the de
   "more…" during it waiting, a Retry cancelling it, a failed parent not re-read and not counted, a failed or late
   re-read keeping its children marked; the turns sample with its sequence number; the shared 4-at-a-time limit and 10 s
   deadline across root, turns, children and pane (decisions 4 and 5). Verify: those tests on virtual time.
-- [ ] 4. **The pane and the outline.** The pane re-read without "Loading", no doubled pane read, a failed part keeping
+- [x] 4. **The pane and the outline.** The pane re-read without "Loading", no doubled pane read, a failed part keeping
   its content beside its error, "not found" as today; the outline's report of open paths and first visible row, the
   restore after applying; every `unsafe` with its reason, borrows released before AppKit calls (decision 6). Verify:
   the pane tests, `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, and the manual

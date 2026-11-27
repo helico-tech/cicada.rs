@@ -1247,10 +1247,12 @@ impl Target {
         window.page.show_footer(&list, target_error.as_deref());
         let table = &window.page.table;
         let loading = list.rows.is_empty() && list.paging == Paging::Loading;
+        let same_generation = c.list_shown.borrow().generation == list.generation;
         let anchor = self.table_position(Section::Actors, table, loading, |row| {
             let item = table.itemAtRow(row as NSInteger);
             match item.as_deref().and_then(Item::id) {
                 Some(id @ ItemId::Actor(_)) => Some(RowKey::Outline(id.clone())),
+                Some(id @ ItemId::Status(_)) if same_generation => Some(RowKey::Outline(id.clone())),
                 _ => None,
             }
         });
@@ -1291,9 +1293,9 @@ impl Target {
                 }
             }
             let row = selected.as_ref().map_or(-1, |item| table.rowForItem(Some(item.as_ref())));
-            if let Ok(row) = usize::try_from(row) {
-                table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
-            } else {
+            if row >= 0 && (table.selectedRow() != row || table.numberOfSelectedRows() != 1) {
+                table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row as usize), false);
+            } else if row < 0 && table.numberOfSelectedRows() != 0 {
                 table.deselectAll(None);
             }
         }

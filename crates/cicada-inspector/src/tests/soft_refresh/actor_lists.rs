@@ -445,9 +445,167 @@ async fn root_refresh_caps_full_states_at_three_pages_and_keeps_the_sorted_tail(
         assert_eq!(script.remaining("/actors/states?cursor=new3&limit=100"), 1);
         drop(view);
         model.more();
-        let view = list.wait_for(|list| !list.more).await.unwrap();
+        let view = list.wait_for(|list| !list.more && list.footer().is_none()).await.unwrap();
         assert_eq!(view.rows.len(), 349);
         assert_eq!(view.rows.last().unwrap().address.as_str(), "counter/348");
+        assert!(view.footer().is_none());
+    })
+    .await;
+}
+
+fn watch_pair(watcher: &str, target: &str) -> Fake {
+    page([json!({"watcher": watcher, "target": target})], None)
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_soft_pane_keeps_each_answer_until_its_replacement_and_shows_errors_beside_it() {
+    with_clock(async {
+        let (updated, started, release) = later(details(2));
+        let private_error = Fake::Answer(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "type": "about:blank", "status": 500, "title": "private-token", "detail": "private-token"
+            }),
+        );
+        let mut pending = envelope("old", "counter/a", 1);
+        pending["state"] = json!("pending");
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"], None), roots(&["a"], None)]),
+            (DETAILS, vec![details(1), updated]),
+            (TURN, vec![Fake::Answer(StatusCode::OK, turns::turn("counter/a", "old")), problem(503)]),
+            (MAILBOX, vec![page([pending], None), private_error.clone()]),
+            (WATCHING, vec![watch_pair("counter/a", "counter/b"), watch_pair("counter/a", "counter/c")]),
+            (WATCHED_BY, vec![watch_pair("counter/b", "counter/a"), private_error]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        list.wait_for(|list| list.rows.len() == 1).await.unwrap();
+        let path = actor_path("a");
+        model.select(Some(path.clone()));
+        let before = pane_answered(&mut pane).await;
+        assert!(matches!(before.actor, Read::Ready(Some(ref details)) if details.version == 1));
+        assert_eq!(before.pending().map(|row| row.id.to_string()).collect::<Vec<_>>(), ["old"]);
+        model.soft_refresh(OutlineViewport::default());
+        started.notified().await;
+        let during = pane
+            .wait_for(|pane| {
+                pane.errors.mailbox.is_some()
+                    && pane.errors.turn.is_some()
+                    && pane.errors.watched_by.is_some()
+                    && pane.watching != before.watching
+            })
+            .await
+            .unwrap();
+        assert_eq!(during.generation, before.generation);
+        assert_eq!(during.actor, before.actor);
+        assert_eq!(during.turn, before.turn);
+        assert_eq!(during.mailbox, before.mailbox);
+        assert_eq!(during.watched_by, before.watched_by);
+        assert_eq!(during.errors.turn.as_deref(), Some("HTTP 503"));
+        assert_eq!(during.errors.mailbox.as_deref(), Some("HTTP 500"));
+        assert_eq!(during.errors.watched_by.as_deref(), Some("HTTP 500"));
+        drop(during);
+
+        release.notify_one();
+        let after = pane
+            .wait_for(|pane| matches!(pane.actor, Read::Ready(Some(ref details)) if details.version == 2))
+            .await
+            .unwrap();
+        assert_eq!(after.generation, before.generation);
+        drop(after);
+        assert_eq!(model.selected(), Some(path));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_selected_actor_with_a_pane_read_in_flight_is_not_read_twice() {
+    with_clock(async {
+        let (initial, initial_in, initial_done) = later(details(1));
+        let (refresh, refresh_in, refresh_done) = later(roots(&["a"], Some("new")));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"], Some("old")), refresh, roots(&["a", "b"], None)]),
+            ("/actors/states?cursor=new&limit=100", vec![roots(&["b"], None)]),
+            (DETAILS, vec![initial, details(2)]),
+            (TURN, vec![problem(503), problem(503)]),
+            (MAILBOX, vec![page([], None), page([], None)]),
+            (WATCHING, vec![page([], None), page([], None)]),
+            (WATCHED_BY, vec![page([], None), page([], None)]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        list.wait_for(|list| list.rows.len() == 1).await.unwrap();
+        model.select(Some(actor_path("a")));
+        initial_in.notified().await;
+        model.soft_refresh(OutlineViewport::default());
+        refresh_in.notified().await;
+        model.more();
+        refresh_done.notify_one();
+        list.wait_for(|list| list.rows.len() == 2 && !list.more).await.unwrap();
+        for route in [DETAILS, TURN, MAILBOX, WATCHING, WATCHED_BY] {
+            assert_eq!(script.remaining(route), 1);
+        }
+
+        initial_done.notify_one();
+        let before = pane_answered(&mut pane).await;
+        assert!(matches!(before.actor, Read::Ready(Some(ref details)) if details.version == 1));
+        model.soft_refresh(OutlineViewport::default());
+        let after = pane
+            .wait_for(|pane| matches!(pane.actor, Read::Ready(Some(ref details)) if details.version == 2))
+            .await
+            .unwrap();
+        assert_eq!(after.generation, before.generation);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_missing_actor_empties_the_pane_even_when_another_reply_arrives_late() {
+    with_clock(async {
+        let (missing, missing_in, missing_done) = later(Fake::Answer(
+            StatusCode::NOT_FOUND,
+            json!({
+                "type": cicada::api::problem_types::NO_SUCH_INSTANCE, "status": 404, "title": "Not found"
+            }),
+        ));
+        let (late, late_in, late_done) = later(watch_pair("counter/c", "counter/a"));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"], Some("old")), roots(&["a"], Some("new"))]),
+            ("/actors/states?cursor=new&limit=100", vec![roots(&["b"], None)]),
+            (DETAILS, vec![details(1), missing]),
+            (TURN, vec![Fake::Answer(StatusCode::OK, turns::turn("counter/a", "old")), problem(503)]),
+            (MAILBOX, vec![page([], None), page([], None)]),
+            (WATCHING, vec![watch_pair("counter/a", "counter/b"), page([], None)]),
+            (WATCHED_BY, vec![watch_pair("counter/b", "counter/a"), late]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        list.wait_for(|list| list.rows.len() == 1).await.unwrap();
+        let path = actor_path("a");
+        model.select(Some(path.clone()));
+        let before = pane_answered(&mut pane).await;
+        model.soft_refresh(OutlineViewport::default());
+        missing_in.notified().await;
+        late_in.notified().await;
+        model.more();
+        missing_done.notify_one();
+        let missing = pane.wait_for(PaneView::not_found).await.unwrap().clone();
+        assert_eq!(missing.generation, before.generation);
+        assert_eq!(missing.turn, Read::Ready(None));
+        assert!(matches!(&missing.watching, Read::Ready(watches) if watches.items.is_empty()));
+        late_done.notify_one();
+        list.wait_for(|list| list.rows.len() == 2).await.unwrap();
+        assert_eq!(*pane.borrow(), missing);
+        assert_eq!(model.selected(), Some(path));
     })
     .await;
 }

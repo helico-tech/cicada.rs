@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cicada::ActorAddress;
@@ -180,7 +181,7 @@ pub enum Running {
 pub struct ListView {
     /// The prefix the rows are under.
     pub prefix: String,
-    /// Grows whenever the rows are replaced rather than appended to.
+    /// Grows when a new list starts at its first page, including a search, manual Refresh or context switch.
     pub generation: u64,
     /// The rows read so far, in address order.
     pub rows: Vec<ActorRow>,
@@ -370,6 +371,31 @@ impl<T> From<Part<T>> for Read<T> {
     }
 }
 
+impl<T> Read<T> {
+    fn land(&mut self, error: &mut Option<String>, part: Part<T>, keep: bool) {
+        *error = None;
+        match part {
+            Part::Failed(problem) if keep && matches!(self, Self::Ready(_)) => *error = Some(problem),
+            part => *self = part.into(),
+        }
+    }
+}
+
+/// Errors beside pane parts carried over from an earlier answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneErrors {
+    /// The actor details and state.
+    pub actor: Option<String>,
+    /// The running turn.
+    pub turn: Option<String>,
+    /// The first mailbox page.
+    pub mailbox: Option<String>,
+    /// Watches with the actor as the watcher.
+    pub watching: Option<String>,
+    /// Watches with the actor as the exact target.
+    pub watched_by: Option<String>,
+}
+
 /// What the pane shows of the selected actor, each part with its own result.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneView {
@@ -387,9 +413,20 @@ pub struct PaneView {
     pub watching: Read<Watches>,
     /// The watches stored with the actor as their exact target; a watch on its type is not among them.
     pub watched_by: Read<Watches>,
+    /// Why a part could not be refreshed when its previous answer is still shown.
+    pub errors: PaneErrors,
 }
 
 impl PaneView {
+    fn set_missing(&mut self) {
+        self.actor = Read::Ready(None);
+        self.turn = Read::Ready(None);
+        self.mailbox = Read::Ready(Mailbox::default());
+        self.watching = Read::Ready(Watches::default());
+        self.watched_by = Read::Ready(Watches::default());
+        self.errors = PaneErrors::default();
+    }
+
     /// True when the actor is gone: the pane shows only that.
     pub fn not_found(&self) -> bool {
         matches!(self.actor, Read::Ready(None))
@@ -608,6 +645,9 @@ impl Actors {
     /// Re-reads the loaded range of the Actors page without replacing its generation.
     pub fn soft_refresh(&self, viewport: OutlineViewport) {
         let mut state = self.shared.lock();
+        if matches!(self.shared.readiness(&state), Readiness::Skip) {
+            return;
+        }
         state.pending_viewport = viewport;
         self.shared.request_locked(&mut state);
     }
@@ -858,7 +898,12 @@ impl RefreshPage for Shared {
         };
         let pane = async {
             if let Some((address, read)) = pane {
-                self.read_pane(&client, address, read, &budget).await;
+                let mut view = self.pane.subscribe();
+                tokio::select! {
+                    biased;
+                    _ = view.wait_for(|pane| pane.generation != read.generation) => {}
+                    () = self.read_pane(&client, address, read, &budget) => {}
+                }
             }
         };
         tokio::join!(outline, sample, pane);
@@ -1004,11 +1049,22 @@ impl Shared {
             Part::Ready(page) => page,
             Part::Failed(error) => {
                 self.list.send_modify(|list| list.paging = Paging::Failed(error));
+                state.pending_viewport = OutlineViewport::default();
                 self.resume(state);
                 return;
             }
         };
-        self.merge_roots(state, items, more);
+        let kept = self.merge_roots(state, items, more);
+        if !kept {
+            self.list.send_if_modified(|list| {
+                if list.stale.as_ref().is_some_and(|mark| mark.capped) {
+                    list.stale = None;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
         if landed.first && state.jump.as_ref().is_some_and(|jump| jump.generation == landed.generation) {
             let actor = state.jump.take().expect("a jump waits").actor;
             if self.list.borrow().root_index(&actor).is_some() {
@@ -1045,15 +1101,9 @@ impl Shared {
     fn not_found(&self, state: &mut State, actor: ActorAddress) {
         state.supersede_pane();
         state.selected = None;
-        self.pane.send_replace(PaneView {
-            generation: state.pane_generation,
-            address: Some(actor),
-            actor: Read::Ready(None),
-            turn: Read::Ready(None),
-            mailbox: Read::Ready(Mailbox::default()),
-            watching: Read::Ready(Watches::default()),
-            watched_by: Read::Ready(Watches::default()),
-        });
+        let mut pane = PaneView { generation: state.pane_generation, address: Some(actor), ..PaneView::default() };
+        pane.set_missing();
+        self.pane.send_replace(pane);
     }
 
     fn request_children(self: &Arc<Self>, state: &mut State, parent: ActorPath) {
@@ -1217,6 +1267,7 @@ impl Shared {
                 mailbox: Read::Failed("no server".into()),
                 watching: Read::Failed("no server".into()),
                 watched_by: Read::Failed("no server".into()),
+                errors: PaneErrors::default(),
             },
             _ => PaneView { generation, address: address.clone(), ..PaneView::default() },
         });
@@ -1233,31 +1284,28 @@ impl Shared {
     }
 
     async fn read_pane(&self, client: &ActorClient, address: ActorAddress, read: PaneRead, budget: &Budget) {
-        let apply = |change: &dyn Fn(&mut PaneView)| {
-            let state = self.lock();
-            if state.pane_generation == read.generation
-                && read.refresh.is_none_or(|ticket| state.pager.refresh.current(ticket))
-            {
-                self.pane.send_modify(change);
-            }
-        };
+        let keep = read.refresh.is_some();
+        // One actor-missing answer empties the entire pane, even if other replies arrive afterward.
+        let missing = AtomicBool::new(false);
         let actor = async {
-            let read: Read<_> = budget.read(client.get_actor(&address)).await.into();
-            let read = match read {
-                Read::Ready(view) => Read::Ready(view.map(details)),
-                Read::Failed(error) => Read::Failed(error),
-                Read::Loading => Read::Loading,
-            };
-            apply(&|pane| pane.actor = read.clone());
+            let part = budget.read(client.get_actor(&address)).await.map(|view| view.map(details));
+            self.apply_pane(read, &missing, |pane| {
+                if matches!(part, Part::Ready(None)) {
+                    pane.set_missing();
+                    missing.store(true, Ordering::Relaxed);
+                } else {
+                    pane.actor.land(&mut pane.errors.actor, part, keep);
+                }
+            });
         };
         let turn = async {
-            let read: Read<_> = budget.read(client.turn(&address)).await.into();
-            apply(&|pane| pane.turn = read.clone());
+            let part = budget.read(client.turn(&address)).await;
+            self.apply_pane(read, &missing, |pane| pane.turn.land(&mut pane.errors.turn, part, keep));
         };
         let mailbox = async {
-            let read = budget.read(client.mailbox(&address, None, Some(MAILBOX_ROWS))).await;
-            let read: Read<Mailbox> = match read {
-                Part::Ready(Some(page)) => Read::Ready(Mailbox {
+            let part = budget.read(client.mailbox(&address, None, Some(MAILBOX_ROWS))).await.map(|page| {
+                let Some(page) = page else { return Mailbox::default() };
+                Mailbox {
                     more: page.next.is_some(),
                     rows: page
                         .items
@@ -1270,25 +1318,36 @@ impl Shared {
                             attempt: row.message.attempt,
                         })
                         .collect(),
-                }),
-                // The actor is gone; `get_actor` says so for the whole pane.
-                Part::Ready(None) => Read::Ready(Mailbox::default()),
-                Part::Failed(error) => Read::Failed(error),
-            };
-            apply(&|pane| pane.mailbox = read.clone());
+                }
+            });
+            self.apply_pane(read, &missing, |pane| pane.mailbox.land(&mut pane.errors.mailbox, part, keep));
         };
         let watching = async {
-            let read = budget.read(client.watches(Some(&address), None, None, Some(WATCH_ROWS))).await;
-            let read: Read<_> = read.map(|page| Watches { more: page.next.is_some(), items: page.items }).into();
-            apply(&|pane| pane.watching = read.clone());
+            let part = budget
+                .read(client.watches(Some(&address), None, None, Some(WATCH_ROWS)))
+                .await
+                .map(|page| Watches { more: page.next.is_some(), items: page.items });
+            self.apply_pane(read, &missing, |pane| pane.watching.land(&mut pane.errors.watching, part, keep));
         };
         let watched_by = async {
             let target = WatchTarget::Actor(address.clone());
-            let read = budget.read(client.watches(None, Some(&target), None, Some(WATCH_ROWS))).await;
-            let read: Read<_> = read.map(|page| Watches { more: page.next.is_some(), items: page.items }).into();
-            apply(&|pane| pane.watched_by = read.clone());
+            let part = budget
+                .read(client.watches(None, Some(&target), None, Some(WATCH_ROWS)))
+                .await
+                .map(|page| Watches { more: page.next.is_some(), items: page.items });
+            self.apply_pane(read, &missing, |pane| pane.watched_by.land(&mut pane.errors.watched_by, part, keep));
         };
         tokio::join!(actor, turn, mailbox, watching, watched_by);
+    }
+
+    fn apply_pane(&self, read: PaneRead, missing: &AtomicBool, change: impl FnOnce(&mut PaneView)) {
+        let state = self.lock();
+        if state.pane_generation == read.generation
+            && read.refresh.is_none_or(|ticket| state.pager.refresh.current(ticket))
+            && !missing.load(Ordering::Relaxed)
+        {
+            self.pane.send_modify(change);
+        }
     }
 }
 
@@ -1325,17 +1384,15 @@ fn prune_paths(
     reopen: &mut Vec<ActorPath>,
 ) -> bool {
     let current = (!parent.is_empty()).then(|| ActorPath(parent.to_vec()));
-    let children = current.as_ref().and_then(|path| list.children.get(path));
-    let gone = |path: &ActorPath| {
+    let gone = |list: &ListView, path: &ActorPath| {
         path.0.strip_prefix(parent).and_then(|tail| tail.first()).is_some_and(|address| {
             (!more || last.is_some_and(|last| address <= last))
-                && match children {
+                && match current.as_ref().and_then(|path| list.children.get(path)) {
                     Some(page) => page.rows.binary_search(address).is_err(),
                     None => list.root_index(address).is_none(),
                 }
         })
     };
-    let clear = state.selected.as_ref().is_some_and(gone);
     // Collect before mutating the caches used to determine which paths are still present.
     let removed: BTreeSet<_> = list
         .open
@@ -1343,7 +1400,7 @@ fn prune_paths(
         .chain(list.children.keys())
         .chain(state.child_reads.keys())
         .chain(state.deferred_children.keys())
-        .filter(|path| gone(path))
+        .filter(|path| gone(list, path))
         .cloned()
         .collect();
     for path in removed {
@@ -1365,7 +1422,7 @@ fn prune_paths(
             })
             .cloned(),
     );
-    clear
+    state.selected.as_ref().is_some_and(|path| gone(list, path))
 }
 
 /// The pane's details of `view`, with its state formatted; the rest of the view is dropped.
