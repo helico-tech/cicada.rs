@@ -824,3 +824,79 @@ async fn a_stale_chain_read_is_dropped() {
     assert!(matches!(now.subject, Some(Subject::Outcome(_))), "the linked read is dropped: {now:?}");
     session.stop();
 }
+
+/// Back returns to what the pane showed when its place was left: Caused by from outcome A, then outcome B selected on
+/// that link's place, Show Actor, Back shows B with its row selected. Back once more shows A, and Forward B again.
+#[tokio::test]
+async fn back_returns_to_an_outcome_selected_on_a_link_place() {
+    let actors = actors().await;
+    let rule = routes(vec![
+        (
+            "/outcomes?limit=100&status=failed",
+            page(&[outcome("a1", "bag/a", "failed", Some("p1")), outcome("b1", "bag/b", "failed", None)], None),
+        ),
+        ("/messages/p1", Fake::Answer(StatusCode::OK, status("p1", "done"))),
+        ("/messages/p1/caused?limit=50", page(&[], None)),
+    ]);
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let outcomes = session.outcomes();
+    let (mut list, mut pane) = (outcomes.list(), outcomes.pane());
+    let mut navigation = Navigation::default();
+    session.navigate(&mut navigation, select_outcomes);
+    outcomes.show();
+    let view = until(&mut list, |l| l.paging == Paging::Idle && l.rows.len() == 2).await;
+    outcomes.select(Some(&id("a1")));
+    session.follow(&mut navigation, id("p1"));
+    until(&mut pane, |p| matches!(p.subject, Some(Subject::Linked(_, Read::Found(_))))).await;
+    outcomes.select(Some(&id("b1")));
+    assert_eq!(shown(&pane.borrow()), Some("b1".into()));
+    session.show_actor(&mut navigation, view.rows[1].actor.clone());
+    assert_eq!(navigation.current(), Section::Actors);
+
+    assert!(session.navigate(&mut navigation, Navigation::back));
+    assert_eq!(navigation.current(), Section::Outcomes);
+    let back = pane.borrow().clone();
+    assert!(matches!(&back.subject, Some(Subject::Outcome(o)) if Arc::ptr_eq(o, &view.rows[1])), "{back:?}");
+    assert_eq!(outcomes.selected(), Some(id("b1")));
+    assert!(session.navigate(&mut navigation, Navigation::back));
+    assert_eq!((shown(&pane.borrow()), outcomes.selected()), (Some("a1".into()), Some(id("a1"))));
+    assert!(session.navigate(&mut navigation, Navigation::forward));
+    assert_eq!((shown(&pane.borrow()), outcomes.selected()), (Some("b1".into()), Some(id("b1"))));
+    session.stop();
+}
+
+/// A linked message that was found shows Caused loading, not "None", until its first page answers: that page is held
+/// at the server while the pane is looked at.
+#[tokio::test]
+async fn a_linked_message_shows_caused_loading_until_its_first_page_answers() {
+    let actors = actors().await;
+    let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let held = Fake::Later {
+        arrived: arrived.clone(),
+        release: release.clone(),
+        status: StatusCode::OK,
+        body: json!({"items": [], "next": null}),
+    };
+    let rule = routes(vec![
+        ("/messages/p1", Fake::Answer(StatusCode::OK, status("p1", "done"))),
+        ("/messages/p1/caused?limit=50", held),
+    ]);
+    let server = serve(&actors, rule, Duration::ZERO).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = session(&server, &dir);
+    let mut pane = session.outcomes().pane();
+    let mut navigation = Navigation::default();
+    session.navigate(&mut navigation, select_outcomes);
+    session.follow(&mut navigation, id("p1"));
+    timeout(WAIT, arrived.notified()).await.expect("the first page of Caused is held");
+    let found = pane.borrow_and_update().clone();
+    assert!(matches!(found.subject, Some(Subject::Linked(_, Read::Found(_)))), "{found:?}");
+    assert_eq!(found.caused.paging, Paging::Loading);
+    assert!(!found.caused.none());
+    release.notify_one();
+    let answered = until(&mut pane, |p| p.caused.paging == Paging::Idle).await;
+    assert!(answered.caused.none());
+    session.stop();
+}

@@ -427,9 +427,14 @@ impl Session {
         let recorded = navigation.place().clone();
         match left {
             Section::Messages => navigation.current.messages = Some(self.messages.source()),
-            // A link place holds its message, read fresh on every return; a status switch there does not clear it.
-            Section::Outcomes if !matches!(navigation.current.outcomes, Some(OutcomePlace::Linked(_))) => {
-                navigation.current.outcomes = Some(self.outcomes.source())
+            // What the pane shows is kept; but a link place whose pane a status switch or a context switch emptied
+            // keeps its message, read fresh on every return.
+            Section::Outcomes => {
+                let source = self.outcomes.source();
+                let link = matches!(navigation.current.outcomes, Some(OutcomePlace::Linked(_)));
+                if !(link && source == OutcomePlace::Nothing) {
+                    navigation.current.outcomes = Some(source);
+                }
             }
             Section::Watches => navigation.current.watches = Some(self.watches.source()),
             _ => {}

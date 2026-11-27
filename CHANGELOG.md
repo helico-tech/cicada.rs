@@ -90,29 +90,28 @@ directly or use `..` in matches.
   failed read. From a watch, **Show Actor** goes to the watcher or a one-actor target and records the jump in back
   and forward. Both pages keep their filter text when you navigate and clear their selection on ⌘R.
 - `cicada-inspector`: the Outcomes page. Its table lists the finished messages of the actors under the prefix in the
-  search field, 100 at a time as it scrolls, by a status switch in the toolbar: Failed (the default), Cancelled, Done
-  or All, which adds a status column and includes purged outcomes. Rows show the message type, actor, attempt,
-  finished time and the error's first line, with the whole error in a tooltip. Pages are not a snapshot: a message on
-  two pages shows once, as first read, and a page of only such messages still moves on. Switching the status starts
-  over from the first page and clears the selection, a search still waiting and the pane. The sidebar's Outcomes
-  item shows the store's failed count from `/stats`, read with the Overview's refresh (shown as soon as `/stats`
-  answers; a refresh that a later one replaced shows nothing) and with ⌘R on Outcomes: "…" until a read answers and
-  after a context switch, the last count kept with the error in its tooltip when a read
-  fails, and "—" from an older server that sends no count or when the first read fails. Selecting an outcome fills
-  the pane from its row, with no read of the message: the status and error, attempts and failures, the last retried
-  error, the retry policy, the envelope (id, target, sender, correlation id, finished time, headers) and the payload
-  as highlighted JSON, formatted only then; Show Actor goes to its actor. The cause chain is one step at a time and
-  follows the recorded `causedBy`: Caused by links to the message recorded as this one's cause (the message whose
-  turn sent it, the original of an operator retry, or the message whose turn stopped the actor of a `Stopped`
-  notice), and says "No recorded cause" when there is none, as for a send from outside an actor or a `Failed`
-  notice. Caused lists the messages that record this one as their cause, one level down: pending or running ones and
-  finished ones whose outcome is retained; its first 50 with "more…", Retry on a failed page, "None" when there are
-  none and "not found" when the message is unknown or past retention. Following a link is a place in back and
-  forward that reads that message fresh and shows it pending, running or finished, "not found" past retention, or
-  its error with Retry; a status switch leaves those places as they were. Back to an outcome shows it as it was
-  read, also when its row is no longer listed, and selects its row when it is listed or once a page brings it. A
-  context switch clears back and forward and drops pending reads. Covered by the tests in
-  `crates/cicada-inspector/src/tests/outcomes.rs`; the window has a manual check list.
+  search field, 100 at a time as it scrolls, by a status switch in the toolbar: Failed (the default), Cancelled, Done or
+  All, which adds a status column and includes purged outcomes. Rows show the message type, actor, attempt, finished
+  time and the error's first line, with the whole error in a tooltip. Pages are not a snapshot: a message on two pages
+  shows once, as first read, and a page of only such messages still moves on. Switching the status starts over from the
+  first page and clears the selection, a search still waiting and the pane. The sidebar's Outcomes item shows the
+  store's failed count from `/stats`, read with the Overview's refresh (shown as soon as `/stats` answers; a refresh
+  that a later one replaced shows nothing) and with ⌘R on Outcomes: "…" until a read answers and after a context switch,
+  the last count kept with the error in its tooltip when a read fails, and "—" from an older server that sends no count
+  or when the first read fails. Selecting an outcome fills the pane from its row, with no read of the message: the
+  status and error, attempts and failures, the last retried error, the retry policy, the envelope (id, target, sender,
+  correlation id, finished time, headers) and the payload as highlighted JSON, formatted only then; Show Actor goes to
+  its actor. The cause chain is one step at a time and follows the recorded `causedBy`: Caused by links to the message
+  recorded as this one's cause (the message whose turn sent it, the original of an operator retry, or, for a `Stopped`
+  notice, the message of the turn that stopped the actor or whose `watch_existing` found it absent), and says "No
+  recorded cause" when there is none, as for a send from outside an actor or a `Failed` notice. Caused lists the
+  messages that record this one as their cause, one level down: pending or running ones and finished ones whose outcome
+  is retained; its first 50 with "more…", Retry on a failed page, "None" when there are none and "not found" when the
+  message is unknown or past retention. Following a link is a place in back and forward that reads that message fresh
+  and shows it pending, running or finished, "not found" past retention, or its error with Retry; a status switch leaves
+  those places as they were. Back to an outcome shows it as it was read, also when its row is no longer listed, and
+  selects its row when it is listed or once a page brings it. A context switch clears back and forward and drops pending
+  reads. Covered by the tests in `crates/cicada-inspector/src/tests/outcomes.rs`; the window has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before

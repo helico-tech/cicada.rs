@@ -50,12 +50,12 @@ message are not in the inspector yet.
 
 **Text.** The pane follows the chain one step at a time, by the cause each message records (`causedBy`). **Caused
 by** links to the message recorded as this one's cause: the message whose turn sent it, the original message of an
-operator retry, or, for a `Stopped` notice the store wrote, the message whose turn stopped or deleted the actor. It
-says "No recorded cause" when there is none: a send from outside an actor, a `Failed` notice, or a stop from outside
-a turn. **Caused** lists the messages that record this one as their cause, one level down: pending or running ones,
-and finished ones whose outcome retention still keeps. It shows the first 50, with **more…** for the next ones and
-**Retry** when a page fails. It says "None" when there are none, and "not found" when the message is unknown or past
-retention.
+operator retry, or, for a `Stopped` notice the store wrote, the message of the turn that stopped or deleted the actor,
+or of the turn whose `watch_existing` found the actor absent when it committed. It says "No recorded cause" when
+there is none: a send from outside an actor, a `Failed` notice, or a stop or delete from outside a turn. **Caused**
+lists the messages that record this one as their cause, one level down: pending or running ones, and finished ones
+whose outcome retention still keeps. It shows the first 50, with **more…** for the next ones and **Retry** when a
+page fails. It says "None" when there are none, and "not found" when the message is unknown or past retention.
 
 Following a link is a new place in back and forward. The pane reads that message fresh and shows it whether it is
 pending, running or finished. A message past retention shows "not found"; a read that fails shows its error with
