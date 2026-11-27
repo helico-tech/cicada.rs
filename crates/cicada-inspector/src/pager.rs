@@ -3,7 +3,7 @@
 //! waits 300 ms after the last key. The page keeps the pager under its state lock and cancels it on context switch
 //! or close. Tasks find it through [`Paged`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::{Arc, MutexGuard};
@@ -380,11 +380,11 @@ pub(crate) fn replace_range<T, K: Ord + Hash>(
                 let key = key(row);
                 boundary.as_ref().is_none_or(|last| key > *last) && seen.insert(key)
             })),
-            // The server's sort fields are opaque and new rows can sort ahead of old ones, so positions shift. If we
-            // did not reach the old end, keep the old rows after the last old row the range holds; old rows before it
+            // The server's sort fields are opaque: new rows can sort ahead of old ones, and a row can move (Deliver Now,
+            // a reschedule). If we did not reach the old end, keep the old rows after the seam; old rows before it
             // that the range does not hold have left the list.
             Order::Id if boundary.is_none_or(|last| !seen.contains(&last)) => {
-                let start = old.iter().rposition(|row| seen.contains(&key(row))).map_or(0, |index| index + 1);
+                let start = seam(&old, &rows, &key);
                 rows.extend(old.into_iter().skip(start).filter(|row| seen.insert(key(row))));
             }
             Order::Id => {}
@@ -392,6 +392,25 @@ pub(crate) fn replace_range<T, K: Ord + Hash>(
     }
     let kept = rows.len() > fresh_count;
     (rows, kept)
+}
+
+/// The index of the first old row past the refreshed range: after the last old row of the longest run of old rows that
+/// kept their order in the range, so a row that moved cannot set the seam; 0 when the range holds no old row.
+fn seam<T, K: Hash + Eq>(old: &[Arc<T>], fresh: &[Arc<T>], key: impl Fn(&T) -> K) -> usize {
+    let position: HashMap<K, usize> = fresh.iter().enumerate().map(|(at, row)| (key(row), at)).collect();
+    // Patience sorting over the fresh positions in old order: `tails[n]` ends a longest run of n + 1 rows, as its fresh
+    // position and old index.
+    let mut tails: Vec<(usize, usize)> = Vec::new();
+    for (index, row) in old.iter().enumerate() {
+        let Some(&at) = position.get(&key(row)) else { continue };
+        let slot = tails.partition_point(|&(other, _)| other < at);
+        if slot == tails.len() {
+            tails.push((at, index));
+        } else {
+            tails[slot] = (at, index);
+        }
+    }
+    tails.last().map_or(0, |&(_, index)| index + 1)
 }
 
 /// Inserts an ordered page among the held rows and ignores keys the list already has.

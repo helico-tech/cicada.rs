@@ -156,6 +156,39 @@ async fn messages_refresh_keeps_old_rows_pushed_back_by_new_ones_ahead_of_them()
 }
 
 #[tokio::test(start_paused = true)]
+async fn messages_refresh_does_not_let_a_row_moved_ahead_set_the_seam() {
+    with_clock(async {
+        let fresh = messages(440..441).chain(messages(0..99));
+        let routes = Script::new([
+            (INBOX, vec![page(messages(0..100), Some("old1")), page(fresh, Some("new1"))]),
+            ("/messages?cursor=old1&limit=100", vec![page(messages(100..200), Some("old2"))]),
+            ("/messages?cursor=old2&limit=100", vec![page(messages(200..300), Some("old3"))]),
+            ("/messages?cursor=old3&limit=100", vec![page(messages(300..400), Some("old4"))]),
+            ("/messages?cursor=old4&limit=100", vec![page(messages(400..450), Some("old5"))]),
+            ("/messages?cursor=new1&limit=100", vec![page(messages(99..199), Some("new2"))]),
+            ("/messages?cursor=new2&limit=100", vec![page(messages(199..299), Some("new3"))]),
+        ]);
+        let server = serve(&actors().await, routes.rule(), Duration::ZERO).await;
+        let model = Messages::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let mut list = model.list();
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 100).await;
+        for count in [200, 300, 400, 450] {
+            model.more();
+            view_until(&mut list, |list| list.rows.len() == count).await;
+        }
+        model.soft_refresh();
+        let after = view_until(&mut list, |list| list.stale.is_some()).await;
+        assert_eq!(after.rows.len(), 450, "m440 delivered now, every row kept once");
+        assert_eq!(after.index(&id("m440")), Some(0));
+        assert_eq!(after.index(&id("m299")), Some(300), "the seam follows m298, not m440");
+        assert_eq!(after.index(&id("m449")), Some(449));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn messages_refresh_stops_on_the_old_last_id_and_uses_the_selection_at_apply_time() {
     with_clock(async {
         let (held, arrived, release) =
