@@ -14,9 +14,9 @@ showing "Loading".
 
 #### Scenario: Many open rows
 
-- **WHEN** 30 rows are open and a soft refresh runs
+- **WHEN** 30 rows are open at one depth and a soft refresh runs
 - **THEN** the first children pages of 20 of them, those on screen first, are re-read, and the rest are marked as not
-  refreshed
+  refreshed; an open row under one of them is re-read only after its parent's re-read has answered
 
 #### Scenario: The pane stays
 
