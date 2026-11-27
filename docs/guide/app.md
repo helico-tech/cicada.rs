@@ -338,8 +338,8 @@ owns the app until the window closes: a regular app with a Dock icon and a main 
 Refresh (⌘R), Back (⌘[) and Forward (⌘]).
 
 The sidebar lists Overview and the Browse items (Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches);
-Overview, Actors, Messages, Types and Watches have pages, and the others say "Coming soon". Actors, Messages,
-Types and Watches share the toolbar's search field and pane toggle; each page keeps its own filter text, and the
+Overview, Actors, Messages, Outcomes, Types and Watches have pages; Running Turns and Nodes still say "Coming soon".
+Actors, Messages, Outcomes, Types and Watches share the toolbar's search field and pane toggle; each page keeps its own filter text, and the
 field's placeholder says which prefix to enter. The Overview shows tiles for actors, pending
 messages, the oldest due message and failed outcomes, the health, the nodes, the first 20 running turns and the
 registered types with their actor counts. Refresh is by hand. A refresh counts the actors of at most 50 types, 8 at a
@@ -395,6 +395,37 @@ selection.
 - The table is not a snapshot: messages handled or retried after a page was read stay as read until ⌘R.
 - It shows no "due" mark, as the server's answer has no store time to compare with.
 - It is read only: no cancel, retry or deliver-now yet.
+
+**Outcomes** lists the finished messages of the actors under the address prefix, 100 at a time as you scroll. A status
+switch in the toolbar, shown only on this page, picks Failed (the default), Cancelled, Done or All; All adds a status
+column and includes purged outcomes. Each row shows the message type, the actor, the attempt, the finished time and the
+first line of the error, with the whole error in its tooltip; a message on two pages shows once, as first read.
+Switching the status reads the first page again and clears the selection.
+
+The sidebar's Outcomes item shows the store's failed count: the failed outcomes that retention still keeps. It is read
+with the Overview's refresh, as soon as `/stats` answers, and with ⌘R on Outcomes; it is not live. It shows "…" until a
+read answers and again after a context switch; when a read fails the last count stays, with the error in its tooltip;
+"—" means an older server sends no count, or the first read failed.
+
+Select an outcome to see, read only, its status and error, attempt and failures, the last retried error, the retry
+policy, the envelope (id, target, sender, correlation id, finished time and headers) and the payload as highlighted
+JSON, cut at 256 KiB. **Show Actor** goes to the actor. ⌘R reloads the list from the top, reads the failed count again
+and clears the selection; a failed page shows **Retry** in the footer. Retry and cancel are not in the inspector yet.
+
+The pane follows the cause chain one step at a time, by the cause each message records (`causedBy`). **Caused by**
+links to the message recorded as this one's cause: the message whose turn sent it, the original message of an operator
+retry, or, for a `Stopped` notice the store wrote, the message of the turn that stopped or deleted the actor, or of the
+turn whose `watch_existing` found the actor absent when it committed. It says "No recorded cause" when there is none: a
+send from outside an actor, a `Failed` notice, or a stop or delete from outside a turn. **Caused** lists the messages
+that record this one as their cause, one level down: pending or running ones, and finished ones whose outcome
+retention still keeps; it shows the first 50, with **more…** and **Retry**, "None" when there are none, and "not found"
+when the message is unknown or past retention.
+
+Following a link is a new place in back and forward: the pane reads that message fresh, pending, running or finished,
+and shows "not found" past retention or the error with **Retry**. Back to an outcome shows it as it was read, even
+when its row is no longer listed, and selects its row once it is listed; Forward to a link reads the message again. A
+context switch clears back and forward, and the chain is not a snapshot: messages caused later can appear when you
+return.
 
 **Types** lists the registered types by name, with the shortened contract hash (the full one in its tooltip) and the
 number of message types. The first visit and each ⌘R read the whole list, and the search field filters it by type
