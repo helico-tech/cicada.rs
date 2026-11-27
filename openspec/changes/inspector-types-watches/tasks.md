@@ -19,7 +19,7 @@ when it landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`
   own filter text and placeholder; every `unsafe` with its reason, borrows released before AppKit calls (decisions 5
   and 6). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, and the manual
   check list below, each item noted as done, run by code (not seen), or not done in the report.
-- [ ] 4. **Changelog and docs handoff.** The 0.26.0 section names the two pages; `docs-handoff.md` carries the design's
+- [x] 4. **Changelog and docs handoff.** The 0.26.0 section names the two pages; `docs-handoff.md` carries the design's
   Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples
   --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check` (lines ≤120, `Cargo.toml` and comments included), `cargo

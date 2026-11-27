@@ -18,8 +18,9 @@ context in `tray.toml` next to the config file.
 reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
 health, the nodes, the running turns and the types with their actor counts, an Actors page that lists the actors
-under an address prefix with a read-only pane of the selected actor, and a Messages page of the pending messages with
-Show Actor, for a context of `cicada config`.
+under an address prefix with a read-only pane of the selected actor, a Messages page of the pending messages with
+Show Actor, a Types page with registered schemas, and a Watches page with a filter and Show Actor, for a context of
+`cicada config`.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
 
@@ -77,9 +78,16 @@ directly or use `..` in matches.
   selected. The jump is recorded in back and forward: each Messages place keeps the prefix and message it had when
   you left it, so Back returns to them (reading that prefix again when it changed since), and Forward goes to the
   actor again. A context switch clears back and forward. Leaving the Actors page or typing a search cancels a jump
-  still waiting for its page. The Actors list's paging is now a pager the two pages share. Covered by the tests in
+  still waiting for its page. Messages shares the Actors list's pager. Covered by the tests in
   `crates/cicada-inspector/src/tests/messages.rs` and, unchanged, `tests/actors.rs`; the window has a manual check
   list.
+- `cicada-inspector`: the Types and Watches pages. Types filters the registered types by name from one read per
+  reload; it shows the contract hash with the full hash in a tooltip and the message type count. The pane lets you
+  choose State or a message schema and formats that choice as highlighted JSON, cut at 256 KiB. Watches loads 100
+  rows at a time in target and watcher order. It pages on scroll with an empty filter. A watcher or target prefix
+  filters the loaded rows, and **Load more** reads a page even when no rows match. Both pages show **Retry** on a
+  failed read. From a watch, **Show Actor** goes to the watcher or a one-actor target and records the jump in back
+  and forward. Both pages keep their filter text when you navigate and clear their selection on ⌘R.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
