@@ -24,12 +24,13 @@ count in the sidebar. Running Turns and Nodes follow in `inspector-nodes` (all o
 4. **The cause chain, as places.** "Caused by" shows the message's `caused_by` id as a link; "Caused" lists the messages
    caused by this one (those its turn sent and operator retries of it; `caused_by`, its first 50, with "more…" by
    cursor). Following any link is a new place in back and forward, holding the message id; it reads `status(id)` fresh
-   and shows that message in the pane, whether pending, running or finished, or "not found" when it is past retention.
-   An outcome's place also keeps the outcome as read, so Back restores its pane even when its row is no longer loaded
-   (another status, a later page, a new prefix) or has expired since; its row is selected only when it is loaded.
-   "Caused" keeps one request in flight per pane, Retry asks the same cursor again, an empty first page says "None", and
-   a gone parent says "not found". Reads carry the pane's generation and are dropped when it changes. A context switch
-   clears the history and cancels pending reads, as on Messages.
+   and shows that message in the pane, whether pending, running or finished, or "not found" when it is past retention; a
+   read that fails shows its error with Retry, which reads the same id again. An outcome's place also keeps the outcome
+   as read, so Back restores its pane even when its row is no longer loaded (another status, a later page, a new prefix)
+   or has expired since; its row is selected only when it is loaded. "Caused" keeps one request in flight per pane,
+   Retry asks the same cursor again, a page with no rows but a next cursor is followed at once, "None" shows only when
+   the list ends with no rows, and a gone parent says "not found". Reads carry the pane's generation and are dropped
+   when it changes. A context switch clears the history and cancels pending reads, as on Messages.
 5. **Read only, and where it lives.** No retry or cancel until `inspector-actions`. Model code in `outcomes.rs` with
    tests against an in-process server; the `appkit` module gains the page (an `NSTableView` sharing the search field,
    footer and pane toggle), the status switch and the links.
@@ -40,9 +41,10 @@ The list by status and prefix, paging by the unchanged cursor, a duplicate id ke
 duplicates, the switch resetting the cursor, seen ids, search, selection and pane work, the status column on All; the
 sidebar count's "…", its kept value on a failed read, "—", and its reset on a context switch; the pane from the row with
 the payload formatted on selection; Caused by followed to a pending and a finished message and to one past retention;
-Caused with "more…", one request at a time, Retry on the same cursor, "None" and "not found"; each link a place, Back
-restoring an outcome whose row is not loaded; a context switch clearing the history; a stale chain read dropped. The
-window gets a manual check list in the tasks. Tests keep a wall-clock bound and do not depend on machine speed.
+Caused with "more…", one request at a time, Retry on the same cursor, an empty page with a next cursor followed, "None"
+and "not found"; a failed linked read with Retry, apart from "not found"; each link a place, Back restoring an outcome
+whose row is not loaded; a context switch clearing the history; a stale chain read dropped. The window gets a manual
+check list in the tasks. Tests keep a wall-clock bound and do not depend on machine speed.
 
 ## Docs
 
