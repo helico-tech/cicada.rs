@@ -238,6 +238,9 @@ struct Current {
     generation: u64,
     client: Option<ActorClient>,
     task: Option<JoinHandle<()>>,
+    /// The refreshes cancelled so far, for tests that await their end.
+    #[cfg(test)]
+    superseded: Vec<JoinHandle<()>>,
 }
 
 impl Session {
@@ -307,6 +310,12 @@ impl Session {
         }));
     }
 
+    /// The refreshes cancelled so far; each ends once it has stopped, with or without its own end.
+    #[cfg(test)]
+    pub fn take_superseded(&self) -> Vec<JoinHandle<()>> {
+        std::mem::take(&mut self.shared.current.lock().expect("inspector session").superseded)
+    }
+
     /// Cancels a refresh that runs and discards its result; for a window that closes.
     pub fn stop(&self) {
         self.shared.current.lock().expect("inspector session").supersede();
@@ -319,6 +328,8 @@ impl Current {
         self.generation += 1;
         if let Some(task) = self.task.take() {
             task.abort();
+            #[cfg(test)]
+            self.superseded.push(task);
         }
     }
 }

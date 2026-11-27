@@ -40,7 +40,8 @@ Basic `Authorization` header, and the client only ever holds the URL without the
 
 New public item in `cicada-app`: `context_client(&Env, Option<&str>) -> anyhow::Result<(ActorClient,
 Option<String>)>` (the client, with the operator commands' 30 s timeout, and the context in use). It sends the URL's
-user and password as Basic credentials, which win over a token, as reqwest did when they were part of the URL.
+user and password as Basic credentials, which win over a token, as reqwest did when they were part of the URL; a user
+that is not UTF-8 once percent-decoded sends none (the token stays), and a password that is not is left out.
 
 Tests: `crates/cicada-inspector/src/tests.rs` (the Overview against an in-process server, one failing route, an older
 server, 60 types with at most 8 counts at a time, the deadline, no count started after it, a refresh in flight at a
@@ -50,8 +51,9 @@ navigation); `crates/cicada-app/src/config.rs`
 `a_context_client_without_a_server_says_so_without_the_token`,
 `a_context_client_refuses_a_malformed_server_without_quoting_it`,
 `a_transport_error_of_a_context_client_hides_the_credentials`,
-`a_malformed_server_url_with_a_password_never_shows_it`,
-`the_credentials_of_a_server_url_are_sent_as_basic_credentials`). The window has a manual check list in `tasks.md`.
+`a_context_client_never_shows_the_password_of_a_malformed_url`,
+`a_context_client_sends_url_credentials_as_basic_credentials`,
+`a_context_client_decodes_url_credentials_as_reqwest_did`). The window has a manual check list in `tasks.md`.
 
 No guarantee row, wire format, schema, actor contract or command line changes. The CLI reference and the OpenAPI
 document are unchanged.
@@ -86,7 +88,8 @@ resolved exactly as the operator commands resolve their target, with their 30 s 
 it really uses (`None` when only `CICADA_SERVER` names a server). `None` as the context picks it as `cicada` does.
 **Caveats.** It checks the server URL first (`invalid server URL` or `the server URL must use http or https`), so no
 error quotes it. A user and password in the URL are sent as Basic credentials and win over a token; the client's URL
-has neither, so its errors and `Debug` never show them.
+has neither, so its errors and `Debug` never show them. A user that is not UTF-8 once decoded sends no Basic
+credentials, as before.
 
 ## 3. The docs index
 

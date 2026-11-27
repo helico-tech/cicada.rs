@@ -494,7 +494,8 @@ pub fn check_server_url(server: &str) -> anyhow::Result<()> {
 /// No error and no `Debug` of the client holds the credentials of the server URL: the URL is parsed and checked first
 /// ([`check_server_url`], whose errors do not quote it), its user and password move into a sensitive
 /// `Authorization: Basic` header (which, as before, wins over a token), and the client gets the parsed URL without
-/// them.
+/// them. They are decoded as reqwest decoded them in the URL: a user that is not UTF-8 sends no Basic header (a token
+/// stays), and a password that is not UTF-8 is left out.
 pub fn context_client(env: &Env, context: Option<&str>) -> anyhow::Result<(ActorClient, Option<String>)> {
     let file = ContextFile::load(env)?;
     let flags = Overrides { context: context.map(str::to_owned), ..Overrides::default() };
@@ -503,18 +504,29 @@ pub fn context_client(env: &Env, context: Option<&str>) -> anyhow::Result<(Actor
     let mut url = reqwest::Url::parse(&target.server).context("invalid server URL")?;
     let mut headers = target.headers()?;
     if !url.username().is_empty() || url.password().is_some() {
-        let decode = |text: &str| percent_encoding::percent_decode_str(text).decode_utf8_lossy().into_owned();
-        let credentials = format!("{}:{}", decode(url.username()), url.password().map(decode).unwrap_or_default());
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-        let mut value = HeaderValue::try_from(format!("Basic {encoded}")).context("invalid server credentials")?;
-        value.set_sensitive(true);
-        headers.insert(AUTHORIZATION, value);
+        if let Some((user, password)) = url_credentials(&url) {
+            let credentials = format!("{user}:{}", password.unwrap_or_default());
+            let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+            let mut value = HeaderValue::try_from(format!("Basic {encoded}")).context("invalid server credentials")?;
+            value.set_sensitive(true);
+            headers.insert(AUTHORIZATION, value);
+        }
         // A URL with a user or password has an authority, which takes both.
         let _ = url.set_username("");
         let _ = url.set_password(None);
     }
     let http = reqwest::Client::builder().default_headers(headers).timeout(crate::operator::TIMEOUT).build()?;
     Ok((ActorClient::with_client(url.as_str(), http), target.context))
+}
+
+/// The Basic credentials of a URL, decoded as reqwest decodes them when they are part of a request's URL: none when
+/// the user is not UTF-8 once percent-decoded, no password when the password is not; none for neither.
+fn url_credentials(url: &reqwest::Url) -> Option<(String, Option<String>)> {
+    let decode =
+        |text: &str| percent_encoding::percent_decode_str(text).decode_utf8().ok().map(|text| text.into_owned());
+    let user = decode(url.username())?;
+    let password = url.password().and_then(decode);
+    (!user.is_empty() || password.is_some()).then_some((user, password))
 }
 
 impl Target {
@@ -852,7 +864,7 @@ mod tests {
     /// parser trims it), but the raw text plus a path does not parse. The client gets the parsed URL without the
     /// credentials, so neither its `Debug` nor an error of a call shows the password.
     #[tokio::test]
-    async fn a_malformed_server_url_with_a_password_never_shows_it() {
+    async fn a_context_client_never_shows_the_password_of_a_malformed_url() {
         let (_dir, e) = context_env(&[("CICADA_SERVER", "http://u:dummy secret@127.0.0.1:81 ")]);
         let (client, _) = context_client(&e, None).unwrap();
         assert_eq!(base(&client), "http://127.0.0.1:81");
@@ -867,7 +879,7 @@ mod tests {
     /// The user and password of the URL still reach the server, percent-decoded, as Basic credentials that win over a
     /// token, as reqwest sent them when they were part of the URL.
     #[tokio::test]
-    async fn the_credentials_of_a_server_url_are_sent_as_basic_credentials() {
+    async fn a_context_client_sends_url_credentials_as_basic_credentials() {
         use axum::http::{HeaderMap, StatusCode};
         let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("us er:p@ss w"));
         let app = axum::Router::new().route(
@@ -885,6 +897,34 @@ mod tests {
         let (client, _) = context_client(&e, None).unwrap();
         assert_eq!(base(&client), format!("http://{address}/api"));
         assert!(client.health().await.unwrap(), "the server saw the Basic credentials");
+    }
+
+    /// As reqwest did with credentials in the URL: a user that is not UTF-8 once decoded sends no Basic credentials and
+    /// the token stays; a password that is not UTF-8 is left out of them. The URL keeps no user or password.
+    #[tokio::test]
+    async fn a_context_client_decodes_url_credentials_as_reqwest_did() {
+        use axum::http::{HeaderMap, StatusCode};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(move |headers: HeaderMap| async move {
+                let sent = headers.get(AUTHORIZATION).map(|v| v.to_str().unwrap().to_owned());
+                record.lock().unwrap().push(sent);
+                StatusCode::OK
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        for server in [format!("http://%FF:p@{address}"), format!("http://us:%FF@{address}")] {
+            let (_dir, e) = context_env(&[("CICADA_SERVER", &server), ("CICADA_TOKEN", "t0ken")]);
+            let (client, _) = context_client(&e, None).unwrap();
+            assert_eq!(base(&client), format!("http://{address}"));
+            assert!(client.health().await.unwrap());
+        }
+        let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("us:"));
+        assert_eq!(*seen.lock().unwrap(), [Some("Bearer t0ken".to_owned()), Some(basic)]);
     }
 
     fn file_env(file: &Path) -> Env {

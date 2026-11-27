@@ -45,9 +45,9 @@ directly or use `..` in matches.
   operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
   the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL
   first, so no error quotes it, and moves the URL's user and password into Basic credentials (which win over a token,
-  as before), so the client's URL, its errors and its `Debug` never hold them. Covered by the `a_context_client_…`,
-  `a_malformed_server_url_with_a_password_never_shows_it` and
-  `the_credentials_of_a_server_url_are_sent_as_basic_credentials` tests in `crates/cicada-app/src/config.rs`.
+  as before), so the client's URL, its errors and its `Debug` never hold them. They are decoded as reqwest decoded
+  them: a user that is not UTF-8 sends no Basic credentials and a token stays. Covered by the `a_context_client_…`
+  tests in `crates/cicada-app/src/config.rs`.
 - `cicada`, `cicada-client`, `cicada-app`: `GET /stats` and `cicada stats` report the number of failed outcomes
   currently visible under the address prefix, using the visibility rules of `GET /outcomes`. The CLI table shows
   `-` when an older server omits the count.

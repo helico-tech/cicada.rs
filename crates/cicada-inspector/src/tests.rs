@@ -94,27 +94,33 @@ enum Fake {
 type Rule = Arc<dyn Fn(&str) -> Option<Fake> + Send + Sync>;
 
 /// A server for `actors` whose requests go through `rule` first, by path and query; it counts the per-type `/stats`
-/// calls in flight in `in_flight` and keeps their most in `most`, holding each for `hold`.
+/// calls in flight and keeps their most in `most`, holding each for `hold`. `events` gets `served <target>` once a
+/// request's response is made and `arrived <target>` when a stalled one comes in.
 struct Server {
     client: ActorClient,
     url: String,
     most: Arc<AtomicUsize>,
+    events: tokio::sync::mpsc::UnboundedReceiver<String>,
 }
 
 async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
     let in_flight = Arc::new(AtomicUsize::new(0));
     let most = Arc::new(AtomicUsize::new(0));
     let (counting, top) = (in_flight.clone(), most.clone());
+    let (sender, events) = tokio::sync::mpsc::unbounded_channel();
     let layer = from_fn(move |request: Request, next: Next| {
-        let (rule, counting, top) = (rule.clone(), counting.clone(), top.clone());
+        let (rule, counting, top, events) = (rule.clone(), counting.clone(), top.clone(), sender.clone());
         async move {
             let target = request.uri().path_and_query().map_or_else(String::new, |p| p.as_str().to_owned());
             let per_type = target.starts_with("/stats?prefix=") && target.len() > "/stats?prefix=".len();
             if per_type {
                 let now = counting.fetch_add(1, Ordering::SeqCst) + 1;
                 top.fetch_max(now, Ordering::SeqCst);
-                tokio::time::sleep(hold).await;
+                if !hold.is_zero() {
+                    tokio::time::sleep(hold).await;
+                }
             }
+            let arrived = || drop(events.send(format!("arrived {target}")));
             let response = match rule(&target) {
                 Some(Fake::Answer(status, body)) => {
                     let mut response = Response::new(Body::from(body.to_string()));
@@ -123,9 +129,13 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
                     response.headers_mut().insert(header::CONTENT_TYPE, json.parse().unwrap());
                     response
                 }
-                Some(Fake::Hang) => std::future::pending::<Response>().await,
-                Some(Fake::Wait { arrived, release }) => {
-                    arrived.notify_one();
+                Some(Fake::Hang) => {
+                    arrived();
+                    std::future::pending::<Response>().await
+                }
+                Some(Fake::Wait { arrived: notify, release }) => {
+                    arrived();
+                    notify.notify_one();
                     release.notified().await;
                     next.run(request).await
                 }
@@ -134,6 +144,7 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
             if per_type {
                 counting.fetch_sub(1, Ordering::SeqCst);
             }
+            let _ = events.send(format!("served {target}"));
             response
         }
     });
@@ -141,7 +152,7 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await });
-    Server { client: ActorClient::new(&url), url, most }
+    Server { client: ActorClient::new(&url), url, most, events }
 }
 
 fn no_rule() -> Rule {
@@ -257,10 +268,16 @@ async fn sixty_types_count_fifty_at_most_eight_at_a_time() {
 }
 
 /// At the deadline the answers that came are kept, a base route still out has failed and a type still uncounted is
-/// not counted; a count that failed is failed, not "not counted". The stalled routes never answer and the deadline is
-/// far beyond a local round trip, so the result does not depend on the machine's speed.
-#[tokio::test]
+/// not counted; a count that failed is failed, not "not counted". Tokio's clock is paused and held still by a
+/// blocking task until the server has served every answering route and the stalled ones have come in; the counts run
+/// one at a time, so the slow count coming in proves the two before it were read. Then the clock runs to the deadline:
+/// it moves only when no task and no socket has work left, so the answers already sent are read first.
+#[tokio::test(start_paused = true)]
 async fn the_deadline_keeps_what_answered() {
+    let (hold, release) = std::sync::mpsc::channel::<()>();
+    let holding = tokio::task::spawn_blocking(move || {
+        let _ = release.recv();
+    });
     let actors = actors().await;
     let answer = types_answer(["fast", "broken", "slow"].map(String::from));
     let rule: Rule = Arc::new(move |target| match target {
@@ -269,11 +286,33 @@ async fn the_deadline_keeps_what_answered() {
         "/stats?prefix=slow%2F" | "/nodes" => Some(Fake::Hang),
         _ => None,
     });
-    let server = serve(&actors, rule, Duration::ZERO).await;
-    let limits = Limits { deadline: Duration::from_secs(2), ..Limits::DEFAULT };
-    let overview = timeout(Duration::from_secs(20), overview(&server.client, limits)).await.expect("bounded");
+    let mut server = serve(&actors, rule, Duration::ZERO).await;
+    let limits = Limits { concurrent: 1, ..Limits::DEFAULT };
+    let (client, start) = (server.client.clone(), tokio::time::Instant::now());
+    let refresh = tokio::spawn(async move { overview(&client, limits).await });
+
+    let expected = [
+        "served /stats",
+        "served /health",
+        "served /turns?limit=20",
+        "served /types",
+        "served /stats?prefix=fast%2F",
+        "served /stats?prefix=broken%2F",
+        "arrived /nodes",
+        "arrived /stats?prefix=slow%2F",
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    while !expected.iter().all(|event| seen.contains(*event)) {
+        seen.insert(server.events.recv().await.expect("the server runs"));
+    }
+    assert_eq!(tokio::time::Instant::now(), start, "the clock was held still");
+    drop(hold);
+    holding.await.unwrap();
+
+    let overview = refresh.await.unwrap();
+    assert!(tokio::time::Instant::now() >= start + limits.deadline);
     assert_eq!(overview.nodes, Part::Failed(TIMED_OUT.into()));
-    assert!(overview.stats.ready().is_some() && overview.health.ready().is_some());
+    assert!(overview.stats.ready().is_some() && overview.health.ready().is_some() && overview.turns.ready().is_some());
     let types = overview.types.ready().expect("types");
     assert_eq!(types[0].actors, Count::Counted(0));
     assert!(matches!(&types[1].actors, Count::Failed(error) if error.contains("500")), "{types:?}");
@@ -335,9 +374,15 @@ async fn a_refresh_in_flight_at_a_context_switch_is_dropped() {
     assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
     drop(done);
 
-    // The old store has one actor: had its refresh published, the view would change and show it.
+    // The old store has one actor: had its refresh published, the view would change and show it. Once its task has
+    // ended, cancelled or not, it can publish nothing more.
     release.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let superseded = session.take_superseded();
+    assert_eq!(superseded.len(), 1, "the old refresh was the one cancelled");
+    for task in superseded {
+        let ended = timeout(Duration::from_secs(10), task).await.expect("the old refresh ends");
+        assert!(ended.as_ref().is_err_and(|error| error.is_cancelled()) || ended.is_ok(), "{ended:?}");
+    }
     assert!(!view.has_changed().unwrap(), "nothing is published after the new Overview");
     let view = view.borrow();
     assert_eq!(view.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0), "the old refresh is dropped");
