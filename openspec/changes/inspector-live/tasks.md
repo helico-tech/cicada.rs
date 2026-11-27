@@ -8,7 +8,7 @@ of both soft-refresh changes; rebase onto them when they landed first). Follow `
   implementation for tests; one stream per page and prefix (local filters leave it alone), closed on page, prefix and
   context switches and on close; reconnect backoff (1, 2, 4, 8, 16, 30 s), reset 60 s after the first valid event
   (decisions 1, 2 and 7). Verify: the lifecycle tests on virtual time.
-- [ ] 2. **Resync, the batch and the timer.** The first `resync` as the one trigger for open, reconnect and resume; the
+- [x] 2. **Resync, the batch and the timer.** The first `resync` as the one trigger for open, reconnect and resume; the
   live model's batch (500 ms, 1,000 addresses, then everything), a soft refresh only when none runs, the prefix filter
   on paged pages; every soft refresh reconciling the pane; the 30 s timer re-armed after every refresh attempt, a
   skipped one too, and running while reconnecting (decisions 2–5). Verify: the batch and timer tests, including recovery

@@ -112,6 +112,13 @@ impl Done {
     pub fn ready() -> Self {
         Self(None)
     }
+
+    /// An attempt that ends when the sender is dropped.
+    #[cfg(test)]
+    pub fn channel() -> (oneshot::Sender<()>, Self) {
+        let (ended, done) = oneshot::channel();
+        (ended, Self(Some(done)))
+    }
 }
 
 impl Future for Done {

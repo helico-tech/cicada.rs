@@ -1,5 +1,6 @@
 //! The live model on virtual time against a channel change source.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::ActorAddress;
@@ -9,8 +10,9 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
 
 use super::channel::{Channel, Opened};
-use super::{Live, LiveStatus};
+use super::{FALLBACK, GATHER, Live, LiveStatus, Pages};
 use crate::model::Section;
+use crate::refresh::Done;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -23,14 +25,73 @@ fn address(text: &str) -> ActorAddress {
     text.parse().unwrap()
 }
 
-/// A model on a channel source, showing `section` with `search`, and its first stream.
-async fn start(section: Section, search: &str) -> (Live<Channel>, Channel, mpsc::UnboundedReceiver<Opened>, Opened) {
+/// Pages whose soft refreshes are recorded and take `length` each, or are skipped at once without one.
+#[derive(Default)]
+struct FakePages {
+    refreshes: Mutex<Vec<(Section, Instant)>>,
+    cancels: Mutex<Vec<Section>>,
+    pane: Mutex<Option<ActorAddress>>,
+    length: Mutex<Option<Duration>>,
+}
+
+impl FakePages {
+    fn new(length: Option<Duration>) -> Arc<Self> {
+        Arc::new(Self { length: Mutex::new(length), ..Self::default() })
+    }
+
+    fn count(&self) -> usize {
+        self.refreshes.lock().unwrap().len()
+    }
+
+    fn times(&self) -> Vec<Instant> {
+        self.refreshes.lock().unwrap().iter().map(|(_, at)| *at).collect()
+    }
+}
+
+impl Pages for FakePages {
+    fn soft_refresh(&self, section: Section) -> Done {
+        self.refreshes.lock().unwrap().push((section, Instant::now()));
+        let Some(length) = *self.length.lock().unwrap() else { return Done::ready() };
+        let (ended, done) = Done::channel();
+        tokio::spawn(async move {
+            sleep(length).await;
+            drop(ended);
+        });
+        done
+    }
+
+    fn cancel_soft_refresh(&self, section: Section) {
+        self.cancels.lock().unwrap().push(section);
+    }
+
+    fn pane_actor(&self, _: Section) -> Option<ActorAddress> {
+        self.pane.lock().unwrap().clone()
+    }
+}
+
+/// A refresh that takes 100 ms.
+const LENGTH: Option<Duration> = Some(Duration::from_millis(100));
+
+type Fixture = (Live<Channel>, Channel, mpsc::UnboundedReceiver<Opened>, Opened, Arc<FakePages>);
+
+/// A model on a channel source and fake pages whose refreshes take `LENGTH`, showing `section` with `search`, and
+/// its first stream.
+async fn start(section: Section, search: &str) -> Fixture {
+    start_with(section, search, FakePages::new(LENGTH)).await
+}
+
+async fn start_with(section: Section, search: &str, pages: Arc<FakePages>) -> Fixture {
     let (source, mut opened) = Channel::new();
-    let live = Live::new(&Handle::current(), DEBOUNCE);
+    let weak = Arc::downgrade(&pages);
+    let live = Live::new(&Handle::current(), weak, DEBOUNCE);
     live.show(section, search);
     live.use_source(Some(source.clone()));
     let first = opened.recv().await.unwrap();
-    (live, source, opened, first)
+    (live, source, opened, first, pages)
+}
+
+fn hint(opened: &Opened, address_text: &str) {
+    opened.hints.send(Ok(Change::Changed(address(address_text)))).unwrap();
 }
 
 async fn no_try(opened: &mut mpsc::UnboundedReceiver<Opened>) {
@@ -40,7 +101,7 @@ async fn no_try(opened: &mut mpsc::UnboundedReceiver<Opened>) {
 
 #[tokio::test(start_paused = true)]
 async fn one_stream_follows_the_page_and_its_prefix() {
-    let (live, _source, mut opened, first) = start(Section::Actors, "counter/").await;
+    let (live, _source, mut opened, first, _pages) = start(Section::Actors, "counter/").await;
     assert_eq!(first.prefix, "counter/");
 
     // A new prefix waits for the search to settle; the stream before stays open meanwhile.
@@ -69,7 +130,7 @@ async fn one_stream_follows_the_page_and_its_prefix() {
 #[tokio::test(start_paused = true)]
 async fn a_local_filter_leaves_the_stream_alone() {
     for section in [Section::Types, Section::Watches, Section::Nodes] {
-        let (live, _source, mut opened, first) = start(section, "").await;
+        let (live, _source, mut opened, first, _pages) = start(section, "").await;
         assert_eq!(first.prefix, "");
         live.show(section, "counter");
         sleep(DEBOUNCE * 2).await;
@@ -80,7 +141,7 @@ async fn a_local_filter_leaves_the_stream_alone() {
 
 #[tokio::test(start_paused = true)]
 async fn a_prefix_typed_back_before_the_debounce_keeps_the_stream() {
-    let (live, _source, mut opened, first) = start(Section::Actors, "counter/").await;
+    let (live, _source, mut opened, first, _pages) = start(Section::Actors, "counter/").await;
     live.show(Section::Actors, "counter/a");
     sleep(Duration::from_millis(100)).await;
     live.show(Section::Actors, "counter/");
@@ -91,7 +152,7 @@ async fn a_prefix_typed_back_before_the_debounce_keeps_the_stream() {
 
 #[tokio::test(start_paused = true)]
 async fn a_context_switch_and_a_close_end_the_stream() {
-    let (live, _source, mut opened, first) = start(Section::Actors, "").await;
+    let (live, _source, mut opened, first, _pages) = start(Section::Actors, "").await;
     let (other, mut other_opened) = Channel::new();
     live.use_source(Some(other));
     let next = other_opened.recv().await.unwrap();
@@ -103,7 +164,7 @@ async fn a_context_switch_and_a_close_end_the_stream() {
     assert!(next.hints.is_closed());
     assert_eq!(*live.status().borrow(), LiveStatus::Off);
 
-    let (live, _source, _opened, stream) = start(Section::Actors, "").await;
+    let (live, _source, _opened, stream, _pages) = start(Section::Actors, "").await;
     drop(live);
     settle().await;
     assert!(stream.hints.is_closed(), "closing the window closes the stream");
@@ -111,7 +172,7 @@ async fn a_context_switch_and_a_close_end_the_stream() {
 
 #[tokio::test(start_paused = true)]
 async fn live_shows_from_the_first_valid_event() {
-    let (live, _source, _opened, first) = start(Section::Actors, "").await;
+    let (live, _source, _opened, first, _pages) = start(Section::Actors, "").await;
     let status = live.status();
     settle().await;
     assert_eq!(*status.borrow(), LiveStatus::Connecting, "an open stream without events is not live yet");
@@ -122,7 +183,7 @@ async fn live_shows_from_the_first_valid_event() {
 
 #[tokio::test(start_paused = true)]
 async fn a_dropped_stream_reconnects_with_backoff() {
-    let (live, source, mut opened, first) = start(Section::Actors, "").await;
+    let (live, source, mut opened, first, _pages) = start(Section::Actors, "").await;
     let status = live.status();
     source.fail_next(["refused"; 7]);
     let ended = Instant::now();
@@ -146,7 +207,7 @@ async fn a_dropped_stream_reconnects_with_backoff() {
 
 #[tokio::test(start_paused = true)]
 async fn the_backoff_starts_again_after_a_minute_of_events() {
-    let (_live, source, mut opened, first) = start(Section::Actors, "").await;
+    let (_live, source, mut opened, first, _pages) = start(Section::Actors, "").await;
     source.fail_next(["refused", "refused"]);
     drop(first.hints);
     let tries: Vec<_> = [opened.recv().await.unwrap(), opened.recv().await.unwrap(), opened.recv().await.unwrap()]
@@ -170,4 +231,124 @@ async fn the_backoff_starts_again_after_a_minute_of_events() {
     drop(short);
     let steady = opened.recv().await.unwrap();
     assert_eq!(steady.at - ended, Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_first_resync_of_an_open_and_a_reconnect_each_refresh_once() {
+    let (_live, _source, mut opened, first, pages) = start(Section::Actors, "").await;
+    sleep(FALLBACK - Duration::from_secs(1)).await;
+    assert_eq!(pages.count(), 0, "a stream with no event causes no refresh");
+
+    let resync = Instant::now();
+    first.hints.send(Ok(Change::Resync)).unwrap();
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(pages.times(), [resync + GATHER]);
+
+    drop(first);
+    let second = opened.recv().await.unwrap();
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(pages.count(), 1, "the reconnect's opening is no trigger");
+    second.hints.send(Ok(Change::Resync)).unwrap();
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(pages.count(), 2, "its resync is");
+}
+
+#[tokio::test(start_paused = true)]
+async fn fifty_hints_in_200_ms_run_one_refresh() {
+    let (_live, _source, _opened, first, pages) = start(Section::Actors, "counter/").await;
+    let started = Instant::now();
+    for n in 0..50 {
+        hint(&first, &format!("counter/{n}"));
+        sleep(Duration::from_millis(4)).await;
+    }
+    sleep(Duration::from_secs(5)).await;
+    assert_eq!(pages.times(), [started + GATHER]);
+    assert_eq!(pages.refreshes.lock().unwrap()[0].0, Section::Actors);
+}
+
+#[tokio::test(start_paused = true)]
+async fn hints_during_a_refresh_run_exactly_one_more_after_it() {
+    let length = Duration::from_secs(2);
+    let (_live, _source, _opened, first, pages) = start_with(Section::Actors, "", FakePages::new(Some(length))).await;
+    let started = Instant::now();
+    hint(&first, "counter/a");
+    sleep(GATHER + Duration::from_millis(500)).await;
+    for n in 0..10 {
+        hint(&first, &format!("counter/{n}"));
+        sleep(Duration::from_millis(100)).await;
+    }
+    sleep(Duration::from_secs(10)).await;
+    let first_start = started + GATHER;
+    assert_eq!(pages.times(), [first_start, first_start + length], "the next starts once the refresh ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_over_1000_addresses_counts_as_everything() {
+    for (count, refreshes) in [(1000, 0), (1001, 1)] {
+        let (_live, _source, _opened, first, pages) = start(Section::Actors, "counter/").await;
+        for n in 0..count {
+            hint(&first, &format!("sync/{n}"));
+        }
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(pages.count(), refreshes, "{count} addresses outside the prefix");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_outside_the_prefix_and_the_pane_starts_no_refresh_on_a_paged_page() {
+    for section in [Section::Actors, Section::Messages, Section::RunningTurns, Section::Outcomes] {
+        let (_live, _source, _opened, first, pages) = start(section, "counter/").await;
+        hint(&first, "sync/a");
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(pages.count(), 0, "{section:?}");
+        *pages.pane.lock().unwrap() = Some(address("sync/a"));
+        hint(&first, "sync/a");
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(pages.count(), 1, "{section:?}: the pane's actor");
+        hint(&first, "counter/a");
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(pages.count(), 2, "{section:?}: under the prefix");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn any_hint_refreshes_the_other_pages() {
+    for section in [Section::Overview, Section::Nodes, Section::Types, Section::Watches] {
+        let (_live, _source, _opened, first, pages) = start(section, "local filter").await;
+        hint(&first, "sync/a");
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(pages.count(), 1, "{section:?}");
+        assert_eq!(pages.refreshes.lock().unwrap()[0].0, section);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_refreshes_30_s_after_the_last_refresh_ended() {
+    let (_live, _source, _opened, first, pages) = start(Section::Actors, "").await;
+    let resync = Instant::now();
+    first.hints.send(Ok(Change::Resync)).unwrap();
+    sleep(FALLBACK * 2 + Duration::from_secs(1)).await;
+    let length = LENGTH.unwrap();
+    let after_resync = resync + GATHER;
+    let timer = after_resync + length + FALLBACK;
+    assert_eq!(pages.times(), [after_resync, timer, timer + length + FALLBACK]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_skipped_refresh_arms_the_timer_again() {
+    let (_live, _source, _opened, _first, pages) = start_with(Section::Actors, "", FakePages::new(None)).await;
+    let opened = Instant::now();
+    sleep(FALLBACK * 3 + Duration::from_secs(1)).await;
+    assert_eq!(pages.times(), [opened + FALLBACK, opened + FALLBACK * 2, opened + FALLBACK * 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_runs_while_reconnecting() {
+    let (live, source, _opened, first, pages) = start(Section::Actors, "").await;
+    source.fail_next(["refused"; 20]);
+    let dropped = Instant::now();
+    drop(first);
+    sleep(FALLBACK + Duration::from_secs(1)).await;
+    assert!(matches!(*live.status().borrow(), LiveStatus::Reconnecting { .. }));
+    assert_eq!(pages.times(), [dropped + FALLBACK]);
 }

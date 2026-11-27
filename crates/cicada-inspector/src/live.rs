@@ -1,12 +1,16 @@
-//! Live updates: one change stream (`GET /changes`, ADR 0035) for the page on screen. The stream is opened again
-//! with backoff after it ends or fails. The model runs as one task on the session's runtime and publishes a
-//! [`LiveStatus`].
+//! Live updates: one change stream (`GET /changes`, ADR 0035) for the page on screen, whose hints are gathered into
+//! batches that run the page's soft refresh, one at a time. The server's `resync` of every new subscription is the
+//! one recovery trigger. A page also refreshes 30 s after its last refresh attempt ended, as hints are best effort.
+//! The stream is opened again with backoff after it ends or fails. The model runs as one task on the session's
+//! runtime and publishes a [`LiveStatus`].
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use cicada::ActorAddress;
 use cicada::time::Timestamp;
 use cicada_client::{ActorClient, Change};
 use futures::{Stream, StreamExt};
@@ -15,7 +19,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
-use crate::model::{Section, error_text};
+use crate::model::{Section, Session, error_text};
+use crate::refresh::Done;
 
 /// The waits between tries to open the stream again: 1, 2, 4, 8, 16, then 30 s.
 pub(crate) const BACKOFF: [Duration; 6] = [
@@ -28,6 +33,12 @@ pub(crate) const BACKOFF: [Duration; 6] = [
 ];
 /// How long a stream stays open after its first valid event before the backoff starts again from 1 s.
 pub(crate) const STEADY: Duration = Duration::from_secs(60);
+/// How long hints are gathered after the first of a batch.
+pub(crate) const GATHER: Duration = Duration::from_millis(500);
+/// The most addresses a batch names; past that it counts as everything, as a `resync` does.
+pub(crate) const BATCH_LIMIT: usize = 1000;
+/// How long after its last refresh attempt ended a page refreshes without hints.
+pub(crate) const FALLBACK: Duration = Duration::from_secs(30);
 
 /// An open subscription's hints, with errors as text.
 pub(crate) type Hints = Pin<Box<dyn Stream<Item = Result<Change, String>> + Send>>;
@@ -46,6 +57,30 @@ impl ChangeSource for ActorClient {
             let stream = client.changes(&prefix).await.map_err(|error| error_text(&error))?;
             Ok(Box::pin(stream.map(|hint| hint.map_err(|error| error_text(&error)))) as Hints)
         }
+    }
+}
+
+/// What the live model refreshes: the session's pages.
+pub(crate) trait Pages: Send + Sync {
+    /// Starts a soft refresh of `section`; [`Done`] resolves when the attempt ends, also when it is skipped.
+    fn soft_refresh(&self, section: Section) -> Done;
+    /// Cancels the soft refresh of `section` and drops its results.
+    fn cancel_soft_refresh(&self, section: Section);
+    /// The actor the pane of `section` shows.
+    fn pane_actor(&self, section: Section) -> Option<ActorAddress>;
+}
+
+impl Pages for Session {
+    fn soft_refresh(&self, section: Section) -> Done {
+        Session::soft_refresh(self, section, None)
+    }
+
+    fn cancel_soft_refresh(&self, section: Section) {
+        self.cancel_live_refresh(section);
+    }
+
+    fn pane_actor(&self, section: Section) -> Option<ActorAddress> {
+        Session::pane_actor(self, section)
     }
 }
 
@@ -92,14 +127,15 @@ pub(crate) struct Live<S: ChangeSource = ActorClient> {
 }
 
 impl<S: ChangeSource> Live<S> {
-    /// A model with no source yet, on `handle`. A new search prefix is followed once it has been still for
-    /// `debounce`.
-    pub fn new(handle: &Handle, debounce: Duration) -> Self {
+    /// A model of `pages` with no source yet, on `handle`. A new search prefix is followed once it has been still
+    /// for `debounce`.
+    pub fn new(handle: &Handle, pages: Weak<dyn Pages>, debounce: Duration) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (status, watcher) = watch::channel(LiveStatus::Off);
         let driver = Driver {
             commands: receiver,
             status,
+            pages,
             debounce,
             source: None,
             section: Section::Overview,
@@ -107,6 +143,9 @@ impl<S: ChangeSource> Live<S> {
             pending_prefix: None,
             link: Link::Closed,
             backoff: 0,
+            batch: None,
+            refreshing: None,
+            timer: None,
         };
         Self { commands, status: watcher, task: handle.spawn(driver.run()) }
     }
@@ -147,11 +186,24 @@ enum Event<S> {
     Hint(Option<Result<Change, String>>),
     Retry,
     Prefix,
+    Batch,
+    Ended,
+    Timer,
+}
+
+/// The hints gathered for the next soft refresh.
+struct Batch {
+    /// When it may start: [`GATHER`] after its first hint.
+    due: Instant,
+    addresses: BTreeSet<ActorAddress>,
+    /// A `resync`, or more than [`BATCH_LIMIT`] addresses.
+    everything: bool,
 }
 
 struct Driver<S> {
     commands: mpsc::UnboundedReceiver<Command<S>>,
     status: watch::Sender<LiveStatus>,
+    pages: Weak<dyn Pages>,
     debounce: Duration,
     source: Option<Arc<S>>,
     section: Section,
@@ -162,6 +214,11 @@ struct Driver<S> {
     link: Link,
     /// The index into [`BACKOFF`] of the next wait.
     backoff: usize,
+    batch: Option<Batch>,
+    /// The soft refresh this model started, until its attempt ends.
+    refreshing: Option<Done>,
+    /// When the page refreshes without hints; none while a refresh runs.
+    timer: Option<Instant>,
 }
 
 impl<S: ChangeSource> Driver<S> {
@@ -182,12 +239,27 @@ impl<S: ChangeSource> Driver<S> {
                         self.restart();
                     }
                 }
+                Event::Batch => {
+                    if let Some(batch) = self.batch.take()
+                        && self.wants(&batch)
+                    {
+                        self.start();
+                    }
+                }
+                Event::Ended => {
+                    self.refreshing = None;
+                    self.arm();
+                }
+                Event::Timer => {
+                    self.timer = None;
+                    self.start();
+                }
             }
         }
     }
 
     async fn next(&mut self) -> Event<S> {
-        let Self { commands, link, pending_prefix, .. } = self;
+        let Self { commands, link, pending_prefix, batch, refreshing, timer, .. } = self;
         let link = async {
             match link {
                 Link::Closed => std::future::pending().await,
@@ -205,10 +277,33 @@ impl<S: ChangeSource> Driver<S> {
                 None => std::future::pending().await,
             }
         };
+        // A batch and the timer wait while a refresh runs; its end lets them start.
+        let idle = refreshing.is_none();
+        let batch = async {
+            match batch {
+                Some(batch) if idle => sleep_until(batch.due).await,
+                _ => std::future::pending().await,
+            }
+        };
+        let timer = async {
+            match timer {
+                Some(at) if idle => sleep_until(*at).await,
+                _ => std::future::pending().await,
+            }
+        };
+        let ended = async {
+            match refreshing {
+                Some(done) => done.await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             command = commands.recv() => Event::Command(command),
             event = link => event,
             () = prefix => Event::Prefix,
+            () = ended => Event::Ended,
+            () = batch => Event::Batch,
+            () = timer => Event::Timer,
         }
     }
 
@@ -234,17 +329,73 @@ impl<S: ChangeSource> Driver<S> {
         }
     }
 
-    fn hint(&mut self, _change: Change) {
+    fn hint(&mut self, change: Change) {
         if let Link::Open { first: first @ None, .. } = &mut self.link {
             *first = Some(Instant::now());
             self.status.send_replace(LiveStatus::Live);
         }
+        let batch = || Batch { due: Instant::now() + GATHER, addresses: BTreeSet::new(), everything: false };
+        match change {
+            Change::Changed(address) => {
+                let batch = self.batch.get_or_insert_with(batch);
+                if !batch.everything {
+                    batch.addresses.insert(address);
+                    if batch.addresses.len() > BATCH_LIMIT {
+                        batch.addresses.clear();
+                        batch.everything = true;
+                    }
+                }
+            }
+            Change::Resync => {
+                let batch = self.batch.get_or_insert_with(batch);
+                batch.addresses.clear();
+                batch.everything = true;
+            }
+            _ => {}
+        }
     }
 
-    /// Closes the stream and opens the next at once, the backoff from the start.
+    /// Whether `batch` concerns the page: on the paged pages with an actor per row, an address under the prefix or
+    /// the pane's actor; on the other pages any hint.
+    fn wants(&self, batch: &Batch) -> bool {
+        if batch.everything {
+            return true;
+        }
+        match self.section {
+            Section::Actors | Section::Messages | Section::RunningTurns | Section::Outcomes => {
+                batch.addresses.iter().any(|address| address.as_str().starts_with(&self.prefix))
+                    || self
+                        .pages
+                        .upgrade()
+                        .and_then(|pages| pages.pane_actor(self.section))
+                        .is_some_and(|actor| batch.addresses.contains(&actor))
+            }
+            Section::Overview | Section::Nodes | Section::Types | Section::Watches => true,
+        }
+    }
+
+    /// Starts the page's soft refresh; the timer waits for its end.
+    fn start(&mut self) {
+        self.timer = None;
+        if let Some(pages) = self.pages.upgrade() {
+            self.refreshing = Some(pages.soft_refresh(self.section));
+        }
+    }
+
+    /// Arms the timer [`FALLBACK`] from now while there is a source to follow.
+    fn arm(&mut self) {
+        self.timer = self.source.is_some().then(|| Instant::now() + FALLBACK);
+    }
+
+    /// Closes the stream and opens the next at once, the backoff from the start. The batch of the stream before is
+    /// dropped: the next stream's `resync` covers it.
     fn restart(&mut self) {
         self.link = Link::Closed;
         self.backoff = 0;
+        self.batch = None;
+        if self.refreshing.is_none() {
+            self.arm();
+        }
         self.status.send_replace(if self.source.is_some() { LiveStatus::Connecting } else { LiveStatus::Off });
         self.open();
     }
