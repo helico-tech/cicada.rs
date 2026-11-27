@@ -70,6 +70,78 @@ async fn nested_reads_wait_for_the_parent_and_skip_a_pruned_path() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_open_parent_stays_unmarked_while_its_children_are_being_refreshed() {
+    with_clock(async {
+        let (refresh, started, release) = later(children(&["x", "y"], None));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"], None), roots(&["a"], None)]),
+            (CHILDREN_A, vec![children(&["x"], None), refresh]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let mut list = model.list();
+        model.show();
+        let generation = list.wait_for(|list| list.rows.len() == 1).await.unwrap().generation;
+        let a = actor_path("a");
+        open(&model, &mut list, generation, &a).await;
+
+        model.soft_refresh(viewport(generation, 0..2, vec![(0, a.clone())]));
+        started.notified().await;
+        let view = list.borrow();
+        assert_eq!(view.children[&a].rows, [actor_path("x").address().clone()]);
+        assert!(!view.children[&a].not_refreshed());
+        drop(view);
+        release.notify_one();
+        let view = list.wait_for(|list| list.children[&a].rows.len() == 2).await.unwrap();
+        assert!(!view.children[&a].not_refreshed());
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn deleting_a_child_keeps_the_open_parent_and_the_selected_sibling() {
+    with_clock(async {
+        const CHILDREN_P: &str = "/actors/counter/p/children?limit=100";
+        let (fresh, started, release) = later(details(2));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["p"], None), roots(&["p"], None)]),
+            (CHILDREN_P, vec![children(&["a", "gone", "other"], None), children(&["a", "other"], None)]),
+            (DETAILS, vec![details(1), fresh]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        let generation = list.wait_for(|list| list.rows.len() == 1).await.unwrap().generation;
+        let parent = actor_path("p");
+        open(&model, &mut list, generation, &parent).await;
+        let selected = parent.child(actor_path("a").address().clone());
+        model.select(Some(selected.clone()));
+        let before = pane_answered(&mut pane).await;
+
+        model.soft_refresh(viewport(generation, 0..4, vec![(0, parent.clone())]));
+        started.notified().await;
+        let view = list.wait_for(|list| list.children[&parent].rows.len() == 2).await.unwrap();
+        assert_eq!(view.children[&parent].rows, ["a", "other"].map(|key| actor_path(key).address().clone()));
+        assert!(view.open.contains(&parent));
+        drop(view);
+        assert_eq!(model.selected(), Some(selected));
+        assert_eq!(pane.borrow().generation, before.generation);
+        assert_eq!(pane.borrow().actor, before.actor);
+
+        release.notify_one();
+        let after = pane
+            .wait_for(|pane| matches!(pane.actor, Read::Ready(Some(ref actor)) if actor.version == 2))
+            .await
+            .unwrap();
+        assert_eq!(after.generation, before.generation);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn soft_marks_closed_and_retained_children_until_their_ranges_are_read() {
     with_clock(async {
         let script = Script::new([
@@ -312,6 +384,34 @@ async fn a_late_initial_sample_never_overwrites_the_soft_sample() {
         initial.await.unwrap();
         assert_eq!(list.borrow().child_status(actor_path("a").address()), "");
         assert_eq!(list.borrow().child_status(actor_path("b").address()), "running");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_soft_sample_lets_the_late_initial_sample_apply() {
+    with_clock(async {
+        let (initial, started, release) = later(page([turns::turn("counter/a", "initial")], None));
+        let script = Script::new([
+            (ROOTS, vec![roots(&["a"], None), roots(&["a"], None)]),
+            (SAMPLE, vec![initial, problem(503)]),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let model = Actors::new(Handle::current(), Limits::DEFAULT);
+        model.use_client(Some(server.client));
+        let mut list = model.list();
+        model.show();
+        started.notified().await;
+        list.wait_for(|list| list.rows.len() == 1).await.unwrap();
+        model.soft_refresh(OutlineViewport::default());
+        let view = list.wait_for(|list| list.footer().is_some_and(|footer| footer.contains("HTTP 503"))).await.unwrap();
+        assert_eq!(view.running, Running::Loading);
+        drop(view);
+
+        let initial = model.take_sample().unwrap();
+        release.notify_one();
+        initial.await.unwrap();
+        assert_eq!(list.borrow().child_status(actor_path("a").address()), "running");
     })
     .await;
 }

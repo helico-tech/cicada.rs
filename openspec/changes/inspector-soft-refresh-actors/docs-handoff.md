@@ -17,7 +17,9 @@ bounds, pruning, scheduling, paging and retained pane data against an in-process
 removes its descendants and clears any selection under that path. The pane keeps showing each previous answer until its
 replacement arrives. A failed pane read shows an error alongside the previous answer. The inspector refreshes the first
 children page of up to 20 open parents, giving priority to parents nearest the visible area and re-reading ancestors
-before descendants. A parent with a carried-over children page shows “not refreshed” on its **more…** or status row.
+before descendants. A skipped parent, a parent whose first-page read fails, or one with children beyond the refreshed
+page shows “not refreshed” on its **more…** or status row. The latest successful running-turn sample supplies the
+running badges when another sample fails.
 
 **Caveats.** One refresh uses up to four requests at once and has ten seconds. The root range can take up to three
 100-row requests. The server returns full actor states for every root row fetched, up to 300 states per refresh,
@@ -31,9 +33,10 @@ None.
 
 ## Status
 
-The wording for the app guide is proposed. The macOS build, formatting, inspector and workspace Clippy, and strict
-OpenSpec validation passed. The inspector passed 113 tests and one doctest. The workspace passed 3,998 tests with
-PostgreSQL enabled. The standalone docs check passed 11 tests and the guide doctests passed 55.
+The wording for the app guide is proposed. After code review round 1, the inspector passed 116 tests and one doctest,
+and inspector Clippy, formatting and strict OpenSpec validation passed. Before this fix, the macOS build and workspace
+Clippy passed, and the workspace passed 3,998 tests with PostgreSQL enabled. The standalone docs check passed 11 tests
+and the guide doctests passed 55.
 
 The manual AppKit checks are outstanding, including scroll restoration, removal of open descendants, pane continuity,
 the stale mark past the parent limit, keyboard navigation and VoiceOver.

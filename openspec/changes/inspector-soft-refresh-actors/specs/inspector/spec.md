@@ -15,15 +15,8 @@ showing "Loading".
 #### Scenario: Many open rows
 
 - **WHEN** 30 rows are open at one depth and a soft refresh runs
-- **THEN** the first children pages of the 20 nearest rows are re-read, visible rows first, and the rest are marked as
-  not refreshed
-
-#### Scenario: A refreshed ancestor loses an open branch
-
-- **WHEN** both an ancestor and a descendant are chosen for re-read and the ancestor's new children omit the path to
-  the descendant
-- **THEN** the ancestor's children are applied first and the descendant is pruned without a children read
-- **AND** a selection under the pruned path is cleared with an empty pane
+- **THEN** the first children pages of 20 of them, those on screen first, are re-read, and the rest are marked as not
+  refreshed; an open row under one of them is re-read only after its parent's re-read has answered
 
 #### Scenario: The pane stays
 

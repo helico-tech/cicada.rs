@@ -121,6 +121,10 @@ impl Children {
     pub fn not_refreshed(&self) -> bool {
         self.stale.is_some()
     }
+
+    fn mark_first_page_stale(&mut self) -> bool {
+        self.stale.replace(ChildStale::FirstPage) != Some(ChildStale::FirstPage)
+    }
 }
 
 /// What the rendered outline reported when a soft refresh was requested.
@@ -877,10 +881,13 @@ impl RefreshPage for Shared {
             let parents = std::mem::take(&mut state.refresh_viewport).parents(&list);
             drop(list);
             self.list.send_if_modified(|list| {
-                for page in list.children.values_mut() {
-                    page.stale = Some(ChildStale::FirstPage);
+                let mut changed = false;
+                for (path, page) in &mut list.children {
+                    if !parents.contains(path) {
+                        changed |= page.mark_first_page_stale();
+                    }
                 }
-                !list.children.is_empty()
+                changed
             });
             state.sample_ticket += 1;
             let pane = state.selected.as_ref().filter(|_| state.pane_task.is_none()).map(|path| {
@@ -984,7 +991,14 @@ impl Shared {
             join_all(depth.iter().map(|path| async move {
                 {
                     let state = self.lock();
-                    if !state.pager.refresh.current(ticket) || !self.list.borrow().can_refresh_children(path) {
+                    if !state.pager.refresh.current(ticket) {
+                        return;
+                    }
+                    let can_refresh = self.list.borrow().can_refresh_children(path);
+                    if !can_refresh {
+                        self.list.send_if_modified(|list| {
+                            list.children.get_mut(path).is_some_and(Children::mark_first_page_stale)
+                        });
                         return;
                     }
                 }
@@ -1191,7 +1205,7 @@ impl Shared {
                     read.cursor = Cursor::End;
                 }
                 Part::Failed(error) if kind == ChildPage::Refresh => {
-                    children.stale = Some(ChildStale::FirstPage);
+                    children.mark_first_page_stale();
                     children.refresh_error = Some(error);
                     return;
                 }
@@ -1237,9 +1251,9 @@ impl Shared {
         if ticket < state.sample_applied {
             return;
         }
-        state.sample_applied = ticket;
         self.list.send_modify(|list| match sample {
             Part::Ready(page) => {
+                state.sample_applied = ticket;
                 list.running = Running::Sample {
                     partial: page.next.is_some(),
                     actors: page.items.into_iter().map(|turn| turn.actor).collect(),
