@@ -352,3 +352,62 @@ async fn the_timer_runs_while_reconnecting() {
     assert!(matches!(*live.status().borrow(), LiveStatus::Reconnecting { .. }));
     assert_eq!(pages.times(), [dropped + FALLBACK]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn pause_closes_the_stream_drops_the_batch_and_cancels_a_refresh_in_flight() {
+    let length = Duration::from_secs(2);
+    let (live, _source, mut opened, first, pages) =
+        start_with(Section::Messages, "", FakePages::new(Some(length))).await;
+    let status = live.status();
+    hint(&first, "counter/a");
+    sleep(GATHER + Duration::from_millis(100)).await;
+    assert_eq!(pages.count(), 1, "a refresh runs");
+    hint(&first, "counter/b");
+    settle().await;
+    live.pause();
+    settle().await;
+    assert_eq!(*pages.cancels.lock().unwrap(), [Section::Messages]);
+    assert!(first.hints.is_closed());
+    assert_eq!(*status.borrow(), LiveStatus::Paused);
+
+    // Nothing reloads by itself: no batch, no timer, no stream, also across a page switch and a context switch.
+    live.show(Section::Actors, "");
+    live.use_source(Some(Channel::new().0));
+    sleep(FALLBACK * 4).await;
+    assert_eq!(pages.count(), 1);
+    assert!(opened.try_recv().is_err());
+    assert_eq!(*status.borrow(), LiveStatus::Paused);
+}
+
+#[tokio::test(start_paused = true)]
+async fn resume_opens_a_stream_whose_first_resync_refreshes_once() {
+    let (live, _source, mut opened, first, pages) = start(Section::Actors, "").await;
+    live.pause();
+    settle().await;
+    assert!(first.hints.is_closed());
+    live.resume();
+    let resumed = opened.recv().await.unwrap();
+    settle().await;
+    assert_eq!(*live.status().borrow(), LiveStatus::Connecting);
+    assert_eq!(pages.count(), 0, "the opening is no trigger");
+    let resync = Instant::now();
+    resumed.hints.send(Ok(Change::Resync)).unwrap();
+    sleep(Duration::from_secs(5)).await;
+    assert_eq!(pages.times(), [resync + GATHER]);
+    assert_eq!(*live.status().borrow(), LiveStatus::Live);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_manual_refresh_arms_the_timer_again_unless_paused() {
+    let (live, _source, _opened, _first, pages) = start(Section::Actors, "").await;
+    let opened = Instant::now();
+    sleep(Duration::from_secs(20)).await;
+    live.refreshed();
+    sleep(FALLBACK + Duration::from_secs(1)).await;
+    assert_eq!(pages.times(), [opened + Duration::from_secs(20) + FALLBACK]);
+
+    live.pause();
+    live.refreshed();
+    sleep(FALLBACK * 3).await;
+    assert_eq!(pages.count(), 1, "⌘R while paused arms no timer");
+}

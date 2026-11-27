@@ -1,8 +1,9 @@
 //! Live updates: one change stream (`GET /changes`, ADR 0035) for the page on screen, whose hints are gathered into
 //! batches that run the page's soft refresh, one at a time. The server's `resync` of every new subscription is the
 //! one recovery trigger. A page also refreshes 30 s after its last refresh attempt ended, as hints are best effort.
-//! The stream is opened again with backoff after it ends or fails. The model runs as one task on the session's
-//! runtime and publishes a [`LiveStatus`].
+//! The stream is opened again with backoff after it ends or fails. Pausing stops the stream, the timer and a refresh in
+//! flight; a manual Refresh keeps working. The model runs as one task on the session's runtime and publishes a
+//! [`LiveStatus`].
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -117,6 +118,9 @@ pub(crate) fn subscription(section: Section, search: &str) -> &str {
 enum Command<S> {
     Source(Option<Arc<S>>),
     Show(Section, String),
+    Pause,
+    Resume,
+    Refreshed,
 }
 
 /// The live model of one window. Dropping it closes the stream.
@@ -141,6 +145,7 @@ impl<S: ChangeSource> Live<S> {
             section: Section::Overview,
             prefix: String::new(),
             pending_prefix: None,
+            paused: false,
             link: Link::Closed,
             backoff: 0,
             batch: None,
@@ -159,6 +164,22 @@ impl<S: ChangeSource> Live<S> {
     /// page after the debounce.
     pub fn show(&self, section: Section, search: &str) {
         let _ = self.commands.send(Command::Show(section, subscription(section, search).to_owned()));
+    }
+
+    /// Pauses automatic refreshes: the stream closes, the timer stops, the gathered hints are dropped and a soft
+    /// refresh this model started is cancelled, its results dropped.
+    pub fn pause(&self) {
+        let _ = self.commands.send(Command::Pause);
+    }
+
+    /// Resumes: a stream opens, and its first `resync` runs one soft refresh.
+    pub fn resume(&self) {
+        let _ = self.commands.send(Command::Resume);
+    }
+
+    /// A manual Refresh (⌘R) of the page: the timer starts again from now unless paused.
+    pub fn refreshed(&self) {
+        let _ = self.commands.send(Command::Refreshed);
     }
 
     /// The pill's states, newest last.
@@ -211,6 +232,7 @@ struct Driver<S> {
     prefix: String,
     /// A new prefix of the same page and when it is followed.
     pending_prefix: Option<(String, Instant)>,
+    paused: bool,
     link: Link,
     /// The index into [`BACKOFF`] of the next wait.
     backoff: usize,
@@ -320,6 +342,26 @@ impl<S: ChangeSource> Driver<S> {
                 self.pending_prefix = None;
                 self.restart();
             }
+            Command::Pause if !self.paused => {
+                self.paused = true;
+                self.pending_prefix = None;
+                if self.refreshing.take().is_some()
+                    && let Some(pages) = self.pages.upgrade()
+                {
+                    pages.cancel_soft_refresh(self.section);
+                }
+                self.restart();
+            }
+            Command::Resume if self.paused => {
+                self.paused = false;
+                self.restart();
+            }
+            Command::Pause | Command::Resume => {}
+            Command::Refreshed => {
+                if self.refreshing.is_none() {
+                    self.arm();
+                }
+            }
             Command::Show(_, prefix) if prefix == self.prefix => self.pending_prefix = None,
             Command::Show(_, prefix) => {
                 if self.pending_prefix.as_ref().is_none_or(|(pending, _)| *pending != prefix) {
@@ -382,9 +424,9 @@ impl<S: ChangeSource> Driver<S> {
         }
     }
 
-    /// Arms the timer [`FALLBACK`] from now while there is a source to follow.
+    /// Arms the timer [`FALLBACK`] from now while there is a source to follow and the updates are not paused.
     fn arm(&mut self) {
-        self.timer = self.source.is_some().then(|| Instant::now() + FALLBACK);
+        self.timer = (self.source.is_some() && !self.paused).then(|| Instant::now() + FALLBACK);
     }
 
     /// Closes the stream and opens the next at once, the backoff from the start. The batch of the stream before is
@@ -396,14 +438,18 @@ impl<S: ChangeSource> Driver<S> {
         if self.refreshing.is_none() {
             self.arm();
         }
-        self.status.send_replace(if self.source.is_some() { LiveStatus::Connecting } else { LiveStatus::Off });
+        self.status.send_replace(match &self.source {
+            _ if self.paused => LiveStatus::Paused,
+            Some(_) => LiveStatus::Connecting,
+            None => LiveStatus::Off,
+        });
         self.open();
     }
 
     fn open(&mut self) {
         self.link = match &self.source {
-            Some(source) => Link::Opening(Box::pin(source.open(self.prefix.clone()))),
-            None => Link::Closed,
+            Some(source) if !self.paused => Link::Opening(Box::pin(source.open(self.prefix.clone()))),
+            _ => Link::Closed,
         };
     }
 

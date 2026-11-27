@@ -506,6 +506,10 @@ struct State {
     refresh_viewport: OutlineViewport,
     /// The viewport the view last reported, for live refreshes.
     reported_viewport: OutlineViewport,
+    /// True while the running soft refresh has not landed the root rows.
+    refresh_roots: bool,
+    /// The parents the running soft refresh chose whose children have not landed.
+    refresh_parents: BTreeSet<ActorPath>,
     deferred_children: BTreeMap<ActorPath, Cursor>,
     prefix: String,
     sample_task: Option<JoinHandle<()>>,
@@ -543,6 +547,8 @@ impl State {
         self.root_covered = None;
         self.pending_viewport = OutlineViewport::default();
         self.refresh_viewport = OutlineViewport::default();
+        self.refresh_roots = false;
+        self.refresh_parents.clear();
         self.deferred_children.clear();
         for task in [page, self.sample_task.take(), debounce] {
             self.abort(task);
@@ -550,15 +556,6 @@ impl State {
         for (_, read) in std::mem::take(&mut self.child_reads) {
             self.abort(read.task.map(|(_, task)| task));
         }
-    }
-
-    /// Drops the refresh while preserving the user's queued paging requests for its caller.
-    fn cancel_refresh(&mut self) -> bool {
-        let page = self.pager.take_deferred_page();
-        self.pager.cancel_refresh();
-        self.pending_viewport = OutlineViewport::default();
-        self.refresh_viewport = OutlineViewport::default();
-        page
     }
 
     fn supersede_pane(&mut self) {
@@ -580,6 +577,8 @@ impl Actors {
             pending_viewport: OutlineViewport::default(),
             refresh_viewport: OutlineViewport::default(),
             reported_viewport: OutlineViewport::default(),
+            refresh_roots: false,
+            refresh_parents: BTreeSet::new(),
             deferred_children: BTreeMap::new(),
             prefix: String::new(),
             sample_task: None,
@@ -677,7 +676,7 @@ impl Actors {
     /// Cancels the soft refresh when leaving the page.
     pub fn cancel_soft_refresh(&self) {
         let mut state = self.shared.lock();
-        let page = state.cancel_refresh();
+        let page = self.shared.cancel_refresh(&mut state);
         if page {
             self.shared.request_page(&mut state);
         }
@@ -763,7 +762,7 @@ impl Actors {
             });
         drop(list);
         if ready && retry {
-            let page = state.cancel_refresh();
+            let page = self.shared.cancel_refresh(&mut state);
             self.shared.request_children(&mut state, parent.clone());
             if page {
                 self.shared.request_page(&mut state);
@@ -908,6 +907,8 @@ impl RefreshPage for Shared {
                 changed
             });
             state.sample_ticket += 1;
+            state.refresh_roots = true;
+            state.refresh_parents = parents.iter().cloned().collect();
             let pane = state.selected.as_ref().filter(|_| state.pane_task.is_none()).map(|path| {
                 (path.address().clone(), PaneRead { generation: state.pane_generation, refresh: Some(ticket) })
             });
@@ -943,6 +944,34 @@ impl RefreshPage for Shared {
 }
 
 impl Shared {
+    /// Drops the refresh while preserving the user's queued paging requests for its caller. A running refresh marks
+    /// the root rows and the chosen parents whose reads it drops "not refreshed".
+    fn cancel_refresh(&self, state: &mut State) -> bool {
+        if state.pager.refresh.running() {
+            let (roots, parents) = (state.refresh_roots, std::mem::take(&mut state.refresh_parents));
+            let read_at = state.pager.read_at();
+            self.list.send_if_modified(|list| {
+                let mut changed = false;
+                if roots {
+                    let as_of = as_of(list.stale.as_ref(), read_at);
+                    list.stale = Some(Stale { as_of, capped: false, error: None });
+                    changed = true;
+                }
+                for parent in &parents {
+                    changed |= list.children.get_mut(parent).is_some_and(Children::mark_first_page_stale);
+                }
+                changed
+            });
+        }
+        state.refresh_roots = false;
+        state.refresh_parents.clear();
+        let page = state.pager.take_deferred_page();
+        state.pager.cancel_refresh();
+        state.pending_viewport = OutlineViewport::default();
+        state.refresh_viewport = OutlineViewport::default();
+        page
+    }
+
     async fn refresh_outline(
         self: &Arc<Self>,
         ticket: u64,
@@ -964,6 +993,7 @@ impl Shared {
             if !state.pager.refresh.current(ticket) {
                 return;
             }
+            state.refresh_roots = false;
             let old_time = as_of(self.list.borrow().stale.as_ref(), state.pager.read_at());
             let mut kept = false;
             if let Some(page) = range.page {
@@ -1008,12 +1038,13 @@ impl Shared {
             // Each depth completes before any descendant can start, so the check uses its parent's new rows.
             join_all(depth.iter().map(|path| async move {
                 {
-                    let state = self.lock();
+                    let mut state = self.lock();
                     if !state.pager.refresh.current(ticket) {
                         return;
                     }
                     let can_refresh = self.list.borrow().can_refresh_children(path);
                     if !can_refresh {
+                        state.refresh_parents.remove(path);
                         self.list.send_if_modified(|list| {
                             list.children.get_mut(path).is_some_and(Children::mark_first_page_stale)
                         });
@@ -1023,6 +1054,7 @@ impl Shared {
                 let page = budget.read(client.children(path.address(), None, Some(PAGE))).await;
                 let mut state = self.lock();
                 if state.pager.refresh.current(ticket) {
+                    state.refresh_parents.remove(path);
                     self.land_children(&mut state, path, page, ChildPage::Refresh);
                 }
             }))
