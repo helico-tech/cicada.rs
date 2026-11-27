@@ -26,9 +26,10 @@ reasoning, on purpose: judge what is written. The request (`.reviews/<id>.md`) n
 - **Docs.** A doc block, link, guarantee row or skill route the change breaks and does not name. The builder may not
   edit `README.md`, `AGENTS.md` or the handwritten docs: the prose goes into a docs handoff.
 - **Boards.** A change that adds or changes a screen: each such screen is named with its board in `mockup/` (with
-  `mockup/SOURCE.md`) or with an agreed "no board" and the board whose style it follows. Every element of each board
-  (sections, columns and their order, controls, texts, states) is in the design or under `Departures from the board`
-  with a reason, and so is everything the design adds to a screen beyond its board.
+  `mockup/SOURCE.md`) or with an agreed "no board" and the board whose style it follows. Every element of a screen's
+  own board (sections, columns and their order, controls, texts, states) is in the design or under `Departures from
+  the board` with a reason, and so is everything the design adds to a screen beyond its board. A "no board" screen's
+  controls and sections are described in the design; its style board sets only its style.
 
 ## What blocks
 
