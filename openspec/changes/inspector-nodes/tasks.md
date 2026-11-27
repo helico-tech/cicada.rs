@@ -11,10 +11,12 @@ first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design re
   or moved turn.
 - [ ] 2. **Nodes.** `nodes.rs`: the cache read on the first visit, its Refresh and a context switch (at once when
   visible, else at the next visit), never on the Overview's refresh; the local id filter; "as of the last read"; a
-  failed read with Retry and no stale list (decision 2). Verify: the Nodes tests of the design.
+  failed read with Retry and no stale list; every read with the shared read deadline (decision 2). Verify: the Nodes
+  tests of the design, including a late list result after a context switch.
 - [ ] 3. **A node's pane.** `node(id)` under the pane's generation, dropped on a new selection, Refresh or context
   switch, Retry on the selected node, "not found", its turns with Show Actor; a Nodes place reading its pane fresh on
-  back (decisions 3 and 4). Verify: the node pane tests of the design.
+  back (decisions 3 and 4). Verify: the node pane tests of the design, including A, then B, then A, and a selection
+  the filter hides.
 - [ ] 4. **The two pages.** The `appkit` Running Turns and Nodes pages, `NSTableView`s sharing the search field (each
   keeping its own filter text and placeholder), footer and pane toggle; every `unsafe` with its reason, borrows
   released before AppKit calls (decision 5). Verify: `cargo build -p cicada-inspector`, `cargo clippy -p
