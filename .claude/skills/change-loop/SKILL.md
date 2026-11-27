@@ -146,9 +146,9 @@ owner says otherwise. Keep a note of who builds what: the review needs it.
 
    Keep its id, tell the owner in one line, and go on with Describe. The two builders share the gate's lock: each
    retries while the other's run holds it (builder.md, Gate evidence).
-4. **When the builder reports.** A question about the design, or a departure from a board, goes to the owner; send the answer with SendMessage.
-   `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the builder's report to a file in your
-   scratchpad, and ask for a review:
+4. **When the builder reports.** A question about the design, or a departure from a board, goes to the owner; send
+   the answer with SendMessage. `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the
+   builder's report to a file in your scratchpad, and ask for a review:
 
    ```sh
    python3 scripts/review.py request code <change> --head feat/<change> --built-by <builder's model> \
