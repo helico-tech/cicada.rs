@@ -461,11 +461,20 @@ impl std::fmt::Debug for Target {
 /// `url` with its password, if any, as `***`, read as a URL rather than scanned as text, so that no character of a
 /// password ends it early. A value that is not a URL with a host (`user:pw@host` reads as the scheme `user`) keeps
 /// only its scheme: `scheme://***`, else `***`.
-/// The host of `server`, with its port when the URL names one.
+/// The host of `server`, with its port when the URL names one, its scheme's default port included: the parser drops a
+/// default port, so the authority of the text itself says whether one was named.
 fn server_host(server: &str) -> Option<String> {
     let url = reqwest::Url::parse(server).ok()?;
     let host = url.host_str().filter(|host| !host.is_empty())?;
-    Some(url.port().map_or_else(|| host.to_owned(), |port| format!("{host}:{port}")))
+    let authority = server.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = &authority[..authority.find(['/', '?', '#']).unwrap_or(authority.len())];
+    let address = &authority[authority.rfind('@').map_or(0, |at| at + 1)..];
+    let after_host = address.rfind(']').map_or(address, |end| &address[end + 1..]);
+    let named = after_host.contains(':');
+    match url.port_or_known_default() {
+        Some(port) if named => Some(format!("{host}:{port}")),
+        _ => Some(host.to_owned()),
+    }
 }
 
 fn redacted_url(url: &str) -> String {
@@ -738,6 +747,8 @@ mod tests {
             ("prod", "https://user:secret@actors.internal/api?token=hidden#part"),
             ("local", "http://127.0.0.1:8080"),
             ("v6", "http://u@[::1]:9000/x"),
+            ("tls", "https://actors.internal:443/api"),
+            ("web", "http://u:p@web.internal:80"),
             ("broken", "not a url"),
         ] {
             config.contexts.insert(name.into(), Context { server: server.into(), ..Context::default() });
@@ -747,6 +758,8 @@ mod tests {
         assert_eq!(contexts.host("prod"), Some("actors.internal"));
         assert_eq!(contexts.host("local"), Some("127.0.0.1:8080"));
         assert_eq!(contexts.host("v6"), Some("[::1]:9000"));
+        assert_eq!(contexts.host("tls"), Some("actors.internal:443"), "a named default port is kept");
+        assert_eq!(contexts.host("web"), Some("web.internal:80"));
         assert_eq!(contexts.host("broken"), None);
         assert_eq!(contexts.host("missing"), None);
         let shown = format!("{contexts:?}");
