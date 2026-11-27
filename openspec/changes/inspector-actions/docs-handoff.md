@@ -18,8 +18,9 @@ inspector starts fresh reads after successful writes and drops older outline res
 mailbox, **Cancel Turn…** while it shows a running turn, **Purge Mailbox…**, and **Delete…**. These use the same
 routes and context credentials as `cicada`. Pause lets a running turn finish. Cancel Turn, Purge Mailbox and Delete
 open a sheet naming the target. Return and Escape both cancel the sheet. Purge leaves a running message in place.
-Delete removes the actor, every descendant and all their mailboxes. An absent actor shows “actor not found”.
-A refusal opens an alert and leaves the pane intact.
+Delete removes the actor, every descendant and all their mailboxes. Pause, Resume, Purge Mailbox and Delete
+show “actor not found” when the actor is absent. Cancel Turn shows “no turn was running” when the server finds
+no running turn. A refusal opens an alert even if the selection has changed.
 
 **Caveats.** Actions use the address named in the sheet, which can belong to a recreated actor when the server
 gets the request. Cancel Turn names the last-read message. The server requests cancellation of whichever turn is
@@ -31,8 +32,9 @@ children. The sheets indicate when a count is a lower bound or has not been read
 
 **Where.** `docs/guide/app.md`, `Inspector on macOS`, with the Actors pane and Live controls.
 
-**Text.** A successful write schedules a new read even when Live is paused. If paging is in progress or failed,
-the selected pane can be read on its own. Delete drops the actor and known descendants from the loaded outline
+**Text.** A successful write schedules a new read even when Live is paused. A timeout still shows an alert and
+schedules that read because the server may have applied the write. If paging is in progress or failed, the selected
+pane can be read on its own. An acknowledged Delete drops the actor and known descendants from the loaded outline
 immediately. The pane shows “not found” if it still shows the deleted actor. Selecting another actor before the
 delete replies keeps the newer pane.
 
@@ -49,3 +51,7 @@ that shape for arbitrary error bodies.
 The focused actor action tests passed 16 of 16 on virtual time. The workspace passed 4,061 tests with PostgreSQL.
 The separate docs test and doctest runs passed 11 and 55 tests. The macOS inspector built and Clippy, formatting,
 and strict OpenSpec validation passed. The model checks ran by code. Native UI behavior still needs a manual check.
+
+After code review round 1, the inspector passed 178 tests and one doctest. The new tests cover refusals that arrive
+after reselection or Refresh and a timed-out write that the server had already applied. Workspace Clippy with
+warnings denied, formatting, and strict OpenSpec validation passed.

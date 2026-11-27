@@ -99,6 +99,8 @@ enum Fake {
     Answer(StatusCode, Value),
     /// Never answers.
     Hang,
+    /// Runs the real route and holds its response until released.
+    HoldResponse { ready: Arc<Notify>, release: Arc<Notify> },
     /// Signals `arrived` when the request comes in, then answers after `release` fires.
     Wait { arrived: Arc<Notify>, release: Arc<Notify> },
     /// Signals `arrived` when the request comes in, then answers this status and JSON body after `release` fires.
@@ -146,6 +148,12 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
                 Some(Fake::Hang) => {
                     arrived();
                     std::future::pending::<Response>().await
+                }
+                Some(Fake::HoldResponse { ready, release }) => {
+                    let response = next.run(request).await;
+                    ready.notify_one();
+                    release.notified().await;
+                    response
                 }
                 Some(Fake::Wait { arrived: notify, release }) => {
                     arrived();

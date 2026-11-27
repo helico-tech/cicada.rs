@@ -1450,10 +1450,8 @@ impl Target {
         let Some(window) = c.window.get() else { return };
         let pane = c.pane.borrow_mut().borrow_and_update().clone();
         let actions = c.actor_actions.borrow_mut().borrow_and_update().clone();
-        let feedback =
-            actions.feedback.filter(|(generation, _)| *generation == pane.generation).map(|(_, value)| value);
-        let notice = match &feedback {
-            Some(Feedback::Notice(notice)) => Some(notice.as_str()),
+        let notice = match &actions.feedback {
+            Some(Feedback::Notice { generation, text }) if *generation == pane.generation => Some(text.as_str()),
             _ => None,
         };
         c.actor_pane_shown.replace(pane.clone());
@@ -1465,10 +1463,11 @@ impl Target {
         let shown = c.state_shown.borrow().clone();
         let shown = window.page.show_pane(&pane, shown.as_ref(), self.as_ref(), &controls);
         c.state_shown.replace(shown);
-        let same_selection = c.pane.borrow().borrow().generation == pane.generation;
-        if let Some(Feedback::Alert(refusal)) = feedback
+        let current_action = c.actor_actions.borrow().borrow().serial == actions.serial;
+        if let Some(Feedback::Alert(refusal)) = actions.feedback
             && actions.serial != c.actor_alert_shown.get()
-            && same_selection
+            && current_action
+            && !c.finished.get()
         {
             c.actor_alert_shown.set(actions.serial);
             actor_dialog::Dialog::refusal(self, &refusal);

@@ -122,13 +122,13 @@ fn acknowledged(answer: bool) -> Option<u64> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Feedback {
-    Notice(String),
+    Notice { generation: u64, text: String },
     Alert(Alert),
 }
 
 impl Feedback {
-    fn selection_changed() -> Self {
-        Self::Notice("selection changed; nothing done".into())
+    fn selection_changed(generation: u64) -> Self {
+        Self::Notice { generation, text: "selection changed; nothing done".into() }
     }
 }
 
@@ -136,7 +136,7 @@ impl Feedback {
 pub(crate) struct View {
     pub busy: bool,
     pub serial: u64,
-    pub feedback: Option<(u64, Feedback)>,
+    pub feedback: Option<Feedback>,
 }
 
 struct Target {
@@ -186,7 +186,8 @@ impl Actors {
         let address = pane.address.clone()?;
         let target = Target { generation: pane.generation, address };
         if !target.matches(&state) {
-            self.shared.finish_action(&mut state, Some(Feedback::selection_changed()));
+            let feedback = Feedback::selection_changed(state.pane_generation);
+            self.shared.finish_action(&mut state, Some(feedback));
             return None;
         }
         if !Action::offered(pane).any(|offered| offered == action) {
@@ -218,7 +219,8 @@ impl Actors {
         if !confirmed {
             self.shared.finish_action(&mut state, None);
         } else if !pending.target.matches(&state) {
-            self.shared.finish_action(&mut state, Some(Feedback::selection_changed()));
+            let feedback = Feedback::selection_changed(state.pane_generation);
+            self.shared.finish_action(&mut state, Some(feedback));
         } else {
             self.shared.send_action(&mut state);
         }
@@ -235,11 +237,7 @@ impl Shared {
 
     fn finish_action(&self, state: &mut ActorState, feedback: Option<Feedback>) {
         state.actions.pending = None;
-        self.actions.send_replace(View {
-            busy: false,
-            serial: state.actions.serial,
-            feedback: feedback.map(|feedback| (state.pane_generation, feedback)),
-        });
+        self.actions.send_replace(View { busy: false, serial: state.actions.serial, feedback });
     }
 
     fn send_action(self: &Arc<Self>, state: &mut ActorState) {
@@ -251,7 +249,8 @@ impl Shared {
                 let mut state = shared.lock();
                 let Some(pending) = state.actions.pending.as_ref().filter(|pending| pending.id == id) else { return };
                 if !pending.target.matches(&state) {
-                    shared.finish_action(&mut state, Some(Feedback::selection_changed()));
+                    let feedback = Feedback::selection_changed(state.pane_generation);
+                    shared.finish_action(&mut state, Some(feedback));
                     return;
                 }
                 (state.client.clone().expect("the action has a client"), pending.action, pending.target.address.clone())
@@ -260,15 +259,25 @@ impl Shared {
             let mut state = shared.lock();
             let Some(pending) = state.actions.pending.as_ref().filter(|pending| pending.id == id) else { return };
             let selected = pending.target.matches(&state);
-            let wrote = matches!(answer, Ok(Ok(Some(_))));
-            let feedback = selected.then(|| match answer {
-                Ok(Ok(count)) => Feedback::Notice(action.notice(count)),
-                Ok(Err(error)) => Feedback::Alert(state.actions.redactions.alert(error)),
-                Err(_) => Feedback::Alert(Alert { title: TIMED_OUT.into(), detail: None }),
-            });
-            if wrote {
-                shared.write_acknowledged(&mut state, action, address, selected);
-            }
+            let feedback = match answer {
+                Ok(Ok(count)) => {
+                    if count.is_some() {
+                        if action == Action::Delete {
+                            shared.delete_acknowledged(&mut state, address, selected);
+                        } else {
+                            shared.refresh_after_write(&mut state);
+                        }
+                    }
+                    (selected || count.is_none())
+                        .then(|| Feedback::Notice { generation: state.pane_generation, text: action.notice(count) })
+                }
+                Ok(Err(error)) => Some(Feedback::Alert(state.actions.redactions.alert(error))),
+                Err(_) => {
+                    // The write may have reached the server. Reconcile by reading, without assuming it succeeded.
+                    shared.refresh_after_write(&mut state);
+                    Some(Feedback::Alert(Alert { title: TIMED_OUT.into(), detail: None }))
+                }
+            };
             shared.finish_action(&mut state, feedback);
         }));
     }

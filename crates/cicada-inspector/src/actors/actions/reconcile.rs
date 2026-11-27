@@ -5,29 +5,29 @@ use std::sync::Arc;
 
 use cicada::ActorAddress;
 
-use super::{Action, ActorState, Read, Shared};
+use super::{ActorState, Read, Shared};
 use crate::actors::{ActorPath, ListView, PaneView, PostWrite, Running};
 
 impl Shared {
-    pub(super) fn write_acknowledged(
-        self: &Arc<Self>,
-        state: &mut ActorState,
-        action: Action,
-        address: ActorAddress,
-        selected: bool,
-    ) {
-        let pane = if action == Action::Delete {
-            self.prune_deleted(state, &address);
-            if selected {
-                self.not_found(state, address);
-            }
-            None
-        } else if state.selected.is_some() {
+    pub(super) fn delete_acknowledged(self: &Arc<Self>, state: &mut ActorState, address: ActorAddress, selected: bool) {
+        self.prune_deleted(state, &address);
+        if selected {
+            self.not_found(state, address);
+        }
+        self.queue_write_refresh(state, None);
+    }
+
+    pub(super) fn refresh_after_write(self: &Arc<Self>, state: &mut ActorState) {
+        let pane = if state.selected.is_some() {
             state.invalidate_pane_read();
             Some(state.pane_generation)
         } else {
             None
         };
+        self.queue_write_refresh(state, pane);
+    }
+
+    fn queue_write_refresh(self: &Arc<Self>, state: &mut ActorState, pane: Option<u64>) {
         state.pending_write = Some(PostWrite { pane });
         self.resume_write(state);
     }

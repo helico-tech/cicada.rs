@@ -39,7 +39,9 @@ impl Redactions {
         redactions.secrets.extend(token.cloned());
         if let Some(entry) = context {
             for (name, value) in &entry.headers {
-                redactions.secrets.push(value.clone());
+                if credential_header(name) || value.trim().chars().take(4).count() == 4 {
+                    redactions.secrets.push(value.trim().to_owned());
+                }
                 if name.eq_ignore_ascii_case("authorization") {
                     redactions.authorization(value);
                 }
@@ -50,9 +52,9 @@ impl Redactions {
         if let Some(url) = server.and_then(|value| Url::parse(value).ok()) {
             let user = url.username();
             let password = url.password();
-            for value in std::iter::once(user).chain(password) {
-                redactions.secrets.push(value.to_owned());
-                redactions.secrets.push(percent_decode_str(value).decode_utf8_lossy().into_owned());
+            if let Some(password) = password {
+                redactions.secrets.push(password.to_owned());
+                redactions.secrets.push(percent_decode_str(password).decode_utf8_lossy().into_owned());
             }
             if (!user.is_empty() || password.is_some())
                 && let Ok(user) = percent_decode_str(user).decode_utf8()
@@ -78,8 +80,9 @@ impl Redactions {
             if scheme.eq_ignore_ascii_case("basic")
                 && let Ok(bytes) = STANDARD.decode(token)
                 && let Ok(decoded) = String::from_utf8(bytes)
+                && let Some((_, password)) = decoded.split_once(':')
             {
-                self.secrets.extend(decoded.splitn(2, ':').map(str::to_owned));
+                self.secrets.push(password.to_owned());
             }
         }
     }
@@ -133,4 +136,10 @@ impl Redactions {
         let text = text.trim();
         (!text.is_empty()).then(|| text.chars().take(500).collect())
     }
+}
+
+fn credential_header(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .split(['-', '_'])
+        .any(|word| matches!(word, "authorization" | "cookie" | "token" | "key" | "secret"))
 }

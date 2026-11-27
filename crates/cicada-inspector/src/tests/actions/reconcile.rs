@@ -61,7 +61,7 @@ async fn a_write_updates_the_list_and_pane_with_live_paused() {
         let model = session.actors();
         let list = shown(model).await;
         let pane = select(model, "a").await;
-        assert_eq!(apply(model, &pane, Action::Pause).await, notice("paused"));
+        assert_notice(model, &pane, Action::Pause, "paused").await;
         let changed = model.pane().wait_for(paused).await.unwrap().clone();
         assert_eq!(changed.generation, pane.generation);
         let refreshed = model.list().wait_for(|list| list.rows[0].paused).await.unwrap().clone();
@@ -93,7 +93,7 @@ async fn a_write_queues_a_new_pane_read_behind_the_running_soft_refresh() {
         }
         let old_refresh = model.soft_refresh(OutlineViewport::default());
         arrived.notified().await;
-        assert_eq!(apply(&model, &pane, Action::Pause).await, notice("paused"));
+        assert_notice(&model, &pane, Action::Pause, "paused").await;
         assert_eq!(reads.load(Ordering::SeqCst), 2);
         assert!(!paused(&model.pane().borrow()));
 
@@ -136,7 +136,7 @@ async fn pausing_an_automatic_refresh_preserves_the_queued_and_running_write_ref
         }
         let automatic = model.soft_refresh(OutlineViewport::default());
         old_in.notified().await;
-        assert_eq!(apply(&model, &pane, Action::Pause).await, notice("paused"));
+        assert_notice(&model, &pane, Action::Pause, "paused").await;
         model.cancel_soft_refresh();
         automatic.await;
         fresh_in.notified().await;
@@ -189,7 +189,7 @@ async fn blocked_paging_reads_the_pane_only_after_the_write_answer() {
             write_out.notify_one();
 
             let outcome = model.actions().wait_for(|v| !v.busy).await.unwrap().feedback.clone();
-            assert_eq!(outcome, Some((selection.generation, notice("purged 1 messages"))));
+            assert_eq!(outcome, Some(notice(selection.generation, "purged 1 messages")));
             model
                 .pane()
                 .wait_for(|pane| matches!(&pane.mailbox, Read::Ready(mailbox) if mailbox.rows.is_empty()))
@@ -311,7 +311,7 @@ async fn delete_prunes_every_loaded_occurrence_and_fences_ordinary_pages() {
             } else {
                 assert!(view.not_found());
                 assert_eq!(view.address.as_ref(), Some(a.address()));
-                assert_eq!(result, Some((view.generation, notice("deleted"))));
+                assert_eq!(result, Some(notice(view.generation, "deleted")));
             }
             let pruned = list.borrow().clone();
             assert_eq!(pruned.rows.iter().map(|row| &row.address).collect::<Vec<_>>(), [z.address()]);
@@ -362,7 +362,7 @@ async fn the_post_write_refresh_replaces_a_pre_write_pane_read_when_paging_is_id
         shown(&model).await;
         let pane = select(&model, "a").await;
         old_in.notified().await;
-        assert_eq!(apply(&model, &pane, Action::Purge).await, notice("purged 1 messages"));
+        assert_notice(&model, &pane, Action::Purge, "purged 1 messages").await;
         model
             .pane()
             .wait_for(|pane| matches!(&pane.mailbox, Read::Ready(mailbox) if mailbox.rows.is_empty()))
@@ -398,7 +398,7 @@ async fn a_soft_refresh_started_before_delete_cannot_reinsert_the_actor() {
         let prior = model.soft_refresh(OutlineViewport::default());
         old_in.notified().await;
 
-        assert_eq!(apply(&model, &a, Action::Delete).await, notice("deleted"));
+        assert_notice(&model, &a, Action::Delete, "deleted").await;
         assert_eq!(model.list().borrow().rows.len(), 1);
         old_out.notify_one();
         prior.await;
@@ -406,6 +406,37 @@ async fn a_soft_refresh_started_before_delete_cannot_reinsert_the_actor() {
         assert_eq!(model.list().borrow().rows.len(), 1);
         assert!(model.pane().borrow().not_found());
         fresh_out.notify_one();
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_write_alerts_and_reconciles_a_write_the_server_already_made() {
+    with_clock(async {
+        let actors = actors().await;
+        create(&actors, "a").await;
+        let (ready, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        let held = Fake::HoldResponse { ready: ready.clone(), release: release.clone() };
+        let rule: Rule = Arc::new(move |target| (target == "/actors/counter/a/mailbox/pause").then(|| held.clone()));
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let model = model(&server);
+        let before = shown(&model).await;
+        let selected = select(&model, "a").await;
+        model.press_action(&selected, Action::Pause);
+        ready.notified().await;
+        assert!(model.actions().borrow().busy);
+        assert!(!paused(&model.pane().borrow()));
+        assert!(!model.list().borrow().rows[0].paused);
+
+        tokio::time::advance(Limits::DEFAULT.deadline).await;
+        let result = model.actions().wait_for(|view| !view.busy).await.unwrap().feedback.clone();
+        let Some(Feedback::Alert(alert)) = result else { panic!("expected a timeout, got {result:?}") };
+        assert_eq!(alert.title, crate::model::TIMED_OUT);
+        let pane = model.pane().wait_for(paused).await.unwrap().clone();
+        assert_eq!(pane.generation, selected.generation);
+        let list = model.list().wait_for(|list| list.rows[0].paused).await.unwrap().clone();
+        assert_eq!(list.generation, before.generation);
+        release.notify_one();
     })
     .await;
 }

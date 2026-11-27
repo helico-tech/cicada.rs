@@ -42,11 +42,16 @@ async fn apply(model: &Actors, pane: &PaneView, action: Action) -> Feedback {
     if let Some(sheet) = model.press_action(pane, action) {
         model.answer_action(sheet.id, true);
     }
-    model.actions().wait_for(|v| !v.busy).await.unwrap().feedback.clone().unwrap().1
+    model.actions().wait_for(|v| !v.busy).await.unwrap().feedback.clone().unwrap()
 }
 
-fn notice(text: &str) -> Feedback {
-    Feedback::Notice(text.into())
+async fn assert_notice(model: &Actors, pane: &PaneView, action: Action, expected: &str) {
+    let feedback = apply(model, pane, action).await;
+    assert_eq!(feedback, notice(model.pane().borrow().generation, expected));
+}
+
+fn notice(generation: u64, text: &str) -> Feedback {
+    Feedback::Notice { generation, text: text.into() }
 }
 
 fn held(route: &'static str) -> (Rule, Arc<Notify>, Arc<Notify>) {
@@ -66,7 +71,7 @@ async fn pause_and_resume_write_the_mailbox_flag() {
         for (action, paused) in [(Action::Pause, true), (Action::Resume, false)] {
             let pane = select(&model, "a").await;
             let text = if paused { "paused" } else { "resumed" };
-            assert_eq!(apply(&model, &pane, action).await, notice(text));
+            assert_notice(&model, &pane, action, text).await;
             assert_eq!(server.client.get_actor(address.address()).await.unwrap().unwrap().paused, paused);
         }
     })
@@ -88,8 +93,8 @@ async fn cancel_records_the_request_and_purge_spares_the_running_message() {
         let model = model(&server);
         select(&model, "a").await;
         let pane = model.pane().wait_for(|pane| matches!(pane.turn, Read::Ready(Some(_)))).await.unwrap().clone();
-        assert_eq!(apply(&model, &pane, Action::CancelTurn).await, notice("cancel requested"));
-        assert_eq!(apply(&model, &pane, Action::Purge).await, notice("purged 2 messages"));
+        assert_notice(&model, &pane, Action::CancelTurn, "cancel requested").await;
+        assert_notice(&model, &pane, Action::Purge, "purged 2 messages").await;
         let address = path("a");
         let turn = server.client.turn(address.address()).await.unwrap().unwrap();
         assert!(turn.cancel_requested);
@@ -109,7 +114,7 @@ async fn delete_removes_the_actor() {
         let server = serve(&actors, no_rule(), Duration::ZERO).await;
         let model = model(&server);
         let pane = select(&model, "a").await;
-        assert_eq!(apply(&model, &pane, Action::Delete).await, notice("deleted"));
+        assert_notice(&model, &pane, Action::Delete, "deleted").await;
         assert!(server.client.get_actor(path("a").address()).await.unwrap().is_none());
     })
     .await;
@@ -132,13 +137,13 @@ async fn a_stale_button_or_sheet_sends_nothing_even_after_reselecting_the_addres
         model.answer_action(sheet.id, true);
         assert_eq!(
             model.actions().borrow().feedback,
-            Some((a_again.generation, notice("selection changed; nothing done")))
+            Some(notice(a_again.generation, "selection changed; nothing done"))
         );
 
         assert!(model.press_action(&a, Action::Pause).is_none());
         assert_eq!(
             model.actions().borrow().feedback,
-            Some((a_again.generation, notice("selection changed; nothing done")))
+            Some(notice(a_again.generation, "selection changed; nothing done"))
         );
 
         model.press_action(&a_again, Action::Pause);
@@ -146,7 +151,7 @@ async fn a_stale_button_or_sheet_sends_nothing_even_after_reselecting_the_addres
         model.select(Some(path("b")));
         let new_generation = model.pane().borrow().generation;
         let before_send = model.actions().wait_for(|view| !view.busy).await.unwrap().feedback.clone();
-        assert_eq!(before_send, Some((new_generation, notice("selection changed; nothing done"))));
+        assert_eq!(before_send, Some(notice(new_generation, "selection changed; nothing done")));
 
         while let Ok(event) = server.events.try_recv() {
             assert!(!event.contains("/mailbox/purge") && !event.contains("/mailbox/pause"), "{event}");
@@ -191,8 +196,8 @@ async fn switching_context_or_closing_drops_the_pending_result() {
         let late = Fake::Later {
             arrived: arrived.clone(),
             release: release.clone(),
-            status: StatusCode::NO_CONTENT,
-            body: json!(null),
+            status: StatusCode::FORBIDDEN,
+            body: json!({"type": "urn:example:refusal", "status": 403, "title": "Denied"}),
         };
         let rule: Rule = Arc::new(move |target| (target == "/actors/counter/a/mailbox/pause").then(|| late.clone()));
         let server = serve(&actors, rule, Duration::ZERO).await;
@@ -238,14 +243,14 @@ async fn actor_and_turn_absences_leave_the_pane_as_it_was() {
         server.client.delete(&actor).await.unwrap();
         for action in [Action::Pause, Action::Purge, Action::Delete, Action::CancelTurn] {
             let expected = if action == Action::CancelTurn { "no turn was running" } else { "actor not found" };
-            assert_eq!(apply(&model, &a, action).await, notice(expected));
+            assert_notice(&model, &a, action, expected).await;
             assert_eq!(*model.pane().borrow(), a);
         }
 
         select(&model, "b").await;
         let b = model.pane().wait_for(pane_read).await.unwrap().clone();
         server.client.delete(&other).await.unwrap();
-        assert_eq!(apply(&model, &b, Action::Resume).await, notice("actor not found"));
+        assert_notice(&model, &b, Action::Resume, "actor not found").await;
         assert_eq!(*model.pane().borrow(), b);
     })
     .await;
@@ -326,7 +331,8 @@ async fn refusals_use_sanitized_problem_text_or_only_the_status_and_keep_the_pan
         let actors = actors().await;
         create(&actors, "a").await;
         let title = format!("Refused\u{0000} secret-token {} suffix", "λ".repeat(520));
-        let detail = "Bad\u{001b} request: http://someone:password@node and Bearer token-value and header-secret";
+        let detail = "Bad\u{001b} request: http://someone:password@node, Bearer token-value, header-secret. \
+                      admin may retry 1 time. Password p#; encoded p%23; key xy.";
         let rule: Rule = Arc::new(move |target| match target {
             "/actors/counter/a/mailbox/pause" => Some(Fake::Answer(
                 StatusCode::FORBIDDEN,
@@ -339,11 +345,14 @@ async fn refusals_use_sanitized_problem_text_or_only_the_status_and_keep_the_pan
         });
         let server = serve(&actors, rule, Duration::ZERO).await;
         let dir = tempfile::tempdir().unwrap();
-        let mut env = config(&dir, &[("a", &server.url)]);
+        let basic = server.url.replacen("://", "://admin:p%23@", 1);
+        let mut env = config(&dir, &[("a", &basic)]);
         env.insert("CICADA_TOKEN".into(), "secret-token".into());
         cicada_app::ContextFile::update(&env, |file| {
             let mut entry = file.context("a").unwrap();
             entry.headers.insert("X-Custom".into(), "header-secret".into());
+            entry.headers.insert("X-Version".into(), "1".into());
+            entry.headers.insert("X-API-Key".into(), "xy".into());
             file.set_context("a", entry);
             Ok(())
         })
@@ -357,11 +366,57 @@ async fn refusals_use_sanitized_problem_text_or_only_the_status_and_keep_the_pan
         let Feedback::Alert(alert) = apply(model, &pane, Action::Pause).await else { panic!("expected an alert") };
         assert_eq!(alert.title.chars().count(), 500);
         assert!(alert.title.starts_with("Refused  λ"));
-        assert_eq!(alert.detail.as_deref(), Some("Bad request: http://node and  and"));
+        assert_eq!(
+            alert.detail.as_deref(),
+            Some("Bad request: http://node, , . admin may retry 1 time. Password ; encoded ; key .")
+        );
         assert_eq!(*model.pane().borrow(), pane);
         let Feedback::Alert(alert) = apply(model, &pane, Action::Purge).await else { panic!("expected an alert") };
         assert_eq!((alert.title.as_str(), alert.detail), ("HTTP 401", None));
         assert_eq!(*model.pane().borrow(), pane);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_late_refusal_survives_reselection_and_manual_refresh() {
+    with_clock(async {
+        let actors = actors().await;
+        create(&actors, "a").await;
+        create(&actors, "b").await;
+        let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        let late = Fake::Later {
+            arrived: arrived.clone(),
+            release: release.clone(),
+            status: StatusCode::FORBIDDEN,
+            body: json!({
+                "type": "urn:example:refusal", "status": 403, "title": "Purge refused", "detail": "Missing permission"
+            }),
+        };
+        let rule: Rule = Arc::new(move |target| (target == "/actors/counter/a/mailbox/purge").then(|| late.clone()));
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let model = model(&server);
+        for refresh in [false, true] {
+            let a = select(&model, "a").await;
+            let sheet = model.press_action(&a, Action::Purge).unwrap();
+            model.answer_action(sheet.id, true);
+            arrived.notified().await;
+            if refresh {
+                model.refresh();
+                model.reloaded().await;
+            } else {
+                select(&model, "b").await;
+            }
+            let pane = model.pane().wait_for(pane_read).await.unwrap().clone();
+            assert_ne!(pane.generation, a.generation);
+            release.notify_one();
+
+            let view = model.actions().wait_for(|view| !view.busy).await.unwrap().clone();
+            let Some(Feedback::Alert(alert)) = view.feedback else { panic!("expected a refusal, got {view:?}") };
+            assert_eq!(alert.title, "Purge refused");
+            assert_eq!(alert.detail.as_deref(), Some("Missing permission"));
+            assert_eq!(*model.pane().borrow(), pane);
+        }
     })
     .await;
 }
