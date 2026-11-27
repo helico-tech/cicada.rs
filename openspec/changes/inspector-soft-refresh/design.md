@@ -2,8 +2,8 @@
 
 Live updates (`inspector-live`) will reload the page on screen often. Today a page's Refresh starts over: the first page
 only, the selection cleared, the open rows folded. That is right for ⌘R but would make live updates unusable. This
-change adds a soft refresh to each page's model: it re-reads what is loaded, within fixed limits, and keeps what the user
-sees. `inspector-live` calls it; ⌘R keeps today's full Refresh.
+change adds a soft refresh to each page's model: it re-reads what is loaded, within fixed limits, and keeps what the
+user sees. `inspector-live` calls it; ⌘R keeps today's full Refresh.
 
 ## Decisions
 
@@ -16,8 +16,8 @@ sees. `inspector-live` calls it; ⌘R keeps today's full Refresh.
    row that is gone there disappears. Rows past it (beyond 300, or children of rows not re-read) stay as they were,
    marked "not refreshed" (a dimmed time in the footer: "rows past 300 as of HH:MM"), and are never removed by a soft
    refresh. A manual Refresh clears the mark.
-3. **Putting back the view.** After the answer is applied: the selection by its id or path when that row is still
-   there (else cleared, and the pane emptied, as a manual Refresh does); the scroll position by the first visible row's
+3. **Putting back the view.** After the answer is applied: the selection by its id or path when that row is still there
+   (else cleared, and the pane emptied, as a manual Refresh does); the scroll position by the first visible row's
    identity, or the same offset when that row is gone; the open rows by `inspector-children`' rule. The pane is read
    again under its own generation when its row was re-read. The search prefix, the status switch and the filter text do
    not change.
@@ -26,8 +26,8 @@ sees. `inspector-live` calls it; ⌘R keeps today's full Refresh.
    Show Actor, presses Retry, types), the refresh applies its rows but not the restore of what changed; a Show Actor
    jump or a Retry in progress is left alone. A new prefix, status, page switch or context switch drops the soft refresh
    entirely (its generation no longer matches).
-5. **One at a time.** At most one soft refresh runs per page; a request while one runs is remembered once and starts when
-   it ends. A manual Refresh cancels a running soft refresh.
+5. **One at a time.** At most one soft refresh runs per page; a request while one runs is remembered once and starts
+   when it ends. A manual Refresh cancels a running soft refresh.
 6. **Where it lives.** A `soft_refresh` on each page's model in `cicada-inspector`, with the limits in one place; the
    view's state for the snapshot and the restore comes from the AppKit layer through the model's existing selection and
    fold state, plus the first visible row the view reports. Tests against an in-process server, on virtual time with a
