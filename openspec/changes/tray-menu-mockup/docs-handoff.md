@@ -39,9 +39,8 @@ Disconnecting, Running and Registered), with the eight departures its design lis
 - **Recent Turns.** "Finished on this worker", newest first: done ("<type> · done in m:ss"), failed ("<type> ·
   <error's first line>"), retried after a failure ("<type> · <error>, retry HH:MM" or "retry now"), cancelled and
   abandoned; "Kept until the app quits" at the end. "N failed" counts failed, retried and abandoned turns. The error
-  is the handler's own text, as the inspector's Outcomes page and `cicada get outcomes` show it; when any line of it
-  holds `@`, `:/`, `:\`, or `http:`, `https:`, `ws:` or `wss:` in any case, the row says "failed" ("failed, retry
-  HH:MM" for a retried turn).
+  is the reason the turn failed or was retried, as the worker committed it; when any line of it holds `@`, `:/`, `:\`,
+  or `http:`, `https:`, `ws:` or `wss:` in any case, the row says "failed" ("failed, retry HH:MM" for a retried turn).
 - **Status item.** A hexagon with a dot: filled while connected, hollow and dimmed otherwise (also while connecting
   and disconnecting).
 
@@ -63,7 +62,7 @@ Now data). The AppKit menu has a manual check list next to the boards.
 file's current context until you pick another; picking one while not connected selects it, ⌘K or the switch
 connects); picking another context while connected drains the current worker first; each context shows its server's
 host; Running shows "N of M" and each turn's actor, message type, attempt and elapsed time; after a failed connection
-the menu shows the error and when; Registered Types shows each type's state and Choose Types… opens Settings; Recent
+the menu shows a fixed label (Connection refused, No answer or Connection failed) and when, no error text; Registered Types shows each type's state and Choose Types… opens Settings; Recent
 Turns shows the last 50 finished turns and their outcomes, with "N failed" on its row; while the worker drains, the
 header shows the grace period's bar and Stop Now ends it. Quit, Ctrl-C and logout drain the worker before the app
 exits.

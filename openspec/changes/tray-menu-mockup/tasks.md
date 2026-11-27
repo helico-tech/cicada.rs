@@ -9,8 +9,8 @@ departure you find necessary is a question for the owner: stop and report it.
   when loaded, never the URL, user, password, path or query; `WorkerReady::concurrency` from the started worker's
   config (decisions 2 and 6). Verify: their tests, with a server URL that holds a user, password, path and query.
 - [x] 2. **The tray's data and the menu model.** Crate-private: when stopping began, the grace period, whether Stop Now
-  was used, when a connection failed, the failure's display text (credentials, queries and control characters removed,
-  200 characters); the offline pick in `MenuControl`. The model: every state's sections, order, texts and counts as
+  was used, when a connection failed, the failure's kind for its fixed label (Connection refused, No answer, Connection
+  failed; no error text); the offline pick in `MenuControl`. The model: every state's sections, order, texts and counts as
   decisions 2–5 say, the recent rows per outcome, the bar's fraction and text, "no contexts" (decisions 2–5 and 8).
   Verify: the model tests on every platform, one per state and per recent outcome, the pick without connecting, the
   bar with zero grace and after Stop Now.

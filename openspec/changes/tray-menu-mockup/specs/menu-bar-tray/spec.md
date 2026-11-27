@@ -48,8 +48,8 @@ finishing turns and Stop Now; and the submenus' rows as drawn.
 #### Scenario: Not connected after a failure
 
 - **WHEN** the connection to `staging` failed
-- **THEN** the header says "Not connected", a row says "Couldn't reach staging" with the error and its time, and the
-  menu has no Running section
+- **THEN** the header says "Not connected", a row says "Couldn't reach staging" with a fixed label (Connection
+  refused, No answer or Connection failed) and its time, no error text, and the menu has no Running section
 
 #### Scenario: A context's host
 
