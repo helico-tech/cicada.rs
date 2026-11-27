@@ -16,7 +16,8 @@ Apply writes only what the user changed: the server, the token, a new context, a
 context is selected, into the config file, through the same locked code as `cicada config`; other contexts and fields
 another writer changed meanwhile stay as they are on disk. Then the worker settings go into `tray.toml`: only the
 field the user changed (types or turns at once), keeping the other as another writer saved it, or, for a context
-without an entry, the shown types and turns at once as its new entry. If that second write fails, the window says
+without an entry, the shown types and turns at once as its new entry; if another writer saved an entry meanwhile,
+only the edited fields go into it. If that second write fails, the window says
 "connection saved; worker settings not saved: <error>" when the config file was written, or "worker settings not
 saved: <error>" when only the worker settings changed. It keeps the values and does not reconnect; a second Apply
 writes what still differs. After a full save, a tray with a
@@ -42,8 +43,9 @@ support file locks" instead of risking another writer's change.
 `cicada_app::ContextFile` is the config file of `cicada config`: `load(&Env)`, `update(&Env, f)`, `path`,
 `resolved_path`, `names`, `current`, `context` (a `ContextEntry`: `server`, `token`, `headers`), `set_context`,
 `set_server_and_token`, `use_context` and `save`. `update` holds an exclusive lock on `<target>.lock` next to the file
-a save writes, follows the link again after locking (and locks anew when it moved), re-reads the locked file, applies
-`f` and saves that same file when it changed. `cicada config use-context` and `set-context`
+a save writes (the path with every symlink followed, its folders' included), resolves the whole path again after
+locking (and locks anew when it names another file by then), re-reads the locked file, applies `f` and saves that
+same file, by its symlink-free path, when it changed. `cicada config use-context` and `set-context`
 now go through it and create that lock file. `cicada_app::check_server_url` is the worker's URL check. An unreadable
 config file is now reported by every command, the worker included, as `cannot read <path>: not a valid config file at
 line N`, without the parser's text. `ContextEntry`'s `Debug` hides the token, header values and a URL password.
@@ -115,5 +117,6 @@ None.
 
 ## Status
 
-Ran `cargo test -p cicada-app`, `cargo test -p cicada-tray`, `cargo test -p cicada-examples --test docs` and `--doc`
-after code review 1; all pass. All text above is proposed; no protected prose was edited. The manual check list of the window is reported in the build report.
+Ran `cargo test -p cicada-app`, `cargo test -p cicada-tray` and `cargo test -p cicada-examples --test docs` after
+code review 2, and `--doc` after code review 1; all pass. All text above is proposed; no protected prose was edited.
+The manual check list of the window is reported in the build report.

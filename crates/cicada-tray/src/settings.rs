@@ -227,9 +227,11 @@ impl SettingsForm {
             (new || self.edited.server.trim() != self.saved.server).then(|| self.edited.server.trim().to_owned());
         let token = (new || self.edited.token != self.saved.token).then(|| self.edited.token.clone());
         let make_current = self.current.as_deref() != Some(name.as_str());
-        let types_edited = !self.has_entry || self.edited.types != self.saved.types;
-        let concurrency_edited = !self.has_entry || self.edited.concurrency != self.saved.concurrency;
-        let worker = (types_edited || concurrency_edited).then(|| WorkerSettings {
+        // Fields the user edited replace those on disk; the rest stay as another writer saved them. When the form
+        // found no entry, the shown values become one, unless another writer has saved an entry by Apply.
+        let types_edited = self.edited.types != self.saved.types;
+        let concurrency_edited = self.edited.concurrency != self.saved.concurrency;
+        let worker = (!self.has_entry || types_edited || concurrency_edited).then(|| WorkerSettings {
             types: self.edited.types.clone(),
             concurrency: self.concurrency().expect("valid"),
         });
@@ -512,6 +514,25 @@ mod tests {
         std::fs::remove_file(files.tray()).unwrap();
         std::fs::create_dir(files.tray()).unwrap(); // a second write would fail now
         assert_eq!(form.apply(), Ok("prod".into()), "an apply without changes writes nothing");
+    }
+
+    #[test]
+    fn two_forms_opened_before_an_entry_existed_keep_both_edits() {
+        let files = Files::new(PROD);
+        let (mut types, mut concurrency) = (files.form(), files.form());
+        concurrency.edited.concurrency = "9".into();
+        assert_eq!(concurrency.apply(), Ok("prod".into()));
+        types.edited.types = vec!["other".into()];
+        assert_eq!(types.apply(), Ok("prod".into()));
+        assert_eq!(files.worker("prod"), Some(WorkerSettings { types: vec!["other".into()], concurrency: 9 }));
+
+        std::fs::remove_file(files.tray()).unwrap();
+        let (mut untouched, mut other) = (files.form(), files.form());
+        other.edited.concurrency = "5".into();
+        assert_eq!(other.apply(), Ok("prod".into()));
+        assert_eq!(untouched.apply(), Ok("prod".into()));
+        let saved = files.worker("prod").unwrap();
+        assert_eq!(saved.concurrency, 5, "an Apply without edits keeps an entry saved meanwhile");
     }
 
     #[test]

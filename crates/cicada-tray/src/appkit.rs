@@ -284,7 +284,7 @@ define_class!(
                 c.settings.replace(Some(SettingsWindow::new(self, &c.title, &registered)));
             }
             if let Some(window) = c.settings.borrow().as_ref() {
-                window.show(|| self.settings_form());
+                window.show(|| self.settings_form(window.registered()));
             }
         }
 
@@ -316,7 +316,7 @@ define_class!(
         #[unsafe(method(settingsRevert:))]
         fn settings_revert(&self, _: &NSButton) {
             if let Some(window) = self.ivars().settings.borrow().as_ref() {
-                window.revert(|| self.settings_form());
+                window.revert(|| self.settings_form(window.registered()));
             }
         }
 
@@ -405,11 +405,12 @@ impl Target {
     }
 
     /// The Settings form from the files on disk, showing the connected context, else the current one.
-    fn settings_form(&self) -> Result<SettingsForm, String> {
+    /// `registered` is the window's own snapshot, which its switches show, so the form never holds a type the window
+    /// has no switch for.
+    fn settings_form(&self, registered: &[&'static str]) -> Result<SettingsForm, String> {
         let c = self.ivars();
-        let registered = c.tray.control.registered_types.lock().expect("tray registered types").clone();
         let state = self.state();
-        SettingsForm::load(&c.tray.environment(), &registered, state.connection())
+        SettingsForm::load(&c.tray.environment(), registered, state.connection())
     }
 
     /// Apply and Reconnect: saves the form and, while the tray holds a connection, reconnects to the applied context.

@@ -96,17 +96,19 @@ impl ContextFile {
     /// Locks the config file, reads it again, applies `f` and, when `f` returns `Ok` and changed the file since it
     /// last saved, saves it; then unlocks. Every writer that uses it, `cicada config use-context` and `set-context`
     /// among them, keeps the others' changes. The lock is an exclusive OS lock on `<target>.lock` next to the file a
-    /// save writes (a symlink's target, so a link and its target share one lock), held on this machine only. After
-    /// locking, the link is followed again: when it names another file by then, the lock is dropped and taken on that
-    /// one, and the file read and saved is the one locked. A file system without locks fails the update rather than
-    /// risk losing another writer's change. `f` may call [`Self::save`] itself and keep the lock for more work.
+    /// save writes: the path with every symlink followed, its folders' included, so every path to one file shares one
+    /// lock. It is held on this machine only. After locking, the whole path is resolved again: when it names another
+    /// file by then, the lock is dropped and taken on that one. The file read and saved is the resolved one locked,
+    /// named by a path without symlinks, so a link retargeted later does not move the write. A file system without
+    /// locks fails the update rather than risk losing another writer's change. `f` may call [`Self::save`] itself and
+    /// keep the lock for more work.
     pub fn update<T>(env: &Env, f: impl FnOnce(&mut Self) -> anyhow::Result<T>) -> anyhow::Result<T> {
         let path = path(env)?;
         let mut tries = 0;
         let (target, _lock) = loop {
             let target = allowed_target(&path)?;
             let lock = lock_next_to(&target)?;
-            if follow(&path)? == target {
+            if real_path(&path)? == target {
                 break (target, lock);
             }
             tries += 1;
@@ -128,10 +130,10 @@ impl ContextFile {
         &self.path
     }
 
-    /// The file a save writes: [`Self::path`] after following its symlinks, each relative one from the folder of its
-    /// link. It need not exist.
+    /// The file a save writes: [`Self::path`] made absolute with every symlink followed, those of its folders
+    /// included. It need not exist.
     pub fn resolved_path(&self) -> std::io::Result<PathBuf> {
-        link_target(&self.path)
+        resolve_path(&self.path)
     }
 
     /// The names of the contexts, in alphabetical order.
@@ -189,15 +191,49 @@ impl ContextFile {
     }
 }
 
-/// `path` after following its symlinks, with an error that names it.
-fn follow(path: &Path) -> anyhow::Result<PathBuf> {
-    link_target(path).with_context(|| format!("cannot follow {}", path.display()))
+/// [`resolve_path`] with an error that names `path`.
+fn real_path(path: &Path) -> anyhow::Result<PathBuf> {
+    resolve_path(path).with_context(|| format!("cannot follow {}", path.display()))
+}
+
+/// `path` made absolute with every symlink followed, its folders' included: the folder of the file, after the file's
+/// own links, is made canonical up to its deepest existing ancestor, and the file's name is checked again in the real
+/// folder. The file and some folders need not exist.
+fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
+    let mut path = std::path::absolute(path)?;
+    for _ in 0..40 {
+        let file = link_target(&path)?;
+        let name = file.file_name().ok_or_else(|| std::io::Error::other("the path names no file"))?;
+        let next = canonical_dir(file.parent().unwrap_or(Path::new("/")))?.join(name);
+        if next == path {
+            return Ok(next);
+        }
+        path = next;
+    }
+    Err(std::io::Error::other("too many levels of symbolic links"))
+}
+
+/// `dir` made canonical: its deepest existing ancestor through `canonicalize`, with the missing folders after it.
+fn canonical_dir(dir: &Path) -> std::io::Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = dir;
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(real) => return Ok(missing.iter().rev().fold(real, |path, name| path.join(name))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else { return Err(e) };
+                missing.push(name);
+                existing = parent;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The target of the config path `path`, refused when its name or the target's is reserved: `tray.toml`, the menu bar
 /// app's file, or one ending in `.lock`, in any letter case, as a case-insensitive file system treats them alike.
 fn allowed_target(path: &Path) -> anyhow::Result<PathBuf> {
-    let target = follow(path)?;
+    let target = real_path(path)?;
     let reserved = |path: &Path| {
         let name = path.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
         name == "tray.toml" || name.ends_with(".lock")
@@ -271,7 +307,7 @@ impl Config {
     /// there yet, and the link stays a link.
     #[cfg(test)]
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        self.write_to(&follow(path)?)
+        self.write_to(&real_path(path)?)
     }
 
     /// Writes the whole file to `target`, the resolved file of a config path, as [`Self::save`] describes.
@@ -749,7 +785,7 @@ mod tests {
         std::os::unix::fs::symlink("real.toml", &link).unwrap();
         ContextFile::update(&file_env(&link), |file| {
             file.set_context("a", ContextEntry { server: "http://a".into(), ..ContextEntry::default() });
-            assert_eq!(file.resolved_path().unwrap(), target);
+            assert_eq!(file.resolved_path().unwrap(), dir.path().canonicalize().unwrap().join("real.toml"));
             Ok(())
         })
         .unwrap();
@@ -861,5 +897,70 @@ mod tests {
         .unwrap();
         assert!(Config::load(&dir.path().join("first.toml")).unwrap().contexts.contains_key("a"));
         assert!(!dir.path().join("second.toml").exists(), "not the file whose lock was never taken");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_writes_the_folder_it_locked_when_a_folder_link_moves_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, current) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("current"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink("a", &current).unwrap();
+        ContextFile::update(&file_env(&current.join("config.toml")), |file| {
+            std::fs::remove_file(&current).unwrap();
+            std::os::unix::fs::symlink("b", &current).unwrap();
+            file.set_server_and_token("x", "http://x".into(), None);
+            Ok(())
+        })
+        .unwrap();
+        assert!(Config::load(&a.join("config.toml")).unwrap().contexts.contains_key("x"));
+        assert!(!b.join("config.toml").exists(), "not the folder whose lock was never taken");
+    }
+
+    /// A writer waiting for the lock of folder `a` while the folder link moves to `b`, whose lock is held, writes `b`
+    /// only once it holds `b`'s lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_waiting_update_follows_a_moved_folder_link_and_takes_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, current) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("current"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink("a", &current).unwrap();
+        let held_a = lock_next_to(&a.join("config.toml")).unwrap();
+        let env = file_env(&current.join("config.toml"));
+        let writer = std::thread::spawn(move || {
+            ContextFile::update(&env, |file| {
+                file.set_server_and_token("x", "http://x".into(), None);
+                Ok(())
+            })
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink("b", &current).unwrap();
+        let held_b = lock_next_to(&b.join("config.toml")).unwrap();
+        drop(held_a);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!b.join("config.toml").exists(), "no write while b's lock is held elsewhere");
+        drop(held_b);
+        writer.join().unwrap().unwrap();
+        assert!(Config::load(&b.join("config.toml")).unwrap().contexts.contains_key("x"));
+        assert!(!a.join("config.toml").exists());
+    }
+
+    #[test]
+    fn a_resolved_path_follows_folder_links_and_keeps_missing_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir(dir.path().join("a")).unwrap();
+            std::os::unix::fs::symlink("a", dir.path().join("current")).unwrap();
+            let resolved = resolve_path(&dir.path().join("current/config.toml")).unwrap();
+            assert_eq!(resolved, real.join("a/config.toml"));
+        }
+        let resolved = resolve_path(&dir.path().join("new/sub/config.toml")).unwrap();
+        assert_eq!(resolved, real.join("new/sub/config.toml"));
     }
 }
