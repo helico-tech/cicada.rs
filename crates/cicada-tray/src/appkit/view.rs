@@ -1,4 +1,5 @@
-//! Rendering of the native status item and menu.
+//! Rendering of the native status item and menu, as the boards in `openspec/changes/tray-menu-mockup/mockup/` show
+//! them: native items with an image, a title, a subtitle and a badge for the text on the right.
 
 use std::cell::{Cell, RefCell};
 
@@ -6,41 +7,71 @@ use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSColor, NSControlStateValue, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSImage,
-    NSLineBreakMode, NSMenu, NSMenuItem, NSMenuItemBadge, NSStatusBar, NSStatusBarButton, NSStatusItem, NSSwitch,
-    NSTextField, NSVariableStatusItemLength, NSView,
+    NSAccessibility, NSAutoresizingMaskOptions, NSColor, NSControlSize, NSControlStateValue, NSControlStateValueOff,
+    NSControlStateValueOn, NSFont, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSMenuItemBadge, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSStatusBar, NSStatusBarButton, NSStatusItem, NSSwitch, NSTextAlignment, NSTextField,
+    NSVariableStatusItemLength, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
 use super::icons::{self, Icons};
-use crate::menu::{ContextRow, Header, Icon, InspectorItem, MenuModel, RecentRow, RunningRow, TypeRow, row_text};
+use crate::menu::{
+    ACTOR_TYPES, BACKGROUND_TASKS, Bar, CHOOSE_TYPES, ContextRow, Header, InspectorItem, MenuModel, RECENT, RecentRow,
+    Row, RunningRow, STOP_NOW_HELP, TypeRow, row_text,
+};
+
+/// The boards' menu width.
+const WIDTH: f64 = 300.0;
+/// The boards' horizontal padding of a row's text.
+const PADDING: f64 = 14.0;
 
 pub(super) struct MenuView {
     pub root: Retained<NSMenu>,
     button: Retained<NSStatusBarButton>,
     header: HeaderView,
-    stop_now: Retained<NSMenuItem>,
+    failure: Retained<NSMenuItem>,
+    failure_separator: Retained<NSMenuItem>,
     running_section: Retained<NSMenuItem>,
+    running_separator: Retained<NSMenuItem>,
     context_section: Retained<NSMenuItem>,
+    context_separator: Retained<NSMenuItem>,
+    registered_item: Retained<NSMenuItem>,
     registered: Retained<NSMenu>,
-    recent: Retained<NSMenu>,
     recent_item: Retained<NSMenuItem>,
-    settings: Retained<NSMenuItem>,
+    recent: Retained<NSMenu>,
+    submenus_separator: Retained<NSMenuItem>,
+    connect: Retained<NSMenuItem>,
+    stop_now: Retained<NSMenuItem>,
+    stop_now_help: Retained<NSMenuItem>,
+    stop_now_separator: Retained<NSMenuItem>,
+    choose_types: Retained<NSMenuItem>,
     inspector: Option<Retained<NSMenuItem>>,
+    settings: Retained<NSMenuItem>,
     quit: Retained<NSMenuItem>,
     subtitles: bool,
     running_rows: RefCell<Rows<RunningRow>>,
     context_rows: RefCell<Rows<ContextRow>>,
     registered_rows: RefCell<Rows<TypeRow>>,
     recent_rows: RefCell<Rows<RecentRow>>,
-    contexts_enabled: Cell<bool>,
-    failures: RefCell<Option<String>>,
+    shown: RefCell<Shown>,
     icons: Icons,
     /// The status item's images: not connected, connected.
     status_images: [Retained<NSImage>; 2],
-    connected: Cell<bool>,
     dark: Cell<bool>,
+}
+
+/// What the fixed items show now, so a render changes AppKit only where the model changed.
+#[derive(Default, PartialEq)]
+struct Shown {
+    connected: bool,
+    failure: Option<Row>,
+    running: Option<(&'static str, String)>,
+    contexts_enabled: bool,
+    registered_right: Option<String>,
+    recent_right: Option<String>,
+    connect: Option<String>,
+    quit: (String, bool),
 }
 
 impl MenuView {
@@ -61,50 +92,104 @@ impl MenuView {
         button.setAccessibilityLabel(Some(&title));
 
         let root = native_menu(mtm, &title);
+        root.setMinimumWidth(WIDTH);
         let header = HeaderView::new(mtm);
-        let stop_now = item(mtm, ns_string!("Stop Now"), Some(sel!(trayStopNow:)), ns_string!(""));
-        stop_now.setHidden(true);
+        let failure = item(mtm, ns_string!(""), None, ns_string!(""));
         let running_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Running"), mtm);
         let context_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Context"), mtm);
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
         let (recent, recent_item) = submenu(mtm, ns_string!("Recent Turns"));
-        let settings = item(mtm, ns_string!("Settings…"), Some(sel!(traySettings:)), ns_string!(","));
+        let connect = item(mtm, ns_string!(""), Some(sel!(trayToggle:)), ns_string!("k"));
+        let stop_now = item(mtm, ns_string!("Stop Now"), Some(sel!(trayStopNow:)), ns_string!(""));
+        let stop_now_help = note(mtm, STOP_NOW_HELP, 11.0, (2.0, 4.0));
         let inspector = InspectorItem::entry(false).map(|entry| {
             item(mtm, &NSString::from_str(entry.title), Some(sel!(trayOpenInspector:)), &NSString::from_str(entry.key))
         });
+        let settings = item(mtm, ns_string!("Settings…"), Some(sel!(traySettings:)), ns_string!(","));
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
-        for row in [
+        let separator = || NSMenuItem::separatorItem(mtm);
+        let (failure_separator, running_separator, context_separator) = (separator(), separator(), separator());
+        let (top_separator, submenus_separator, stop_now_separator) = (separator(), separator(), separator());
+        let mut rows = vec![
             &header.item,
-            &stop_now,
-            &NSMenuItem::separatorItem(mtm),
+            &top_separator,
+            &failure,
+            &failure_separator,
             &running_section,
-            &NSMenuItem::separatorItem(mtm),
+            &running_separator,
             &context_section,
-            &NSMenuItem::separatorItem(mtm),
+            &context_separator,
             &registered_item,
             &recent_item,
-            &NSMenuItem::separatorItem(mtm),
-            &settings,
-        ] {
+            &submenus_separator,
+            &connect,
+            &stop_now,
+            &stop_now_help,
+            &stop_now_separator,
+        ];
+        if let Some(inspector) = &inspector {
+            rows.push(inspector);
+        }
+        rows.extend([&settings, &quit]);
+        for row in rows {
             root.addItem(row);
         }
-        if let Some(inspector) = &inspector {
-            root.addItem(inspector);
+        for hidden in [
+            &failure,
+            &failure_separator,
+            &running_section,
+            &running_separator,
+            &context_section,
+            &context_separator,
+            &registered_item,
+            &recent_item,
+            &submenus_separator,
+            &connect,
+            &stop_now,
+            &stop_now_help,
+            &stop_now_separator,
+        ] {
+            hidden.setHidden(true);
         }
-        root.addItem(&quit);
+
+        // Board Registered: the types, Background Tasks, Choose Types….
+        registered.addItem(&NSMenuItem::sectionHeaderWithTitle(&NSString::from_str(ACTOR_TYPES), mtm));
+        registered.addItem(&separator());
+        registered.addItem(&NSMenuItem::sectionHeaderWithTitle(&NSString::from_str(BACKGROUND_TASKS.0), mtm));
+        let unavailable = item(mtm, &NSString::from_str(BACKGROUND_TASKS.1), None, ns_string!(""));
+        unavailable.setEnabled(false);
+        registered.addItem(&unavailable);
+        registered.addItem(&separator());
+        let choose_types = item(mtm, &NSString::from_str(CHOOSE_TYPES), Some(sel!(traySettings:)), ns_string!(""));
+        registered.addItem(&choose_types);
+        // Board Running: the finished turns and the note that they are kept until the app quits.
+        recent.addItem(&NSMenuItem::sectionHeaderWithTitle(&NSString::from_str(RECENT.0), mtm));
+        recent.addItem(&separator());
+        recent.addItem(&note(mtm, RECENT.1, 12.0, (3.0, 3.0)));
+
         status.setMenu(Some(&root));
         let view = Self {
             root,
             button,
             header,
-            stop_now,
+            failure,
+            failure_separator,
             running_section,
+            running_separator,
             context_section,
+            context_separator,
+            registered_item,
             registered,
-            recent,
             recent_item,
-            settings,
+            recent,
+            submenus_separator,
+            connect,
+            stop_now,
+            stop_now_help,
+            stop_now_separator,
+            choose_types,
             inspector,
+            settings,
             quit,
             // objc2 exposes these selectors without version attributes. The SDK declares section headers and badges
             // in 14.0, and subtitles in 14.4. The caller already checked for 14.0.
@@ -113,11 +198,9 @@ impl MenuView {
             context_rows: RefCell::default(),
             registered_rows: RefCell::default(),
             recent_rows: RefCell::default(),
-            contexts_enabled: Cell::new(true),
-            failures: RefCell::default(),
+            shown: RefCell::new(Shown { contexts_enabled: true, ..Shown::default() }),
             icons: Icons::default(),
             status_images,
-            connected: Cell::new(false),
             dark: Cell::new(icons::dark(mtm)),
         };
         Some((status, view))
@@ -130,113 +213,188 @@ impl MenuView {
             self.header.switch.setTarget(Some(target));
             self.header.switch.setAction(Some(sel!(trayToggle:)));
             self.header.item.setTarget(Some(target));
+            self.connect.setTarget(Some(target));
             self.stop_now.setTarget(Some(target));
-            self.settings.setTarget(Some(target));
+            self.choose_types.setTarget(Some(target));
             if let Some(inspector) = &self.inspector {
                 inspector.setTarget(Some(target));
             }
+            self.settings.setTarget(Some(target));
             self.quit.setTarget(Some(target));
         }
     }
 
+    /// The context a context item stands for: its represented object, never its title.
+    pub fn context_of(item: &NSMenuItem) -> Option<String> {
+        item.representedObject()?.downcast::<NSString>().ok().map(|name| name.to_string())
+    }
+
     pub fn render(&self, target: &Target, model: MenuModel) {
         let mtm = target.mtm();
-        self.header.update(model.header);
-        if let (Some(item), Some(entry)) = (&self.inspector, model.inspector) {
-            item.setEnabled(entry.enabled);
-        }
-        if self.stop_now.isHidden() == model.stop_now {
-            self.stop_now.setHidden(!model.stop_now);
-        }
-        if self.connected.replace(model.connected) != model.connected {
-            self.button.setImage(Some(&self.status_images[usize::from(model.connected)]));
-        }
         let dark = icons::dark(mtm);
-        let swap = self.dark.replace(dark) != dark;
-        let picture = |item: &NSMenuItem, icon: Icon| {
-            item.setImage(Some(&self.icons.image(icon, dark)));
+        let swapped = self.dark.replace(dark) != dark;
+        let rich = |item: &NSMenuItem, row: &Row| {
+            let (title, subtitle) = row_text(row, self.subtitles);
+            item.setTitle(&NSString::from_str(&title));
+            if self.subtitles {
+                item.setSubtitle(subtitle.map(|subtitle| NSString::from_str(&subtitle)).as_deref());
+            }
+            item.setBadge(row.right.as_deref().map(badge).as_deref());
+            item.setImage(Some(&self.icons.image(row.icon, dark)));
             icons::show_image(item);
         };
 
+        self.header.update(model.header, model.bar);
+        let mut shown = self.shown.borrow_mut();
+        if shown.connected != model.connected {
+            self.button.setImage(Some(&self.status_images[usize::from(model.connected)]));
+            shown.connected = model.connected;
+        }
+
+        if shown.failure != model.failure || swapped {
+            if let Some(row) = &model.failure {
+                rich(&self.failure, row);
+            }
+            show(&self.failure, model.failure.is_some());
+            show(&self.failure_separator, model.failure.is_some());
+            shown.failure = model.failure;
+        }
+
+        let running_header = model.running.as_ref().map(|section| (section.title, section.right.clone()));
+        if shown.running != running_header {
+            if let Some((title, right)) = &running_header {
+                self.running_section.setTitle(&NSString::from_str(title));
+                self.running_section.setBadge(Some(&badge(right)));
+            }
+            show(&self.running_section, running_header.is_some());
+            show(&self.running_separator, running_header.is_some());
+            shown.running = running_header;
+        }
         let start = self.root.indexOfItem(&self.running_section) + 1;
-        self.running_rows.borrow_mut().sync(
+        let mut running = self.running_rows.borrow_mut();
+        running.sync(
             &self.root,
             start,
             model.running.map(|section| section.rows).unwrap_or_default(),
             |old, new| old.turn == new.turn,
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
-            |item, row| {
-                let (title, subtitle) = row_text(&row.row, self.subtitles);
-                picture(item, row.row.icon);
-                item.setTitle(&NSString::from_str(&title));
-                if let Some(subtitle) = subtitle {
-                    item.setSubtitle(Some(&NSString::from_str(&subtitle)));
-                }
-            },
+            |item, row| rich(item, &row.row),
         );
+        if swapped {
+            running.items.iter().for_each(|(row, item)| rich(item, &row.row));
+        }
+        drop(running);
 
+        let contexts = model.contexts.unwrap_or_default();
+        show(&self.context_section, !contexts.is_empty());
+        show(&self.context_separator, !contexts.is_empty());
         let start = self.root.indexOfItem(&self.context_section) + 1;
         let mut rows = self.context_rows.borrow_mut();
         rows.sync(
             &self.root,
             start,
-            model.contexts.unwrap_or_default(),
+            contexts,
             |old, new| old.name == new.name,
             |row| {
-                let item = item(mtm, &NSString::from_str(&row.name), Some(sel!(trayPickContext:)), ns_string!(""));
-                // SAFETY: The target implements trayPickContext: with an NSMenuItem sender and owns this menu.
-                unsafe { item.setTarget(Some(target)) };
+                let item = item(mtm, ns_string!(""), Some(sel!(trayPickContext:)), ns_string!(""));
+                // SAFETY: The target implements trayPickContext: with an NSMenuItem sender and owns this menu. The
+                // represented object is an NSString, which `context_of` expects.
+                unsafe {
+                    item.setTarget(Some(target));
+                    item.setRepresentedObject(Some(&NSString::from_str(&row.name)));
+                }
                 item.setEnabled(model.contexts_enabled);
                 item
             },
-            |item, row| picture(item, row.row.icon),
+            |item, row| rich(item, &row.row),
         );
-        if swap {
-            for (row, item) in &self.running_rows.borrow().items {
-                picture(item, row.row.icon);
-            }
-            for (row, item) in &rows.items {
-                picture(item, row.row.icon);
-            }
+        if swapped {
+            rows.items.iter().for_each(|(row, item)| rich(item, &row.row));
         }
-        if self.contexts_enabled.replace(model.contexts_enabled) != model.contexts_enabled {
+        if shown.contexts_enabled != model.contexts_enabled {
             for (_, item) in &rows.items {
                 item.setEnabled(model.contexts_enabled);
             }
-            self.quit.setEnabled(model.contexts_enabled);
+            shown.contexts_enabled = model.contexts_enabled;
         }
         drop(rows);
 
         let submenus = model.submenus;
-        let (types, recent, failures) =
-            submenus.map(|submenus| (submenus.types, submenus.recent, submenus.recent_right)).unwrap_or_default();
+        for item in [&self.registered_item, &self.recent_item, &self.submenus_separator] {
+            show(item, submenus.is_some());
+        }
+        let (types, recent, registered_right, recent_right) = submenus
+            .map(|submenus| (submenus.types, submenus.recent, submenus.registered_right, submenus.recent_right))
+            .unwrap_or_default();
+        if shown.registered_right != registered_right {
+            self.registered_item.setBadge(registered_right.as_deref().map(badge).as_deref());
+            shown.registered_right = registered_right;
+        }
+        if shown.recent_right != recent_right {
+            self.recent_item.setBadge(recent_right.as_deref().map(badge).as_deref());
+            shown.recent_right = recent_right;
+        }
         self.registered_rows.borrow_mut().sync(
             &self.registered,
-            0,
+            1,
             types,
             |old, new| old.name == new.name,
             |row| item(mtm, &NSString::from_str(row.name), None, ns_string!("")),
-            |item, row| item.setState(mark(row.runs)),
+            |item, row| {
+                item.setState(mark(row.runs));
+                item.setBadge(row.right.as_deref().map(badge).as_deref());
+            },
         );
-        self.recent_rows.borrow_mut().sync(
+        let mut recent_rows = self.recent_rows.borrow_mut();
+        recent_rows.sync(
             &self.recent,
-            0,
+            1,
             recent,
             |old, new| old.turn == new.turn,
-            |row| {
-                let (title, _) = row_text(&row.row, false);
-                item(mtm, &NSString::from_str(&title), None, ns_string!(""))
-            },
-            |item, row| picture(item, row.row.icon),
+            |_| item(mtm, ns_string!(""), None, ns_string!("")),
+            |item, row| rich(item, &row.row),
         );
-        if *self.failures.borrow() != failures {
-            let badge = failures
-                .as_deref()
-                .map(|text| NSMenuItemBadge::initWithString(NSMenuItemBadge::alloc(), &NSString::from_str(text)));
-            self.recent_item.setBadge(badge.as_deref());
-            self.failures.replace(failures);
+        if swapped {
+            recent_rows.items.iter().for_each(|(row, item)| rich(item, &row.row));
+        }
+        drop(recent_rows);
+
+        if shown.connect != model.connect {
+            if let Some(title) = &model.connect {
+                self.connect.setTitle(&NSString::from_str(title));
+            }
+            show(&self.connect, model.connect.is_some());
+            shown.connect = model.connect;
+        }
+        for item in [&self.stop_now, &self.stop_now_help, &self.stop_now_separator] {
+            show(item, model.stop_now);
+        }
+        if let Some(item) = &self.inspector {
+            show(item, model.inspector.is_some());
+            if let Some(entry) = model.inspector {
+                item.setEnabled(entry.enabled);
+            }
+        }
+        show(&self.settings, model.settings);
+        let quit = (model.quit, model.quit_enabled);
+        if shown.quit != quit {
+            self.quit.setTitle(&NSString::from_str(&quit.0));
+            self.quit.setEnabled(quit.1);
+            shown.quit = quit;
         }
     }
+}
+
+/// Shows or hides an item, touching AppKit only on a change.
+fn show(item: &NSMenuItem, visible: bool) {
+    if item.isHidden() == visible {
+        item.setHidden(!visible);
+    }
+}
+
+/// The text on the right of a row: native menus draw it only as a badge (the design's first departure).
+fn badge(text: &str) -> Retained<NSMenuItemBadge> {
+    NSMenuItemBadge::initWithString(NSMenuItemBadge::alloc(), &NSString::from_str(text))
 }
 
 fn native_menu(mtm: MainThreadMarker, title: &NSString) -> Retained<NSMenu> {
@@ -257,53 +415,134 @@ fn submenu(mtm: MainThreadMarker, title: &NSString) -> (Retained<NSMenu>, Retain
     (menu, item)
 }
 
+/// A row of secondary text that wraps, as the boards' disabled notes: the help under Stop Now and the note at the end
+/// of Recent Turns. A view, so the text wraps at the menu's width; it has no action.
+fn note(mtm: MainThreadMarker, text: &str, size: f64, (top, bottom): (f64, f64)) -> Retained<NSMenuItem> {
+    let label = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
+    label.setFont(Some(&NSFont::systemFontOfSize(size)));
+    label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    let width = WIDTH - 2.0 * PADDING;
+    label.setPreferredMaxLayoutWidth(width);
+    let height = label.sizeThatFits(NSSize::new(width, f64::MAX)).height.ceil();
+    label.setFrame(rect(PADDING, bottom, width, height));
+    label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, WIDTH, top + height + bottom));
+    view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    view.addSubview(&label);
+    let item = item(mtm, &NSString::from_str(text), None, ns_string!(""));
+    item.setView(Some(&view));
+    item.setEnabled(false);
+    item
+}
+
 fn mark(marked: bool) -> NSControlStateValue {
     if marked { NSControlStateValueOn } else { NSControlStateValueOff }
 }
 
+/// The header's height without and with the disconnecting bar (boards Main and Disconnecting).
+const HEADER: f64 = 44.0;
+const HEADER_BAR: f64 = 33.0;
+
+/// The header: the app's title over the connection, the switch, and while disconnecting the grace period's bar with
+/// its text, all in one custom view. The bar uses the system's progress style (the design's fourth departure).
 struct HeaderView {
     item: Retained<NSMenuItem>,
+    view: Retained<NSView>,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
     switch: Retained<NSSwitch>,
-    shown: RefCell<Option<Header>>,
+    bar: Retained<NSProgressIndicator>,
+    bar_text: Retained<NSTextField>,
+    bar_left: Retained<NSTextField>,
+    shown: RefCell<Option<(Header, Option<Bar>)>>,
 }
 
 impl HeaderView {
     fn new(mtm: MainThreadMarker) -> Self {
-        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, 280.0, 54.0));
-        let title = NSTextField::labelWithString(ns_string!(""), mtm);
-        title.setFrame(rect(14.0, 28.0, 202.0, 18.0));
+        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, WIDTH, HEADER));
+        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        let label = |size: f64, secondary: bool| {
+            let field = NSTextField::labelWithString(ns_string!(""), mtm);
+            field.setFont(Some(&NSFont::systemFontOfSize(size)));
+            if secondary {
+                field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            }
+            field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+            field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+            view.addSubview(&field);
+            field
+        };
+        let title = label(13.0, false);
         title.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-        title.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        let subtitle = NSTextField::labelWithString(ns_string!(""), mtm);
-        subtitle.setFrame(rect(14.0, 9.0, 202.0, 17.0));
-        subtitle.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        subtitle.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        let switch = NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(224.0, 16.0, 44.0, 24.0));
+        let subtitle = label(11.0, true);
+        let bar_text = label(11.0, true);
+        let bar_left = label(11.0, true);
+        bar_left.setAlignment(NSTextAlignment::Right);
+        bar_left.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        let switch = NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(0.0, 0.0, 38.0, 22.0));
         switch.setAccessibilityLabel(Some(ns_string!("Worker connection")));
-        view.addSubview(&title);
-        view.addSubview(&subtitle);
+        switch.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
         view.addSubview(&switch);
+        let bar = NSProgressIndicator::initWithFrame(NSProgressIndicator::alloc(mtm), rect(0.0, 0.0, 0.0, 0.0));
+        bar.setStyle(NSProgressIndicatorStyle::Bar);
+        bar.setControlSize(NSControlSize::Small);
+        bar.setIndeterminate(false);
+        bar.setMaxValue(1.0);
+        bar.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        view.addSubview(&bar);
         // AppKit gives the custom view mouse events and handles keyboard selection on the item itself.
         let item = item(mtm, ns_string!("Worker Connection"), Some(sel!(trayToggle:)), ns_string!(""));
-        item.setView(Some(&view));
-        Self { item, title, subtitle, switch, shown: RefCell::default() }
+        let header = Self { item, view, title, subtitle, switch, bar, bar_text, bar_left, shown: RefCell::default() };
+        header.layout(false);
+        header.item.setView(Some(&header.view));
+        header
     }
 
-    fn update(&self, header: Header) {
+    /// Places the subviews for a header with or without the bar, at the view's current width.
+    fn layout(&self, with_bar: bool) {
+        let width = self.view.frame().size.width;
+        let bar = if with_bar { HEADER_BAR } else { 0.0 };
+        self.view.setFrameSize(NSSize::new(width, HEADER + bar));
+        let text = width - 2.0 * PADDING - 48.0;
+        self.title.setFrame(rect(PADDING, bar + 22.0, text, 17.0));
+        self.subtitle.setFrame(rect(PADDING, bar + 7.0, text, 15.0));
+        self.switch.setFrame(rect(width - PADDING - 38.0, bar + 11.0, 38.0, 22.0));
+        let inner = width - 2.0 * PADDING;
+        self.bar.setFrame(rect(PADDING, 22.0, inner, 10.0));
+        self.bar_text.setFrame(rect(PADDING, 6.0, inner - 80.0, 15.0));
+        self.bar_left.setFrame(rect(width - PADDING - 80.0, 6.0, 80.0, 15.0));
+        for view in [&*self.bar as &NSView, &self.bar_text, &self.bar_left] {
+            view.setHidden(!with_bar);
+        }
+    }
+
+    fn update(&self, header: Header, bar: Option<Bar>) {
         let mut shown = self.shown.borrow_mut();
-        if shown.as_ref() != Some(&header) {
+        let previous = shown.as_ref();
+        if previous.map(|(header, _)| header) != Some(&header) {
             self.title.setStringValue(&NSString::from_str(&header.title));
             self.subtitle.setStringValue(&NSString::from_str(&header.subtitle));
             self.switch.setEnabled(header.enabled);
             self.item.setEnabled(header.enabled);
         }
+        if previous.map(|(_, bar)| bar.is_some()) != Some(bar.is_some()) {
+            self.layout(bar.is_some());
+            // Hand the view to the item again so an open menu takes its new height.
+            self.item.setView(Some(&self.view));
+        }
+        if let Some(next) = &bar
+            && previous.and_then(|(_, bar)| bar.as_ref()) != Some(next)
+        {
+            self.bar.setDoubleValue(next.fraction);
+            self.bar.setAccessibilityLabel(Some(&NSString::from_str(&next.label)));
+            self.bar_text.setStringValue(&NSString::from_str(next.text));
+            self.bar_left.setStringValue(&NSString::from_str(next.left.as_deref().unwrap_or_default()));
+        }
         let state = mark(header.on);
         if self.switch.state() != state {
             self.switch.setState(state);
         }
-        *shown = Some(header);
+        *shown = Some((header, bar));
     }
 }
 

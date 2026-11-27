@@ -259,7 +259,7 @@ define_class!(
             }
         }
 
-        // SAFETY: AppKit passes the NSSwitch or its containing NSMenuItem as the sender.
+        // SAFETY: AppKit passes the NSSwitch, its containing NSMenuItem or the Connect NSMenuItem as the sender.
         #[unsafe(method(trayToggle:))]
         fn toggle(&self, sender: &AnyObject) {
             let c = self.ivars();
@@ -280,7 +280,8 @@ define_class!(
         // SAFETY: Only the context NSMenuItems are wired to this action.
         #[unsafe(method(trayPickContext:))]
         fn pick_context(&self, sender: &NSMenuItem) {
-            let action = self.ivars().control.borrow_mut().pick(&self.state(), sender.title().to_string());
+            let Some(name) = MenuView::context_of(sender) else { return };
+            let action = self.ivars().control.borrow_mut().pick(&self.state(), name);
             self.act(action);
             self.render();
         }

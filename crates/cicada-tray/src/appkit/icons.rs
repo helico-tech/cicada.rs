@@ -204,6 +204,17 @@ impl Icons {
                     draw(glyph, CIRCLE, ink);
                 });
                 image.setTemplate(false);
+                let description = match icon {
+                    Icon::Running => Some("Running"),
+                    Icon::Finishing => Some("Finishing"),
+                    Icon::Context { selected: true } => Some("Selected"),
+                    Icon::Context { selected: false } => None,
+                    Icon::Done => Some("Done"),
+                    Icon::Failed => Some("Failed"),
+                    Icon::Cancelled => Some("Cancelled"),
+                    Icon::Alert => Some("Error"),
+                };
+                image.setAccessibilityDescription(description.map(NSString::from_str).as_deref());
                 image
             })
             .clone()

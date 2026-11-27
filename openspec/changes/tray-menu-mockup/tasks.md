@@ -18,7 +18,7 @@ departure you find necessary is a question for the owner: stop and report it.
   the status item's hexagon, filled when connected and hollow and dimmed otherwise; images shown where the system hides
   them by default (decisions 1 and 7). Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray
   --all-targets`.
-- [ ] 4. **The AppKit menu.** Items with images, subtitles (14.4) or joined titles (14.0–14.3), string badges; the
+- [x] 4. **The AppKit menu.** Items with images, subtitles (14.4) or joined titles (14.0–14.3), string badges; the
   header with the disconnecting bar; the not-connected, connected, connecting and disconnecting menus and the submenus
   as the boards show; identity by represented object; every `unsafe` with its reason, borrows released before AppKit
   calls (decisions 1–5). Verify: the build, clippy, and the manual check list below, each item noted as done, run by
