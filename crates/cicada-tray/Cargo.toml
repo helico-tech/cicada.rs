@@ -21,7 +21,7 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std", "block2", "NSAccessibilityProtocols", "NSApplication", "NSBox", "NSButton", "NSButtonCell", "NSCell",
     "NSColor", "NSControl", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem",
-    "NSMenuItemBadge", "NSParagraphStyle", "NSPopUpButton", "NSResponder", "NSRunningApplication",
+    "NSMenuItemBadge", "NSParagraphStyle", "NSPopUpButton", "NSResponder", "NSRunningApplication", "NSScrollView",
     "NSSecureTextField", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSStepper", "NSSwitch", "NSTextField",
     "NSView", "NSWindow", "objc2-core-foundation",
 ] }

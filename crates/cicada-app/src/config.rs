@@ -71,12 +71,16 @@ impl std::fmt::Debug for ContextEntry {
 ///
 /// A parse error names the file and the line, never the text, which can hold a token. Writers that may run next to
 /// each other go through [`Self::update`], which holds an exclusive lock while it reads, changes and saves the file;
-/// readers take no lock. Its `Debug` hides the credentials as [`ContextEntry`] does.
+/// readers take no lock. A config path whose name, or whose symlink target's name, is `tray.toml` (the menu bar app's
+/// own file) or ends in `.lock` (a lock file), in any letter case, is refused, so that no write replaces either. Its
+/// `Debug` hides the credentials as [`ContextEntry`] does.
 #[derive(Debug, Clone)]
 pub struct ContextFile {
     path: PathBuf,
     config: Config,
     changed: bool,
+    /// The file [`Self::update`] locked and reads; its saves write this file, not what the link names by then.
+    pinned: Option<PathBuf>,
 }
 
 impl ContextFile {
@@ -84,20 +88,34 @@ impl ContextFile {
     /// `$XDG_CONFIG_HOME/cicada/config.toml`, else `$HOME/.config/cicada/config.toml`. A missing file has no contexts.
     pub fn load(env: &Env) -> anyhow::Result<Self> {
         let path = path(env)?;
+        allowed_target(&path)?;
         let config = Config::load(&path)?;
-        Ok(Self { path, config, changed: false })
+        Ok(Self { path, config, changed: false, pinned: None })
     }
 
     /// Locks the config file, reads it again, applies `f` and, when `f` returns `Ok` and changed the file since it
     /// last saved, saves it; then unlocks. Every writer that uses it, `cicada config use-context` and `set-context`
     /// among them, keeps the others' changes. The lock is an exclusive OS lock on `<target>.lock` next to the file a
-    /// save writes (a symlink's target, so a link and its target share one lock), held on this machine only; on a file
-    /// system without locks the update runs unlocked. `f` may call [`Self::save`] itself and keep the lock for more
-    /// work.
+    /// save writes (a symlink's target, so a link and its target share one lock), held on this machine only. After
+    /// locking, the link is followed again: when it names another file by then, the lock is dropped and taken on that
+    /// one, and the file read and saved is the one locked. A file system without locks fails the update rather than
+    /// risk losing another writer's change. `f` may call [`Self::save`] itself and keep the lock for more work.
     pub fn update<T>(env: &Env, f: impl FnOnce(&mut Self) -> anyhow::Result<T>) -> anyhow::Result<T> {
         let path = path(env)?;
-        let _lock = lock_next_to(&link_target(&path).with_context(|| format!("cannot follow {}", path.display()))?)?;
-        let mut file = Self { config: Config::load(&path)?, path, changed: false };
+        let mut tries = 0;
+        let (target, _lock) = loop {
+            let target = allowed_target(&path)?;
+            let lock = lock_next_to(&target)?;
+            if follow(&path)? == target {
+                break (target, lock);
+            }
+            tries += 1;
+            if tries == 10 {
+                bail!("cannot lock {}: its symlink keeps changing", path.display());
+            }
+        };
+        let config = Config::load(&target)?;
+        let mut file = Self { config, path, changed: false, pinned: Some(target) };
         let value = f(&mut file)?;
         if file.changed {
             file.save()?;
@@ -162,15 +180,40 @@ impl ContextFile {
     /// Writes the whole file atomically, with mode 0600 on Unix; comments in an existing file are not kept. Use it
     /// within [`Self::update`] when another writer may run.
     pub fn save(&mut self) -> anyhow::Result<()> {
-        self.config.save(&self.path)?;
+        match &self.pinned {
+            Some(target) => self.config.write_to(target)?,
+            None => self.config.write_to(&allowed_target(&self.path)?)?,
+        }
         self.changed = false;
         Ok(())
     }
 }
 
+/// `path` after following its symlinks, with an error that names it.
+fn follow(path: &Path) -> anyhow::Result<PathBuf> {
+    link_target(path).with_context(|| format!("cannot follow {}", path.display()))
+}
+
+/// The target of the config path `path`, refused when its name or the target's is reserved: `tray.toml`, the menu bar
+/// app's file, or one ending in `.lock`, in any letter case, as a case-insensitive file system treats them alike.
+fn allowed_target(path: &Path) -> anyhow::Result<PathBuf> {
+    let target = follow(path)?;
+    let reserved = |path: &Path| {
+        let name = path.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+        name == "tray.toml" || name.ends_with(".lock")
+    };
+    if reserved(path) || reserved(&target) {
+        bail!(
+            "the config file {} has a name kept for lock files or tray.toml; set CICADA_CONFIG to another file",
+            path.display()
+        );
+    }
+    Ok(target)
+}
+
 /// Takes an exclusive lock on `<file>.lock`, creating it and its folder when missing, and waits for another holder.
-/// `None` on a file system without locks; the lock ends when the returned file is dropped.
-pub(crate) fn lock_next_to(file: &Path) -> anyhow::Result<Option<File>> {
+/// The lock ends when the returned file is dropped. A file system without locks is an error.
+pub(crate) fn lock_next_to(file: &Path) -> anyhow::Result<File> {
     let mut name = file.file_name().map(ToOwned::to_owned).unwrap_or_default();
     name.push(".lock");
     let lock = file.with_file_name(name);
@@ -182,14 +225,10 @@ pub(crate) fn lock_next_to(file: &Path) -> anyhow::Result<Option<File>> {
         .write(true)
         .open(&lock)
         .with_context(|| format!("cannot open {}", lock.display()))?;
-    match handle.lock() {
-        Ok(()) => Ok(Some(handle)),
-        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
-            tracing::warn!("{}: no lock, as the file system gave: {e}", lock.display());
-            Ok(None)
-        }
-        Err(e) => Err(e).with_context(|| format!("cannot lock {}", lock.display())),
-    }
+    handle
+        .lock()
+        .with_context(|| format!("cannot lock {}; its file system must support file locks", lock.display()))?;
+    Ok(handle)
 }
 
 /// The config file. Its `Debug` hides the credentials as [`ContextEntry`] does.
@@ -230,8 +269,13 @@ impl Config {
     /// created with mode 0600 on Unix (`tempfile`'s default), because it holds tokens, and is removed when the save
     /// fails. When `path` is a symlink, all of this happens to the file it points to, which is created when it is not
     /// there yet, and the link stays a link.
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let target = link_target(path).with_context(|| format!("cannot follow {}", path.display()))?;
+        self.write_to(&follow(path)?)
+    }
+
+    /// Writes the whole file to `target`, the resolved file of a config path, as [`Self::save`] describes.
+    fn write_to(&self, target: &Path) -> anyhow::Result<()> {
         let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let text = toml::to_string_pretty(self)?;
@@ -239,7 +283,7 @@ impl Config {
             let mut file = tempfile::Builder::new().prefix(".cicada-config").tempfile_in(dir)?;
             file.write_all(text.as_bytes())?;
             file.as_file().sync_all()?;
-            file.persist(&target)?;
+            file.persist(target)?;
             Ok(())
         };
         write().with_context(|| format!("cannot write {}", target.display()))
@@ -292,8 +336,8 @@ pub struct Overrides {
     pub token: Option<String>,
 }
 
-/// The server a command talks to, and how. Its `Debug` leaves out the token and the values of the headers, and hides the
-/// password of the URL.
+/// The server a command talks to, and how. Its `Debug` leaves out the token and the values of the headers, and hides
+/// the password of the URL.
 #[derive(Clone, PartialEq)]
 pub struct Target {
     /// The context it came from, if any.
@@ -753,7 +797,8 @@ mod tests {
             token: Some("s3cret".into()),
             headers: BTreeMap::from([("X-Api-Key".to_owned(), "k3y".to_owned())]),
         };
-        let mut file = ContextFile { path: "config.toml".into(), config: Config::default(), changed: false };
+        let mut file =
+            ContextFile { path: "config.toml".into(), config: Config::default(), changed: false, pinned: None };
         file.set_context("prod", entry.clone());
         for text in [format!("{entry:?}"), format!("{:?}", file.config), format!("{file:?}")] {
             for secret in ["hunter2", "s3cret", "k3y"] {
@@ -771,5 +816,50 @@ mod tests {
         assert_eq!(error, "the server URL must use http or https");
         let error = format!("{:#}", check_server_url("not a url").unwrap_err());
         assert!(error.starts_with("invalid server URL") && !error.contains("not a url"), "{error}");
+    }
+
+    #[test]
+    fn a_config_named_like_a_lock_or_the_tray_file_is_refused_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["tray.toml", "TRAY.TOML", "Tray.Toml", "config.toml.lock", "x.LOCK", "tray.toml.lock"] {
+            let file = dir.path().join(name);
+            let env = file_env(&file);
+            let error = ContextFile::load(&env).unwrap_err().to_string();
+            assert!(error.contains("CICADA_CONFIG"), "{name}: {error}");
+            let error = ContextFile::update(&env, |file| {
+                file.set_server_and_token("a", "http://a".into(), None);
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("CICADA_CONFIG"), "{name}");
+        }
+        assert_eq!(names(dir.path()), Vec::<String>::new(), "nothing created, not even a lock file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_whose_symlink_names_a_reserved_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("TRAY.toml", &link).unwrap();
+        let error = ContextFile::update(&file_env(&link), |_| Ok(())).unwrap_err().to_string();
+        assert!(error.contains("CICADA_CONFIG"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_saves_the_file_it_locked_when_the_link_moves_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("first.toml", &link).unwrap();
+        ContextFile::update(&file_env(&link), |file| {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink("second.toml", &link).unwrap();
+            file.set_server_and_token("a", "http://a".into(), None);
+            Ok(())
+        })
+        .unwrap();
+        assert!(Config::load(&dir.path().join("first.toml")).unwrap().contexts.contains_key("a"));
+        assert!(!dir.path().join("second.toml").exists(), "not the file whose lock was never taken");
     }
 }

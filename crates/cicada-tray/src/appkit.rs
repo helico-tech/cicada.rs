@@ -277,8 +277,10 @@ define_class!(
         #[unsafe(method(traySettings:))]
         fn open_settings(&self, _: &NSMenuItem) {
             let c = self.ivars();
-            if c.settings.borrow().is_none() {
-                let registered = c.tray.control.registered_types.lock().expect("tray registered types").clone();
+            let registered = c.tray.control.registered_types.lock().expect("tray registered types").clone();
+            // A later App can register other types: a closed window is made again with their switches.
+            let stale = c.settings.borrow().as_ref().is_none_or(|w| !w.is_visible() && w.registered() != registered);
+            if stale {
                 c.settings.replace(Some(SettingsWindow::new(self, &c.title, &registered)));
             }
             if let Some(window) = c.settings.borrow().as_ref() {

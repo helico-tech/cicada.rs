@@ -62,6 +62,8 @@ pub(crate) struct SettingsForm {
     current: Option<String>,
     selected: Option<Selected>,
     saved: Values,
+    /// Whether `tray.toml` had an entry for the selected context; without one, Apply saves the shown worker values.
+    has_entry: bool,
     /// The values the user edits.
     pub edited: Values,
 }
@@ -77,6 +79,7 @@ impl SettingsForm {
             current: None,
             selected: None,
             saved: Values::empty(),
+            has_entry: false,
             edited: Values::empty(),
         };
         form.read(context)?;
@@ -99,6 +102,7 @@ impl SettingsForm {
             return Ok(());
         };
         let entry = file.context(&name).unwrap_or_default();
+        self.has_entry = tray.get(&name).is_some();
         let (types, concurrency) = match tray.get(&name) {
             Some(saved) => (self.registered_of(&saved.types), saved.concurrency.to_string()),
             None => (self.registered_of(&self.registered), WorkerConfig::default().concurrency.to_string()),
@@ -150,6 +154,7 @@ impl SettingsForm {
         let concurrency = WorkerConfig::default().concurrency.to_string();
         self.saved = Values { server: String::new(), token: String::new(), types, concurrency };
         self.edited = self.saved.clone();
+        self.has_entry = false;
         self.selected = Some(Selected::New(name.to_owned()));
         Ok(())
     }
@@ -206,8 +211,9 @@ impl SettingsForm {
 
     /// Validates the values and writes what the user changed, holding the config file's lock for both writes: first
     /// the server, token, a new context and `current-context` into the config file, then the worker settings into
-    /// `tray.toml` under its own lock. Fields the user left alone keep what other writers saved meanwhile. The name of
-    /// the context to connect to when both are saved.
+    /// `tray.toml` under its own lock. Fields the user left alone keep what other writers saved meanwhile; a context
+    /// without a `tray.toml` entry gets the shown types and concurrency as its entry, so that what the window shows is
+    /// what the worker runs. The name of the context to connect to when both are saved.
     pub fn apply(&mut self) -> Result<String, ApplyError> {
         let errors = self.validate();
         if !errors.is_empty() {
@@ -221,10 +227,12 @@ impl SettingsForm {
             (new || self.edited.server.trim() != self.saved.server).then(|| self.edited.server.trim().to_owned());
         let token = (new || self.edited.token != self.saved.token).then(|| self.edited.token.clone());
         let make_current = self.current.as_deref() != Some(name.as_str());
-        let worker =
-            (self.edited.types != self.saved.types || self.edited.concurrency != self.saved.concurrency).then(|| {
-                WorkerSettings { types: self.edited.types.clone(), concurrency: self.concurrency().expect("valid") }
-            });
+        let types_edited = !self.has_entry || self.edited.types != self.saved.types;
+        let concurrency_edited = !self.has_entry || self.edited.concurrency != self.saved.concurrency;
+        let worker = (types_edited || concurrency_edited).then(|| WorkerSettings {
+            types: self.edited.types.clone(),
+            concurrency: self.concurrency().expect("valid"),
+        });
         let env = self.env.clone();
         let outcome = ContextFile::update(&env, |file| {
             let tray = locate(file).map_err(anyhow::Error::msg)?;
@@ -250,7 +258,7 @@ impl SettingsForm {
             }
             if let Some(settings) = worker {
                 if let Err(error) = TrayFile::update(&tray, |tray| {
-                    tray.set(&name, settings);
+                    tray.merge(&name, settings, types_edited, concurrency_edited);
                     Ok(())
                 }) {
                     let saved = if connection { "connection saved; " } else { "" };
@@ -258,6 +266,7 @@ impl SettingsForm {
                 }
                 self.saved.types = self.edited.types.clone();
                 self.saved.concurrency = self.edited.concurrency.clone();
+                self.has_entry = true;
             }
             Ok(Ok(name.clone()))
         });
@@ -485,13 +494,36 @@ mod tests {
         assert_eq!(files.worker("prod"), None, "a context without changes inherits");
     }
 
+    /// Scenario: All types over the environment, through the form.
     #[test]
-    fn apply_without_changes_writes_nothing() {
+    fn apply_saves_the_shown_defaults_as_an_entry_that_wins_over_the_environment() {
         let files = Files::new(PROD);
+        let mut env = files.env();
+        env.extend([("CICADA_TYPES".to_owned(), "work".to_owned()), ("CICADA_CONCURRENCY".to_owned(), "2".to_owned())]);
         let before = text(&files.config());
-        assert_eq!(files.form().apply(), Ok("prod".into()));
-        assert_eq!(text(&files.config()), before);
-        assert!(!files.tray().exists());
+        let mut form = SettingsForm::load(&env, &REGISTERED, None).unwrap();
+        assert_eq!(form.apply(), Ok("prod".into()));
+        assert_eq!(text(&files.config()), before, "no connection field changed");
+        let defaults = WorkerSettings { types: vec!["work".into(), "other".into()], concurrency: 16 };
+        assert_eq!(files.worker("prod"), Some(defaults));
+        let args = crate::tray_file::saved_args(&env, "prod", &REGISTERED).unwrap();
+        assert_eq!(args, ["--types=all", "--concurrency=16"]);
+
+        std::fs::remove_file(files.tray()).unwrap();
+        std::fs::create_dir(files.tray()).unwrap(); // a second write would fail now
+        assert_eq!(form.apply(), Ok("prod".into()), "an apply without changes writes nothing");
+    }
+
+    #[test]
+    fn two_forms_editing_different_worker_fields_keep_both() {
+        let files = Files::new(PROD);
+        std::fs::write(files.tray(), "[contexts.prod]\ntypes = [\"work\", \"other\"]\nconcurrency = 4\n").unwrap();
+        let (mut types, mut concurrency) = (files.form(), files.form());
+        concurrency.edited.concurrency = "9".into();
+        assert_eq!(concurrency.apply(), Ok("prod".into()));
+        types.edited.types = vec!["other".into()];
+        assert_eq!(types.apply(), Ok("prod".into()));
+        assert_eq!(files.worker("prod"), Some(WorkerSettings { types: vec!["other".into()], concurrency: 9 }));
     }
 
     #[test]

@@ -6,15 +6,20 @@ Version: 0.26.0. Refresh the dependency pins of `docs/how-to/install.md` once it
 
 The tray's Settings… item (⌘,) opens a native Settings window. Connection: a context pop-up with the config file's
 contexts, a separator and Add…, which asks for a name in a sheet that can be cancelled; the server; the token in a
-secure (masked) field. Worker: a switch per registered type, and the turns at once in a field with a stepper from 1 to
-1,000. Revert and Apply and Reconnect. A validation error shows under its field and nothing is written. Esc and ⌘W
-close the window; it reopens with the values on disk. While open, Settings… brings it to the front.
+secure (masked) field. Worker: a switch per registered type (past eight types the list scrolls), and the turns at
+once in a field with a stepper from 1 to 1,000. Revert and Apply and Reconnect. A validation error shows under its
+field and nothing is written. Esc and ⌘W close the window; it reopens with the values on disk, and with the switches
+of the types the app registers by then. While open, Settings… brings it to the front. Cancelling Add… keeps the
+unsaved edits in the fields.
 
 Apply writes only what the user changed: the server, the token, a new context, and `current-context` when another
 context is selected, into the config file, through the same locked code as `cicada config`; other contexts and fields
-another writer changed meanwhile stay as they are on disk. Then the worker settings go into `tray.toml`, when they
-changed. If that second write fails, the window says "connection saved; worker settings not saved: <error>", keeps
-the values and does not reconnect; a second Apply writes what still differs. After a full save, a tray with a
+another writer changed meanwhile stay as they are on disk. Then the worker settings go into `tray.toml`: only the
+field the user changed (types or turns at once), keeping the other as another writer saved it, or, for a context
+without an entry, the shown types and turns at once as its new entry. If that second write fails, the window says
+"connection saved; worker settings not saved: <error>" when the config file was written, or "worker settings not
+saved: <error>" when only the worker settings changed. It keeps the values and does not reconnect; a second Apply
+writes what still differs. After a full save, a tray with a
 connection (connecting, online or stopping, to any context) disconnects, waits for no connection, and connects to the
 applied context with the new arguments. An offline tray stays offline.
 
@@ -23,15 +28,22 @@ next to a symlink, not its target). `[contexts.<name>]` holds `types = [...]` an
 secrets. A context with an entry connects with `--types` (the saved types the binary still registers, or `all` when
 that is every registered type) and `--concurrency`, which win over `CICADA_TYPES` and `CICADA_CONCURRENCY`. A context
 without an entry inherits those variables and the defaults; the window then shows every type on and the worker's
-default of 16. A saved selection with no registered type left, or a lone type named `all` or `none` while others are
-registered, ends the connection `Failed` with an error that says to open Settings. `CICADA_SERVER` and `CICADA_TOKEN`
-in the tray's environment still win over the context, and the window says so under the server field. A config path
-named, or resolving to, `tray.toml` or `tray.toml.lock` is refused.
+default of 16, and Apply saves those as the context's entry. An app with no registered type, a saved selection with
+no registered type left, or a lone type named `all` or `none` while others are registered, ends the connection
+`Failed` with an error that says to open Settings. `CICADA_SERVER` and `CICADA_TOKEN`
+in the tray's environment still win over the context, and the window says so under the server field.
+
+`cicada config` and the tray refuse a config path whose name, or whose symlink target's name, is `tray.toml` or ends
+in `.lock`, in any letter case (a case-insensitive file system treats `TRAY.TOML` as `tray.toml`), so no config write
+replaces a lock file or the tray's file. Both files' parse errors name the line, never the text. Every write takes an
+OS file lock; on a file system without file locks the write fails with "cannot lock <file>; its file system must
+support file locks" instead of risking another writer's change.
 
 `cicada_app::ContextFile` is the config file of `cicada config`: `load(&Env)`, `update(&Env, f)`, `path`,
 `resolved_path`, `names`, `current`, `context` (a `ContextEntry`: `server`, `token`, `headers`), `set_context`,
 `set_server_and_token`, `use_context` and `save`. `update` holds an exclusive lock on `<target>.lock` next to the file
-a save writes, re-reads the file, applies `f` and saves when it changed. `cicada config use-context` and `set-context`
+a save writes, follows the link again after locking (and locks anew when it moved), re-reads the locked file, applies
+`f` and saves that same file when it changed. `cicada config use-context` and `set-context`
 now go through it and create that lock file. `cicada_app::check_server_url` is the worker's URL check. An unreadable
 config file is now reported by every command, the worker included, as `cannot read <path>: not a valid config file at
 line N`, without the parser's text. `ContextEntry`'s `Debug` hides the token, header values and a URL password.
@@ -55,7 +67,9 @@ at once. Apply and Reconnect saves and, while the tray is connected, reconnects 
 the saved values again. Esc or ⌘W closes the window without saving.
 **Caveats.** The token is stored in the config file, as `cicada config` stores it, not in the Keychain. `CICADA_SERVER`
 and `CICADA_TOKEN` in the tray's environment win over the window's server and token. Apply while offline saves but does
-not connect.
+not connect. When Apply saves the connection but not the worker settings, the window says "connection saved; worker
+settings not saved: <error>"; when only the worker settings changed, "worker settings not saved: <error>". Apply
+again once the cause is fixed.
 
 ## 2. `tray.toml`
 
@@ -69,10 +83,11 @@ concurrency = 4
 ```
 
 A context listed there runs only those types (or all, when all are picked) with that concurrency, also when
-`CICADA_TYPES` or `CICADA_CONCURRENCY` is set. A context not listed uses those variables and the defaults. If none of
+`CICADA_TYPES` or `CICADA_CONCURRENCY` is set. A context not listed uses those variables and the defaults, until an
+Apply in the Settings window saves its entry. If none of
 the saved types is registered any more, connecting fails and says to open Settings.
 **Caveats.** Two config files in one folder share one `tray.toml`. Do not point `CICADA_CONFIG` at a file named
-`tray.toml` or `tray.toml.lock`; the tray refuses it.
+`tray.toml` or ending in `.lock`, in any letter case; the tray and `cicada config` refuse it.
 
 ## 3. The config file is shared and locked
 
@@ -80,8 +95,10 @@ the saved types is registered any more, connecting fails and says to open Settin
 use-context` switches it."
 **Text.** `config set-context` and `config use-context` take a lock on `<file>.lock` next to the config file (next to
 its target when it is a symlink) while they write, so they and the menu bar app keep each other's changes. An
-unreadable file is reported with its path and line, not its contents.
-**Caveats.** The lock covers one machine. Readers take no lock.
+unreadable file is reported with its path and line, not its contents. A config path named `tray.toml` or ending in
+`.lock`, in any letter case, is refused.
+**Caveats.** The lock covers one machine. Readers take no lock. On a file system without file locks (some network
+mounts), the write fails; point `CICADA_CONFIG` at a local file.
 
 ## 4. `ContextFile` for hosts
 
@@ -98,5 +115,5 @@ None.
 
 ## Status
 
-Ran `cargo test --workspace`, `cargo test -p cicada-examples --test docs` and `--doc`; all pass. All text above is
-proposed; no protected prose was edited. The manual check list of the window is reported in the build report.
+Ran `cargo test -p cicada-app`, `cargo test -p cicada-tray`, `cargo test -p cicada-examples --test docs` and `--doc`
+after code review 1; all pass. All text above is proposed; no protected prose was edited. The manual check list of the window is reported in the build report.

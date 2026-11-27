@@ -41,13 +41,14 @@ pub(crate) struct TrayFile {
 
 /// The tray's file for the config file `config`: `tray.toml` in the folder of the config path as given (a relative one
 /// taken against the working directory; a symlink keeps it next to the link). A config path whose name, or whose
-/// resolved target's name, is `tray.toml` or `tray.toml.lock` is refused, so that no write of the config file replaces
-/// either.
+/// resolved target's name, is `tray.toml` or `tray.toml.lock` in any letter case is refused, so that no write of the
+/// config file replaces either; [`ContextFile::load`] refuses them as well.
 pub(crate) fn locate(config: &ContextFile) -> Result<PathBuf, String> {
     let given = config.path();
     let resolved = config.resolved_path().map_err(|e| format!("cannot follow {}: {e}", given.display()))?;
     for path in [given, resolved.as_path()] {
-        if path.file_name().is_some_and(|name| name == FILE || name == LOCK) {
+        let name = path.file_name().map(|name| name.to_string_lossy().to_lowercase());
+        if name.is_some_and(|name| name == FILE || name == LOCK) {
             return Err(format!(
                 "the config file {} is named like the tray's own {FILE}; set CICADA_CONFIG to another file",
                 path.display()
@@ -63,10 +64,15 @@ pub(crate) fn locate(config: &ContextFile) -> Result<PathBuf, String> {
 }
 
 impl TrayFile {
-    /// Reads the file at `path`; a missing file has no entries.
+    /// Reads the file at `path`; a missing file has no entries. A parse error names the line but not the text, in case
+    /// the path holds another file, such as the config file with its tokens.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let contents = match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).with_context(|| format!("cannot read {}", path.display()))?,
+            Ok(text) => toml::from_str(&text).map_err(|error| {
+                let before = |at: usize| text.get(..at).map_or(0, |text| text.matches('\n').count());
+                let at = error.span().map(|span| format!(" at line {}", before(span.start) + 1)).unwrap_or_default();
+                anyhow::anyhow!("cannot read {}: not a valid tray file{at}", path.display())
+            })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Contents::default(),
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
@@ -74,7 +80,8 @@ impl TrayFile {
     }
 
     /// Locks the file at `path` (an exclusive lock on `tray.toml.lock` next to it), reads it, applies `f` and saves it
-    /// when `f` returns `Ok`; then unlocks.
+    /// when `f` returns `Ok`; then unlocks. The save replaces the entry at `path`, a symlink included, so the file
+    /// written is always the one under this lock. A file system without locks fails the update.
     pub fn update<T>(path: &Path, f: impl FnOnce(&mut Self) -> anyhow::Result<T>) -> anyhow::Result<T> {
         let _lock = lock(&path.with_file_name(LOCK))?;
         let mut file = Self::load(path)?;
@@ -89,8 +96,27 @@ impl TrayFile {
     }
 
     /// Sets the settings of `context`.
+    #[cfg(test)]
     pub fn set(&mut self, context: &str, settings: WorkerSettings) {
         self.contents.contexts.insert(context.to_owned(), settings);
+    }
+
+    /// Sets the edited fields of `context`'s entry, `types` and `concurrency` as their flags say, keeping the other
+    /// field as another writer saved it; without an entry, `edited` becomes the whole entry.
+    pub fn merge(&mut self, context: &str, edited: WorkerSettings, types: bool, concurrency: bool) {
+        match self.contents.contexts.get_mut(context) {
+            Some(entry) => {
+                if types {
+                    entry.types = edited.types;
+                }
+                if concurrency {
+                    entry.concurrency = edited.concurrency;
+                }
+            }
+            None => {
+                self.contents.contexts.insert(context.to_owned(), edited);
+            }
+        }
     }
 
     /// Writes the whole file through a new file renamed over it, with mode 0644 on Unix.
@@ -114,9 +140,9 @@ impl TrayFile {
     }
 }
 
-/// Takes an exclusive lock on the file `path`, creating it and its folder when missing, and waits for another holder;
-/// `None` on a file system without locks.
-fn lock(path: &Path) -> anyhow::Result<Option<File>> {
+/// Takes an exclusive lock on the file `path`, creating it and its folder when missing, and waits for another holder.
+/// A file system without locks is an error, rather than a write that may lose another's.
+fn lock(path: &Path) -> anyhow::Result<File> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
@@ -126,22 +152,22 @@ fn lock(path: &Path) -> anyhow::Result<Option<File>> {
         .write(true)
         .open(path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    match file.lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("cannot lock {}", path.display())),
-    }
+    file.lock().with_context(|| format!("cannot lock {}; its file system must support file locks", path.display()))?;
+    Ok(file)
 }
 
 /// The arguments the worker of `context` gets from its saved settings: none without an entry; else `--types` with the
-/// saved names the binary still registers (`all` when that is every registered type) and `--concurrency`. A selection
-/// left with no registered type, or with a lone type named `all` or `none` among others (which `--types` would read as
-/// a keyword), is an error that sends the user to Settings.
+/// saved names the binary still registers (`all` when that is every registered type) and `--concurrency`. No
+/// registered type at all, a selection left with no registered type, or one with a lone type named `all` or `none`
+/// among others (which `--types` would read as a keyword), is an error that sends the user to Settings.
 pub(crate) fn worker_args(
     context: &str,
     saved: Option<&WorkerSettings>,
     registered: &[&str],
 ) -> Result<Vec<String>, String> {
+    if registered.is_empty() {
+        return Err(format!("no registered type selected for {context}; open Settings"));
+    }
     let Some(saved) = saved else { return Ok(Vec::new()) };
     let types: Vec<&str> = registered.iter().copied().filter(|name| saved.types.iter().any(|t| t == name)).collect();
     let types = match types.as_slice() {
@@ -219,8 +245,8 @@ mod tests {
     #[test]
     fn a_config_named_like_the_tray_file_or_its_lock_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        for name in [FILE, LOCK] {
-            let error = locate(&ContextFile::load(&env(&dir.path().join(name))).unwrap()).unwrap_err();
+        for name in [FILE, LOCK, "TRAY.TOML", "Tray.Toml.Lock"] {
+            let error = saved_args(&env(&dir.path().join(name)), "prod", &["a"]).unwrap_err();
             assert!(error.contains("CICADA_CONFIG"), "{error}");
         }
     }
@@ -229,10 +255,10 @@ mod tests {
     #[test]
     fn a_config_that_resolves_to_the_tray_file_or_its_lock_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        for (link, target) in [("config.toml", FILE), ("other.toml", LOCK)] {
+        for (link, target) in [("config.toml", FILE), ("other.toml", LOCK), ("third.toml", "TRAY.toml")] {
             std::os::unix::fs::symlink(target, dir.path().join(link)).unwrap();
-            let error = locate(&ContextFile::load(&env(&dir.path().join(link))).unwrap()).unwrap_err();
-            assert!(error.contains(target), "{error}");
+            let error = saved_args(&env(&dir.path().join(link)), "prod", &["a"]).unwrap_err();
+            assert!(error.contains("CICADA_CONFIG"), "{error}");
         }
     }
 
@@ -262,6 +288,42 @@ mod tests {
     #[test]
     fn no_entry_adds_no_arguments() {
         assert_eq!(worker_args("prod", None, &["a", "b"]), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn no_registered_type_fails_also_without_an_entry() {
+        assert_eq!(worker_args("prod", None, &[]).unwrap_err(), "no registered type selected for prod; open Settings");
+    }
+
+    #[test]
+    fn a_merge_keeps_the_field_another_writer_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        TrayFile::update(&path, |file| {
+            file.merge("prod", settings(&["a"], 4), true, true);
+            Ok(())
+        })
+        .unwrap();
+        TrayFile::update(&path, |file| {
+            file.merge("prod", settings(&["a"], 9), false, true);
+            Ok(())
+        })
+        .unwrap();
+        TrayFile::update(&path, |file| {
+            file.merge("prod", settings(&["b"], 4), true, false);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(TrayFile::load(&path).unwrap().get("prod"), Some(&settings(&["b"], 9)));
+    }
+
+    #[test]
+    fn a_parse_error_does_not_quote_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, "[contexts.prod]\nserver = \"http://x\"\ntoken = \"s3cret\"\n").unwrap();
+        let error = format!("{:#}", TrayFile::load(&path).unwrap_err());
+        assert!(error.contains("line") && !error.contains("s3cret") && !error.contains("server"), "{error}");
     }
 
     /// Scenario: Fewer types.

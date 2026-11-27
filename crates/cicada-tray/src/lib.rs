@@ -6,6 +6,8 @@ mod appkit;
 mod menu;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod settings;
+#[cfg(test)]
+mod tests;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod tray_file;
 mod turns;
@@ -69,6 +71,9 @@ struct Control {
     state: watch::Sender<TrayState>,
     #[cfg(target_os = "macos")]
     registered_types: Mutex<Vec<&'static str>>,
+    /// The arguments of the last worker command, for tests.
+    #[cfg(test)]
+    args: Mutex<Vec<String>>,
 }
 
 struct Connection {
@@ -94,6 +99,8 @@ impl Tray {
                 state: watch::channel(TrayState::Offline).0,
                 #[cfg(target_os = "macos")]
                 registered_types: Mutex::default(),
+                #[cfg(test)]
+                args: Mutex::default(),
             }),
             turns: TurnHistory::default(),
         }
@@ -204,6 +211,11 @@ impl Tray {
                     task.fail(error);
                     return;
                 }
+            }
+            #[cfg(test)]
+            {
+                *ready.args.lock().expect("tray args") =
+                    args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
             }
             let app = app.observe(turns).on_worker_ready(move |settings| ready.worker_ready(settings));
             let result = app

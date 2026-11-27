@@ -6,10 +6,10 @@ use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControlStateValueOff,
-    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSFont, NSLineBreakMode, NSMenu, NSMenuItem,
-    NSPopUpButton, NSResponder, NSSecureTextField, NSStepper, NSSwitch, NSTextField, NSTitlePosition, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSAccessibility, NSApplication, NSBackingStoreType, NSBorderType, NSBox, NSBoxType, NSButton, NSColor,
+    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSFont, NSLineBreakMode,
+    NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScrollView, NSSecureTextField, NSStepper, NSSwitch, NSTextField,
+    NSTitlePosition, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 
@@ -28,6 +28,8 @@ const CONTROL_WIDTH: f64 = BOX_WIDTH - CONTROL_X - 16.0;
 const ADD_TAG: isize = -1;
 /// The key code of Esc.
 const ESCAPE: u16 = 53;
+/// The most type rows shown at once; more scroll.
+const VISIBLE_TYPES: usize = 8;
 
 define_class!(
     // SAFETY: NSWindow has no subclassing requirements beyond forwarding to super, and the class has no ivars or Drop.
@@ -43,7 +45,8 @@ define_class!(
         fn send_event(&self, event: &NSEvent) {
             if event.r#type() == NSEventType::KeyDown {
                 let flags = event.modifierFlags() & NSEventModifierFlags::DeviceIndependentFlagsMask;
-                let modified = NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option;
+                let modified =
+                    NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option;
                 let key = event.charactersIgnoringModifiers().map(|key| key.to_string()).unwrap_or_default();
                 let escape = event.keyCode() == ESCAPE && !flags.intersects(modified);
                 let close = flags & modified == NSEventModifierFlags::Command && key.eq_ignore_ascii_case("w");
@@ -58,8 +61,26 @@ define_class!(
     }
 );
 
+define_class!(
+    // SAFETY: NSView has no subclassing requirements, and the class has no ivars or Drop.
+    #[unsafe(super(NSView, NSResponder, objc2_foundation::NSObject))]
+    #[name = "CicadaTrayFlippedView"]
+    #[thread_kind = MainThreadOnly]
+    struct FlippedView;
+
+    impl FlippedView {
+        /// Rows are laid out from the top, so a scroll view starts at the first type.
+        // SAFETY: The signature is NSView's isFlipped.
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+    }
+);
+
 /// The window, its controls and the form they show; made at the first Settings….
 pub(super) struct SettingsWindow {
+    registered: Vec<&'static str>,
     window: Retained<SettingsPanel>,
     contexts: Retained<NSPopUpButton>,
     context_error: Retained<NSTextField>,
@@ -82,7 +103,8 @@ pub(super) struct SettingsWindow {
 impl SettingsWindow {
     pub fn new(target: &Target, title: &str, registered: &[&'static str]) -> Self {
         let mtm = target.mtm();
-        let worker_height = 8.0 + registered.len() as f64 * ROW + NOTE + ROW + NOTE + 8.0;
+        let types_height = registered.len().min(VISIBLE_TYPES) as f64 * ROW;
+        let worker_height = 8.0 + types_height + NOTE + ROW + NOTE + 8.0;
         let connection_height = 8.0 + ROW + NOTE + ROW + NOTE + ROW + 8.0;
         let height =
             MARGIN + 22.0 + connection_height + 16.0 + 22.0 + worker_height + 12.0 + 34.0 + 12.0 + ROW + MARGIN;
@@ -132,21 +154,40 @@ impl SettingsWindow {
         top += 22.0;
         let (worker, inner) = group(mtm, height, top, worker_height);
         content.addSubview(&worker);
-        let mut row = 8.0;
+        let scroll = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            frame(0.0, worker_height, 8.0, BOX_WIDTH - 2.0, types_height),
+        );
+        scroll.setHasVerticalScroller(true);
+        scroll.setAutohidesScrollers(true);
+        scroll.setDrawsBackground(false);
+        scroll.setBorderType(NSBorderType::NoBorder);
+        let rows: Retained<FlippedView> = {
+            let rect = NSRect::new(NSPoint::ZERO, NSSize::new(BOX_WIDTH - 2.0, registered.len() as f64 * ROW));
+            // SAFETY: NSView's designated initializer; the class adds no ivars.
+            unsafe { msg_send![FlippedView::alloc(mtm), initWithFrame: rect] }
+        };
         let switches = registered
             .iter()
-            .map(|&name| {
-                inner.addSubview(&row_label(mtm, name, worker_height, row));
+            .enumerate()
+            .map(|(index, &name)| {
+                let top = index as f64 * ROW;
+                let label = NSTextField::labelWithString(&NSString::from_str(name), mtm);
+                label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                label.setFrame(NSRect::new(NSPoint::new(16.0, top + 7.0), NSSize::new(BOX_WIDTH - 100.0, 18.0)));
+                rows.addSubview(&label);
                 let switch = NSSwitch::initWithFrame(
                     NSSwitch::alloc(mtm),
-                    frame(BOX_WIDTH - 16.0 - 44.0, worker_height, row + 4.0, 44.0, 24.0),
+                    NSRect::new(NSPoint::new(BOX_WIDTH - 16.0 - 44.0, top + 4.0), NSSize::new(44.0, 24.0)),
                 );
                 switch.setAccessibilityLabel(Some(&NSString::from_str(&format!("Run {name}"))));
-                inner.addSubview(&switch);
-                row += ROW;
+                rows.addSubview(&switch);
                 (name, switch)
             })
             .collect();
+        scroll.setDocumentView(Some(&rows));
+        inner.addSubview(&scroll);
+        let mut row = 8.0 + types_height;
         let types_error = note(mtm, worker_height, row, true);
         inner.addSubview(&types_error);
         row += NOTE;
@@ -188,6 +229,7 @@ impl SettingsWindow {
 
         let (sheet, sheet_name, sheet_error) = add_sheet(mtm, target);
         Self {
+            registered: registered.to_vec(),
             window,
             contexts,
             context_error,
@@ -206,6 +248,16 @@ impl SettingsWindow {
             sheet_error,
             form: RefCell::default(),
         }
+    }
+
+    /// The registered types its switches show.
+    pub fn registered(&self) -> &[&'static str] {
+        &self.registered
+    }
+
+    /// Whether the window is on screen.
+    pub fn is_visible(&self) -> bool {
+        self.window.isVisible()
     }
 
     /// Brings the window to the front and makes it key; a closed window first reads the files again.
@@ -235,6 +287,12 @@ impl SettingsWindow {
 
     /// Shows the values of the form.
     fn fill(&self) {
+        self.fill_contexts();
+        self.fill_values();
+    }
+
+    /// Shows the form's contexts in the pop-up, with its selected one picked.
+    fn fill_contexts(&self) {
         let form = self.form.borrow();
         self.apply.setEnabled(form.is_some());
         let mtm = self.window.mtm();
@@ -258,6 +316,11 @@ impl SettingsWindow {
         if selected.is_none() {
             self.contexts.selectItem(None);
         }
+    }
+
+    /// Shows the form's edited values in the fields and switches.
+    fn fill_values(&self) {
+        let form = self.form.borrow();
         let values = form.as_ref().map(|f| &f.edited);
         self.server.setStringValue(&NSString::from_str(values.map_or("", |v| &v.server)));
         self.token.setStringValue(&NSString::from_str(values.map_or("", |v| &v.token)));
@@ -340,10 +403,10 @@ impl SettingsWindow {
         }
     }
 
-    /// Cancel in the sheet: the pop-up shows the selected context again.
+    /// Cancel in the sheet: the pop-up shows the selected context again, and the fields keep their unsaved edits.
     pub fn cancel_add(&self) {
         self.window.endSheet(&self.sheet);
-        self.fill();
+        self.fill_contexts();
     }
 
     pub fn stepped(&self) {
