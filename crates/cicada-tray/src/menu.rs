@@ -222,34 +222,14 @@ impl TrayState {
     }
 }
 
-/// `text` as the menu shows it: each URL (from its scheme's `xxx://` to the next white space, control character or
-/// quote) replaced by its scheme and host as the `url` crate parses them, or by `<url>` when it does not parse or has no
-/// host; each run of control characters and white space made one space; cut at `limit` characters, the last an
-/// ellipsis when cut. The URLs are replaced before the cut, so a cut never leaves part of one.
+/// `text` as the menu shows it: split on white space, each word that holds `://` replaced whole by what comes before
+/// its scheme and `<scheme>://<host>[:<port>]` as the `url` crate parses the rest of the word, or `<url>` when it does
+/// not parse or has no host, so nothing after the host survives; control characters made spaces; the words joined by
+/// one space and cut at `limit` characters, the last an ellipsis when cut. URLs are replaced before the cut.
 pub(crate) fn display_text(text: &str, limit: usize) -> String {
-    let mut shown = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("://") {
-        let scheme = rest[..at]
-            .char_indices()
-            .rev()
-            .take_while(|&(_, c)| c.is_ascii_alphanumeric() || "+-.".contains(c))
-            .last()
-            .map_or(at, |(start, _)| start);
-        shown.push_str(&rest[..scheme]);
-        let after = &rest[scheme..];
-        let end =
-            after.find(|c: char| c.is_whitespace() || c.is_control() || "\"'`".contains(c)).unwrap_or(after.len());
-        let token = &after[..end];
-        // Sentence punctuation at the end, such as the `):` of "for url (…):", stays text: it has no letter or digit.
-        let url = token.trim_end_matches(|c: char| ")]}>,.;:!?".contains(c));
-        shown.push_str(&redacted_url(url));
-        shown.push_str(&token[url.len()..]);
-        rest = &after[end..];
-    }
-    shown.push_str(rest);
-    let words = shown.split(|c: char| c.is_whitespace() || c.is_control()).filter(|word| !word.is_empty());
-    let joined = words.collect::<Vec<_>>().join(" ");
+    let words: Vec<String> = text.split_whitespace().map(redacted_word).collect();
+    let cleaned: String = words.join(" ").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     if joined.chars().count() <= limit {
         return joined;
     }
@@ -258,15 +238,24 @@ pub(crate) fn display_text(text: &str, limit: usize) -> String {
     cut
 }
 
-/// A URL as its scheme and host only, or `<url>`.
-fn redacted_url(text: &str) -> String {
-    match url::Url::parse(text) {
-        Ok(url) => match url.host_str().filter(|host| !host.is_empty()) {
-            Some(host) => format!("{}://{host}", url.scheme()),
-            None => "<url>".to_owned(),
-        },
-        Err(_) => "<url>".to_owned(),
-    }
+/// A word with its URL, if any, reduced to the text before the scheme and the scheme, host and port.
+fn redacted_word(word: &str) -> String {
+    let Some(at) = word.find("://") else { return word.to_owned() };
+    let scheme = word[..at]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        .last()
+        .map_or(at, |(start, _)| start);
+    let url = url::Url::parse(&word[scheme..]).ok();
+    let shown = url.as_ref().and_then(|url| {
+        let host = url.host_str().filter(|host| !host.is_empty())?;
+        Some(match url.port() {
+            Some(port) => format!("{}://{host}:{port}", url.scheme()),
+            None => format!("{}://{host}", url.scheme()),
+        })
+    });
+    format!("{}{}", &word[..scheme], shown.as_deref().unwrap_or("<url>"))
 }
 
 /// The boards' row geometry, in points: the menu's padding, a row's padding (rich rows and plain ones), the icon or the
@@ -982,23 +971,26 @@ mod tests {
         let failure = fixture.model().failure.unwrap();
         assert_eq!(
             failure.subtitle,
-            "error sending request for url (https://actors.internal): connection refused at 09:01"
+            "error sending request for url (https://actors.internal:8443 connection refused at 09:01"
         );
         let long = format!("http://a@b/x {}", "y".repeat(400));
         let shown = display_text(&long, FAILURE_LENGTH);
         assert_eq!(shown.chars().count(), FAILURE_LENGTH);
         assert!(shown.starts_with("http://b yyy") && shown.ends_with('…'));
-        assert_eq!(display_text("a://u@h?q b://h#f ok", 200), "a://h b://h ok");
-        assert_eq!(
-            display_text("for url (https://user:sec(ret)@host/path?token=abc(def)): refused", 200),
-            "for url (https://host)): refused"
-        );
         for (text, shown) in [
+            ("a://u@h?q b://h#f ok", "a://h b://h ok"),
+            ("for url (https://user:sec(ret)@host/path?token=abc(def)): refused", "for url (https://host refused"),
             ("https://host?token=abc@secret", "https://host"),
             ("https://user:sec)ret@host/path?token=hidden", "https://host"),
-            ("see https://u:p?a#b@host/x?q=1.", "see <url>."),
+            ("https://u:pa'ssword@host/path?token=hidden", "https://host"),
+            ("https://host/#abc'def", "https://host"),
+            ("(https://[::1]): refused", "(<url> refused"),
+            ("at https://[::1]/x?token=y", "at https://[::1]"),
+            ("\"https://host:8443/a?b\"", "\"https://host:8443"),
+            ("see https://u:p?a#b@host/x?q=1.", "see <url>"),
             ("at ://user:secret@host and http://[bad", "at <url> and <url>"),
-            ("\"https://u:p@h/p\" and 'ftp://h/x'", "\"https://h\" and 'ftp://h'"),
+            ("'ftp://u:p@h/x'", "'ftp://h"),
+            ("no\u{7}bell", "no bell"),
         ] {
             assert_eq!(display_text(text, 200), shown, "{text}");
         }
