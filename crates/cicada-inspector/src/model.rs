@@ -295,9 +295,9 @@ impl View {
 pub struct Session {
     env: Env,
     shared: Arc<Shared>,
-    /// The page on screen. A live refresh starts and a page switch cancels the page left under this lock, so no live
-    /// refresh starts on a page already left.
-    shown: Mutex<Section>,
+    /// The page on screen and its visit, which grows with every page switch. A live refresh starts and a page switch
+    /// cancels the page left under this lock, so no live refresh starts on a visit already ended.
+    shown: Mutex<(Section, u64)>,
     actors: Actors,
     messages: Messages,
     turns: RunningTurns,
@@ -482,10 +482,16 @@ impl Session {
         }
     }
 
-    /// A live soft refresh of `section`: like [`Self::soft_refresh`], but none when another page is on screen.
-    pub(crate) fn live_refresh(&self, section: Section) -> Done {
+    /// The page on screen and its visit, for the live model.
+    pub(crate) fn visit(&self) -> (Section, u64) {
+        *self.shown.lock().expect("inspector session")
+    }
+
+    /// A live soft refresh of `section` in `visit`: like [`Self::soft_refresh`], but none once that visit ended, also
+    /// when the user left the page and came back.
+    pub(crate) fn live_refresh(&self, section: Section, visit: u64) -> Done {
         let shown = self.shown.lock().expect("inspector session");
-        if *shown != section {
+        if *shown != (section, visit) {
             return Done::ready();
         }
         let done = self.soft_refresh(section, None);
@@ -493,7 +499,8 @@ impl Session {
         done
     }
 
-    /// Resolves once the hard reload of `section` has ended: its list, or the Overview, is no longer loading.
+    /// Resolves once the hard reload of `section` has ended: every read it started has answered, failed or been
+    /// superseded.
     pub(crate) fn reloaded(&self, section: Section) -> Reloaded {
         fn until<T: Send + Sync + 'static>(
             mut view: watch::Receiver<T>,
@@ -505,10 +512,10 @@ impl Session {
         }
         match section {
             Section::Overview => until(self.view(), |view| !view.refreshing),
-            Section::Actors => until(self.actors.list(), |list| list.paging != Paging::Loading),
+            Section::Actors => Box::pin(self.actors.reloaded()),
             Section::Messages => until(self.messages.list(), |list| list.paging != Paging::Loading),
             Section::RunningTurns => until(self.turns.list(), |list| list.paging != Paging::Loading),
-            Section::Outcomes => until(self.shared.outcomes.list(), |list| list.paging != Paging::Loading),
+            Section::Outcomes => Box::pin(self.shared.outcomes.reloaded()),
             Section::Nodes => until(self.nodes.list(), |list| list.read != NodesRead::Loading),
             Section::Types => until(self.types.list(), |list| list.paging != Paging::Loading),
             Section::Watches => until(self.watches.list(), |list| list.paging != Paging::Loading),
@@ -599,8 +606,8 @@ impl Session {
         }
         {
             let mut shown = self.shown.lock().expect("inspector session");
-            *shown = navigation.current();
-            if left != *shown {
+            if left != navigation.current() {
+                *shown = (navigation.current(), shown.1 + 1);
                 self.cancel_soft_refresh(left);
             }
         }

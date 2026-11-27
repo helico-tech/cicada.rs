@@ -431,6 +431,16 @@ impl PaneView {
         self.errors = PaneErrors::default();
     }
 
+    /// True while a read of the selected actor has not answered.
+    fn loading(&self) -> bool {
+        self.address.is_some()
+            && (matches!(self.actor, Read::Loading)
+                || matches!(self.turn, Read::Loading)
+                || matches!(self.mailbox, Read::Loading)
+                || matches!(self.watching, Read::Loading)
+                || matches!(self.watched_by, Read::Loading))
+    }
+
     /// True when the actor is gone: the pane shows only that.
     pub fn not_found(&self) -> bool {
         matches!(self.actor, Read::Ready(None))
@@ -656,6 +666,30 @@ impl Actors {
         }
         state.pending_viewport = viewport;
         self.shared.request_locked(&mut state)
+    }
+
+    /// Resolves once a Refresh has ended: the first page, the running sample and every read of the selected actor have
+    /// answered or failed.
+    pub fn reloaded(&self) -> impl Future<Output = ()> + Send + 'static {
+        let (mut list, mut pane) = (self.list(), self.pane());
+        async move {
+            loop {
+                let busy = {
+                    let list = list.borrow_and_update();
+                    list.paging == Paging::Loading || list.running == Running::Loading
+                } || pane.borrow_and_update().loading();
+                if !busy {
+                    return;
+                }
+                let changed = tokio::select! {
+                    changed = list.changed() => changed,
+                    changed = pane.changed() => changed,
+                };
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
     }
 
     /// The outline's viewport as the view last reported it, for a soft refresh started away from the view.

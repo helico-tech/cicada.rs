@@ -51,7 +51,7 @@ impl FakePages {
 }
 
 impl Pages for FakePages {
-    fn soft_refresh(&self, section: Section) -> Done {
+    fn soft_refresh(&self, section: Section, _: u64) -> Done {
         self.refreshes.lock().unwrap().push((section, Instant::now()));
         let Some(length) = *self.length.lock().unwrap() else { return Done::ready() };
         let (ended, done) = Done::channel();
@@ -90,7 +90,7 @@ async fn start_with(section: Section, search: &str, pages: Arc<FakePages>) -> Fi
     let (source, mut opened) = Channel::new();
     let weak = Arc::downgrade(&pages);
     let live = Live::new(&Handle::current(), weak, DEBOUNCE);
-    live.show(section, search);
+    live.show(section, search, 0);
     live.use_source(Some(source.clone()));
     let first = opened.recv().await.unwrap();
     (live, source, opened, first, pages)
@@ -111,7 +111,7 @@ async fn one_stream_follows_the_page_and_its_prefix() {
     assert_eq!(first.prefix, "counter/");
 
     // A new prefix waits for the search to settle; the stream before stays open meanwhile.
-    live.show(Section::Actors, "counter/a");
+    live.show(Section::Actors, "counter/a", 0);
     sleep(DEBOUNCE - Duration::from_millis(10)).await;
     assert!(opened.try_recv().is_err());
     assert!(!first.hints.is_closed());
@@ -121,14 +121,14 @@ async fn one_stream_follows_the_page_and_its_prefix() {
 
     // A page switch opens the next stream at once; the Overview follows every actor.
     let switched = Instant::now();
-    live.show(Section::Overview, "");
+    live.show(Section::Overview, "", 0);
     let overview = opened.recv().await.unwrap();
     assert_eq!((overview.prefix.as_str(), overview.at), ("", switched));
     assert!(next.hints.is_closed());
 
     // Messages, Running Turns and Outcomes subscribe to their search prefix too.
     for section in [Section::Messages, Section::RunningTurns, Section::Outcomes] {
-        live.show(section, "sync/");
+        live.show(section, "sync/", 0);
         assert_eq!(opened.recv().await.unwrap().prefix, "sync/");
     }
 }
@@ -138,7 +138,7 @@ async fn a_local_filter_leaves_the_stream_alone() {
     for section in [Section::Types, Section::Watches, Section::Nodes] {
         let (live, _source, mut opened, first, _pages) = start(section, "").await;
         assert_eq!(first.prefix, "");
-        live.show(section, "counter");
+        live.show(section, "counter", 0);
         sleep(DEBOUNCE * 2).await;
         no_try(&mut opened).await;
         assert!(!first.hints.is_closed());
@@ -148,9 +148,9 @@ async fn a_local_filter_leaves_the_stream_alone() {
 #[tokio::test(start_paused = true)]
 async fn a_prefix_typed_back_before_the_debounce_keeps_the_stream() {
     let (live, _source, mut opened, first, _pages) = start(Section::Actors, "counter/").await;
-    live.show(Section::Actors, "counter/a");
+    live.show(Section::Actors, "counter/a", 0);
     sleep(Duration::from_millis(100)).await;
-    live.show(Section::Actors, "counter/");
+    live.show(Section::Actors, "counter/", 0);
     sleep(DEBOUNCE * 2).await;
     no_try(&mut opened).await;
     assert!(!first.hints.is_closed());
@@ -377,7 +377,7 @@ async fn pause_closes_the_stream_drops_the_batch_and_cancels_a_refresh_in_flight
     assert_eq!(*status.borrow(), LiveStatus::Paused);
 
     // Nothing reloads by itself: no batch, no timer, no stream, also across a page switch and a context switch.
-    live.show(Section::Actors, "");
+    live.show(Section::Actors, "", 0);
     live.use_source(Some(Channel::new().0));
     sleep(FALLBACK * 4).await;
     assert_eq!(pages.count(), 1);
@@ -446,13 +446,13 @@ async fn the_timer_after_a_manual_reload_counts_from_its_end() {
 #[tokio::test(start_paused = true)]
 async fn a_prefix_waiting_for_the_debounce_survives_a_pause_and_a_context_switch() {
     let (live, _source, mut opened, _first, _pages) = start(Section::Actors, "counter/").await;
-    live.show(Section::Actors, "counter/a");
+    live.show(Section::Actors, "counter/a", 0);
     settle().await;
     live.pause();
     live.resume();
     assert_eq!(opened.recv().await.unwrap().prefix, "counter/a", "resume follows the prefix typed last");
 
-    live.show(Section::Actors, "counter/b");
+    live.show(Section::Actors, "counter/b", 0);
     settle().await;
     let (other, mut other_opened) = Channel::new();
     live.use_source(Some(other));
@@ -493,4 +493,38 @@ async fn nothing_starts_once_the_model_is_stopped() {
     live.stop();
     sleep(FALLBACK * 2).await;
     assert_eq!(pages.count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_from_before_a_pause_and_resume_never_starts_uncancelled() {
+    for _ in 0..30 {
+        let length = Duration::from_secs(2);
+        let (live, _source, _opened, first, pages) =
+            start_with(Section::Watches, "", FakePages::new(Some(length))).await;
+        hint(&first, "counter/a");
+        // The batch falls due as the user pauses and resumes, before the model's task has seen either.
+        sleep(GATHER).await;
+        live.pause();
+        live.resume();
+        assert!(!live.gate_open(), "closed until the model's task has handled the resume");
+        sleep(Duration::from_secs(1)).await;
+        assert!(live.gate_open());
+        let (started, cancelled) = (pages.count(), pages.cancels.lock().unwrap().len());
+        assert_eq!(started, cancelled, "every refresh of the old batch was cancelled");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_page_does_not_wait_for_the_reload_of_the_page_left() {
+    let pages = FakePages::new(LENGTH);
+    *pages.reload.lock().unwrap() = Duration::from_secs(60);
+    let (live, _source, mut opened, _first, pages) = start_with(Section::Actors, "", pages).await;
+    live.refreshed(Section::Actors);
+    live.show(Section::Nodes, "", 1);
+    let nodes = opened.recv().await.unwrap();
+    let resync = Instant::now();
+    nodes.hints.send(Ok(Change::Resync)).unwrap();
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(pages.times(), [resync + GATHER]);
+    assert_eq!(pages.refreshes.lock().unwrap()[0].0, Section::Nodes);
 }

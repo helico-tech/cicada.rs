@@ -66,7 +66,7 @@ async fn a_real_change_starts_the_actors_soft_refresh_within_a_second_of_its_hin
     let pages: Arc<dyn Pages> = session.clone();
     let live = Live::new(&Handle::current(), Arc::downgrade(&pages), Limits::DEFAULT.debounce);
     let received = Received::default();
-    live.show(Section::Actors, "");
+    live.show(Section::Actors, "", session.visit().1);
     live.use_source(Some(Tap { client: server.client.clone(), received: received.clone() }));
     let mut status = live.status();
     view_until(&mut status, |status| *status == LiveStatus::Live).await;

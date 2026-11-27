@@ -218,8 +218,8 @@ struct Controller {
     /// The live updates of the page on screen, and their state for the pill.
     live: Live,
     live_status: RefCell<watch::Receiver<LiveStatus>>,
-    /// The page and search text, and the context, the live model was last told about.
-    live_screen: RefCell<Option<(Section, String)>>,
+    /// The page, search text and visit, and the context, the live model was last told about.
+    live_screen: RefCell<Option<(Section, String, u64)>>,
     live_context: Cell<Option<u64>>,
     /// True while the user has paused live updates.
     live_paused: Cell<bool>,
@@ -1282,9 +1282,9 @@ impl Target {
             return;
         }
         let section = c.navigation.borrow().current();
-        let screen = (section, self.search_prefix(section).unwrap_or_default());
+        let screen = (section, self.search_prefix(section).unwrap_or_default(), c.session.visit().1);
         if c.live_screen.borrow().as_ref() != Some(&screen) {
-            c.live.show(screen.0, &screen.1);
+            c.live.show(screen.0, &screen.1, screen.2);
             c.live_screen.replace(Some(screen));
         }
         let (context, client) = c.session.client();

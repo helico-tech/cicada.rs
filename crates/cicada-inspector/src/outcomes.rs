@@ -445,6 +445,38 @@ impl Outcomes {
         state.abort(before);
     }
 
+    /// Resolves once a Refresh has ended: the first page, the failed count, and a linked message and the messages it
+    /// caused have answered or failed.
+    pub fn reloaded(&self) -> impl Future<Output = ()> + Send + 'static {
+        let shared = self.shared.clone();
+        let (mut list, mut pane, mut count) = (self.list(), self.pane(), self.count());
+        async move {
+            loop {
+                let busy = list.borrow_and_update().paging == Paging::Loading
+                    || {
+                        let pane = pane.borrow_and_update();
+                        matches!(pane.subject, Some(Subject::Linked(_, Read::Loading)))
+                            || pane.caused.paging == Paging::Loading
+                    }
+                    || {
+                        count.borrow_and_update();
+                        shared.lock().count_task.is_some()
+                    };
+                if !busy {
+                    return;
+                }
+                let changed = tokio::select! {
+                    changed = list.changed() => changed,
+                    changed = pane.changed() => changed,
+                    changed = count.changed() => changed,
+                };
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
     /// A key press in the search field: the rows go at once, and the new prefix is read once the field has been
     /// still for `limits.debounce`. A selected outcome of an actor outside the prefix is unselected, and one that the
     /// new pages do not hold once they are all read.

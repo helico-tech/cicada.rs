@@ -81,7 +81,7 @@ struct State {
     #[cfg(test)]
     formatted: usize,
     #[cfg(test)]
-    hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    hold: std::collections::VecDeque<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 impl State {
@@ -257,28 +257,43 @@ impl Shared {
     }
 
     fn format_if_needed(self: &Arc<Self>, state: &mut State) {
-        self.format(state, None);
-    }
-
-    /// Formats the pane's schema off the main thread, unless one runs, the pane is hidden or it is formatted. With an
-    /// owner, the soft refresh `ticket` that changed the pane from `before`, the result applies only while that
-    /// refresh is current: once it is cancelled the pane is put back as it was before. The refresh awaits the
-    /// returned task.
-    fn format(self: &Arc<Self>, state: &mut State, owner: Option<(u64, TypePane)>) -> Option<JoinHandle<()>> {
         if state.formatting || !state.pane_visible || state.formatted_generation == Some(state.pane_generation) {
-            return None;
+            return;
         }
         let (row, schema) = {
             let pane = self.pane.borrow();
-            let row = pane.row.clone()?;
+            let Some(row) = pane.row.clone() else { return };
             (row, pane.schema)
         };
         state.formatting = true;
         let generation = state.pane_generation;
-        #[cfg(test)]
-        let hold = state.hold.take();
+        let format = self.formatter(state, row, schema);
         let shared = self.clone();
-        Some(self.handle.spawn_blocking(move || {
+        self.handle.spawn_blocking(move || {
+            let json = format();
+            let mut state = shared.state.lock().expect("types");
+            state.formatting = false;
+            if state.pane_generation == generation {
+                state.formatted_generation = Some(generation);
+                shared.pane.send_modify(|pane| pane.json = Some(json));
+            } else {
+                shared.format_if_needed(&mut state);
+            }
+        });
+    }
+
+    /// Formats the schema `schema` of `row` as highlighted JSON, for a blocking thread; tests can hold it and count it.
+    fn formatter(
+        self: &Arc<Self>,
+        state: &mut State,
+        row: Arc<TypeView>,
+        schema: usize,
+    ) -> impl FnOnce() -> Arc<Json> + Send + use<> {
+        #[cfg(test)]
+        let (hold, shared) = (state.hold.pop_front(), self.clone());
+        #[cfg(not(test))]
+        let _ = (state, self);
+        move || {
             #[cfg(test)]
             if let Some((arrived, release)) = hold {
                 let _ = arrived.send(());
@@ -286,25 +301,12 @@ impl Shared {
             }
             let value = if schema == 0 { &row.state } else { row.messages.values().nth(schema - 1).unwrap() };
             let json = Arc::new(json::format(value));
-            let mut state = shared.state.lock().expect("types");
-            state.formatting = false;
             #[cfg(test)]
             {
-                state.formatted += 1;
+                shared.state.lock().expect("types").formatted += 1;
             }
-            if state.pane_generation != generation {
-                shared.format_if_needed(&mut state);
-            } else if let Some((_, before)) = owner.filter(|(ticket, _)| !state.refresh.current(*ticket)) {
-                // The refresh was cancelled, by a pause or by leaving the page: none of its pane applies.
-                state.pane_generation += 1;
-                state.formatted_generation = before.json.is_some().then_some(state.pane_generation);
-                shared.pane.send_replace(before);
-                shared.format_if_needed(&mut state);
-            } else {
-                state.formatted_generation = Some(generation);
-                shared.pane.send_modify(|pane| pane.json = Some(json));
-            }
-        }))
+            json
+        }
     }
 }
 
@@ -341,22 +343,34 @@ impl RefreshPage for Shared {
             client
         };
         let answer = budget.read(client.types()).await;
-        let formatting = self.land_types(&mut self.lock_refresh(), ticket, answer);
-        // The refresh ends with its formatting, so a pause until then drops it.
-        if let Some(formatting) = formatting {
-            let _ = formatting.await;
+        let Some((generation, pane, format)) = self.land_types(&mut self.lock_refresh(), ticket, answer) else {
+            return;
+        };
+        // The pane keeps showing the type as it was, its schema menu included, until the new one is formatted; then
+        // the type, its menu and its JSON show together, only while this refresh and the pane are still current.
+        let Ok(json) = self.handle.spawn_blocking(format).await else { return };
+        let mut state = self.lock_refresh();
+        if state.refresh.current(ticket) && state.pane_generation == generation {
+            state.pane_generation += 1;
+            state.formatted_generation = Some(state.pane_generation);
+            self.pane.send_replace(TypePane { json: Some(json), ..pane });
         }
     }
 }
 
+/// A soft refresh's new pane for the selected type: the pane generation it replaces, the pane without its JSON, and
+/// the formatting of that JSON.
+type RefreshedPane = (u64, TypePane, Box<dyn FnOnce() -> Arc<Json> + Send>);
+
 impl Shared {
-    /// Lands a soft refresh's types and keeps the pane's type and schema by name; returns the formatting it started.
+    /// Lands a soft refresh's types and keeps the pane's type and schema by name. A selected type that changed is
+    /// returned for the refresh to format and publish; one that is gone empties the pane at once.
     fn land_types(
         self: &Arc<Self>,
         state: &mut State,
         ticket: u64,
         answer: Part<Vec<TypeView>>,
-    ) -> Option<JoinHandle<()>> {
+    ) -> Option<RefreshedPane> {
         if !state.refresh.current(ticket) {
             return None;
         }
@@ -371,7 +385,7 @@ impl Shared {
         };
         self.replace_types(state, rows);
         let before = self.pane.borrow().clone();
-        let previous = before.row.clone()?;
+        let previous = before.row?;
         let row = self.list.borrow().rows.iter().find(|row| row.name == previous.name).cloned();
         if row.as_ref() == Some(&previous) {
             return None;
@@ -383,10 +397,13 @@ impl Shared {
             .zip(message)
             .and_then(|(row, name)| row.messages.keys().position(|key| key == name))
             .map_or(0, |index| index + 1);
-        let json = row.as_ref().filter(|_| message.is_none() || schema > 0).and(before.json.clone());
-        state.pane_generation += 1;
-        self.pane.send_replace(TypePane { row, schema, json });
-        self.format(state, Some((ticket, before)))
+        let Some(row) = row else {
+            state.pane_generation += 1;
+            self.pane.send_replace(TypePane::default());
+            return None;
+        };
+        let format = Box::new(self.formatter(state, row.clone(), schema));
+        Some((state.pane_generation, TypePane { row: Some(row), schema, json: None }, format))
     }
 }
 
@@ -401,11 +418,11 @@ impl Types {
         self.shared.state.lock().expect("types").formatted
     }
 
-    /// Holds the next formatting until the test releases it.
+    /// Holds the next formatting not yet held until the test releases it.
     pub fn hold_format(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (arrived, arrival) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
-        self.shared.state.lock().expect("types").hold = Some((arrived, released));
+        self.shared.state.lock().expect("types").hold.push_back((arrived, released));
         (arrival, release)
     }
 }

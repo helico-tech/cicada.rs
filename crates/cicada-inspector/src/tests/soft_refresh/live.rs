@@ -69,7 +69,7 @@ async fn live_session(
     let weak: Weak<dyn Pages> = Arc::downgrade(&pages);
     let live = Live::new(&Handle::current(), weak, Duration::ZERO);
     let (source, opened) = Channel::new();
-    live.show(section, "");
+    live.show(section, "", session.visit().1);
     live.use_source(Some(source));
     (session, nav, live, opened)
 }
@@ -189,7 +189,7 @@ async fn the_timer_catches_an_actors_child_outside_the_prefix() {
         view_until(&mut list, |list| list.children.get(&a).is_some_and(|page| page.rows.len() == 1)).await;
         model.set_viewport(OutlineViewport { generation, visible: 0..2, open: vec![(0, a.clone())] });
         // The stream of the prefix `counter/` cannot carry a hint for `sync/y`.
-        live.show(Section::Actors, "counter/");
+        live.show(Section::Actors, "counter/", session.visit().1);
         settle().await;
         tokio::time::advance(FALLBACK + Duration::from_secs(1)).await;
         let view = view_until(&mut list, |list| list.children[&a].rows.len() == 2).await;
@@ -429,6 +429,81 @@ async fn retry_of_a_child_page_marks_what_the_refresh_it_cancels_dropped() {
         assert_eq!(view.rows.len(), 2, "the cancelled refresh's rows were dropped");
         assert!(view.footer().is_some_and(|footer| footer.contains("not refreshed")), "{:?}", view.footer());
         assert!(view.children[&a].not_refreshed(), "the chosen parent's read was dropped");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_live_refresh_starts_after_leaving_a_page_and_coming_back() {
+    with_clock(async {
+        let script = Script::new([(ROOTS, vec![roots(&["a"]), roots(&["a", "b"])]), (SAMPLE, vec![page([], None)])]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, mut nav, _live, mut opened) = live_session(&server.url, &dir, Section::Actors).await;
+        overview_read(&session).await;
+        let model = session.actors();
+        let mut list = model.list();
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 1).await;
+        let stream = opened.recv().await.unwrap();
+
+        // Actors → Nodes → Actors before the live model hears of either switch, as its old batch falls due.
+        for section in [Section::Nodes, Section::Actors] {
+            session.navigate(&mut nav, |n| {
+                n.select(section);
+                true
+            });
+        }
+        stream.hints.send(Ok(Change::Resync)).unwrap();
+        settle().await;
+        tokio::time::advance(GATHER).await;
+        settle().await;
+        assert_eq!(script.remaining(ROOTS), 1, "the old visit's batch read nothing");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_after_a_manual_reload_waits_for_its_pane_and_sample() {
+    with_clock(async {
+        let (held, held_in, held_out) = later(details(2));
+        let three = |fake: Fake| vec![fake.clone(), fake.clone(), fake];
+        let script = Script::new([
+            (ROOTS, three(roots(&["a"]))),
+            (SAMPLE, three(page([], None))),
+            (DETAILS, vec![details(1), held, details(3)]),
+            (TURN, three(Fake::Answer(StatusCode::OK, turns::turn("counter/a", "m")))),
+            (MAILBOX, three(page([], None))),
+            (WATCHING, three(page([], None))),
+            (WATCHED_BY, three(page([], None))),
+        ]);
+        let server = serve(&actors().await, script.rule(), Duration::ZERO).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, _nav, live, _opened) = live_session(&server.url, &dir, Section::Actors).await;
+        overview_read(&session).await;
+        let model = session.actors();
+        let (mut list, mut pane) = (model.list(), model.pane());
+        model.show();
+        view_until(&mut list, |list| list.rows.len() == 1).await;
+        model.select(Some(root("a")));
+        view_until(&mut pane, |pane| version(pane) == Some(1)).await;
+
+        // ⌘R: the list answers at once, the selected actor's read answers 8 s later.
+        model.refresh();
+        live.refreshed(Section::Actors);
+        held_in.notified().await;
+        view_until(&mut list, |list| list.rows.len() == 1 && list.paging == Paging::Idle).await;
+        settle().await;
+        tokio::time::advance(Duration::from_secs(8)).await;
+        held_out.notify_one();
+        view_until(&mut pane, |pane| version(pane) == Some(2)).await;
+        settle().await;
+        tokio::time::advance(FALLBACK - Duration::from_secs(8)).await;
+        settle().await;
+        assert_eq!(script.remaining(ROOTS), 1, "no timer 30 s after the list answered");
+        tokio::time::advance(Duration::from_secs(8)).await;
+        view_until(&mut pane, |pane| version(pane) == Some(3)).await;
+        assert_eq!(script.remaining(ROOTS), 0, "the timer refreshed 30 s after the whole reload");
     })
     .await;
 }

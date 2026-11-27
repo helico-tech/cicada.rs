@@ -63,8 +63,9 @@ impl ChangeSource for ActorClient {
 
 /// What the live model refreshes: the session's pages.
 pub(crate) trait Pages: Send + Sync {
-    /// Starts a soft refresh of `section`; [`Done`] resolves when the attempt ends, also when it is skipped.
-    fn soft_refresh(&self, section: Section) -> Done;
+    /// Starts a soft refresh of `section` for the visit [`Live::show`] named; [`Done`] resolves when the attempt ends,
+    /// also when it is skipped, as it is once that visit has ended.
+    fn soft_refresh(&self, section: Section, visit: u64) -> Done;
     /// Cancels the soft refresh of `section` and drops its results.
     fn cancel_soft_refresh(&self, section: Section);
     /// The actor the pane of `section` shows.
@@ -77,8 +78,8 @@ pub(crate) trait Pages: Send + Sync {
 pub(crate) type Reloaded = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 impl Pages for Session {
-    fn soft_refresh(&self, section: Section) -> Done {
-        self.live_refresh(section)
+    fn soft_refresh(&self, section: Section, visit: u64) -> Done {
+        self.live_refresh(section, visit)
     }
 
     fn cancel_soft_refresh(&self, section: Section) {
@@ -157,17 +158,21 @@ pub(crate) fn subscription(section: Section, search: &str) -> &str {
 
 enum Command<S> {
     Source(Option<Arc<S>>),
-    Show(Section, String),
+    Show(Section, String, u64),
     Pause,
-    Resume,
+    Resume(u64),
     Refreshed(Section),
 }
 
 /// What the caller's thread decides at once, before the model's task sees the command: no soft refresh starts while
-/// paused or after the stop, and pausing cancels the one that runs.
+/// paused or after the stop, and pausing cancels the one that runs. Only the model's task opens it again, once it has
+/// handled the resume of the latest pause.
 #[derive(Default)]
 struct Gate {
-    paused: bool,
+    /// The pauses so far.
+    pauses: u64,
+    /// The pauses the model's task has resumed from: the gate is open while this equals `pauses`.
+    resumed: u64,
     stopped: bool,
     /// The page of the soft refresh this model started, until its attempt ends.
     started: Option<Section>,
@@ -197,6 +202,7 @@ impl<S: ChangeSource> Live<S> {
             debounce,
             source: None,
             section: Section::Overview,
+            visit: 0,
             prefix: String::new(),
             pending_prefix: None,
             paused: false,
@@ -215,10 +221,10 @@ impl<S: ChangeSource> Live<S> {
         let _ = self.commands.send(Command::Source(source.map(Arc::new)));
     }
 
-    /// The page on screen and its search text. A page switch reopens the stream at once; a new prefix of the same
-    /// page after the debounce.
-    pub fn show(&self, section: Section, search: &str) {
-        let _ = self.commands.send(Command::Show(section, subscription(section, search).to_owned()));
+    /// The page on screen, its search text and its visit, a number that grows with every page switch. A page switch
+    /// reopens the stream at once; a new prefix of the same page after the debounce.
+    pub fn show(&self, section: Section, search: &str, visit: u64) {
+        let _ = self.commands.send(Command::Show(section, subscription(section, search).to_owned(), visit));
     }
 
     /// Pauses automatic refreshes: the stream closes, the timer stops, the gathered hints are dropped and a soft
@@ -226,7 +232,7 @@ impl<S: ChangeSource> Live<S> {
     /// The soft refresh is cancelled before this returns, so none of its results applies after the click.
     pub fn pause(&self) {
         let mut gate = self.gate.lock().expect("live gate");
-        gate.paused = true;
+        gate.pauses += 1;
         if let Some(section) = gate.started.take()
             && let Some(pages) = self.pages.upgrade()
         {
@@ -236,10 +242,11 @@ impl<S: ChangeSource> Live<S> {
         let _ = self.commands.send(Command::Pause);
     }
 
-    /// Resumes: a stream opens, and its first `resync` runs one soft refresh.
+    /// Resumes: a stream opens, and its first `resync` runs one soft refresh. Nothing starts before the model's task
+    /// has handled this, so a batch from before the pause never does.
     pub fn resume(&self) {
-        self.gate.lock().expect("live gate").paused = false;
-        let _ = self.commands.send(Command::Resume);
+        let pauses = self.gate.lock().expect("live gate").pauses;
+        let _ = self.commands.send(Command::Resume(pauses));
     }
 
     /// A manual Refresh (⌘R) of `section` started: the timer starts again from the end of its reload, unless paused.
@@ -252,6 +259,13 @@ impl<S: ChangeSource> Live<S> {
     pub fn stop(&self) {
         self.gate.lock().expect("live gate").stopped = true;
         self.task.abort();
+    }
+
+    /// True while the gate lets a soft refresh start.
+    #[cfg(test)]
+    pub fn gate_open(&self) -> bool {
+        let gate = self.gate.lock().expect("live gate");
+        gate.pauses == gate.resumed && !gate.stopped
     }
 
     /// The pill's states, newest last.
@@ -302,6 +316,8 @@ struct Driver<S> {
     debounce: Duration,
     source: Option<Arc<S>>,
     section: Section,
+    /// The visit of `section` that [`Live::show`] named.
+    visit: u64,
     /// The prefix subscribed to.
     prefix: String,
     /// A new prefix of the same page and when it is followed.
@@ -428,32 +444,46 @@ impl<S: ChangeSource> Driver<S> {
                 self.follow_pending_prefix();
                 self.restart();
             }
-            Command::Show(section, prefix) if section != self.section => {
-                self.section = section;
-                self.prefix = prefix;
+            Command::Show(section, prefix, visit) if section != self.section || visit != self.visit => {
+                // The new page does not wait for a reload of the page left.
+                (self.section, self.prefix, self.visit) = (section, prefix, visit);
                 self.pending_prefix = None;
+                self.reloading = None;
                 self.restart();
             }
-            Command::Pause if !self.paused => {
-                // `Live::pause` cancelled the refresh already.
-                self.paused = true;
-                self.refreshing = None;
-                self.follow_pending_prefix();
-                self.restart();
+            Command::Pause => {
+                // `Live::pause` cancelled the refresh it knew of; one started before it is cancelled too.
+                let started = self.gate.lock().expect("live gate").started.take();
+                if let Some(section) = started
+                    && let Some(pages) = self.pages.upgrade()
+                {
+                    pages.cancel_soft_refresh(section);
+                }
+                if !self.paused {
+                    self.paused = true;
+                    self.refreshing = None;
+                    self.follow_pending_prefix();
+                    self.restart();
+                }
             }
-            Command::Resume if self.paused => {
-                self.paused = false;
-                self.restart();
+            Command::Resume(pauses) => {
+                let mut gate = self.gate.lock().expect("live gate");
+                gate.resumed = gate.resumed.max(pauses);
+                let latest = gate.resumed == gate.pauses;
+                drop(gate);
+                if self.paused && latest {
+                    self.paused = false;
+                    self.restart();
+                }
             }
-            Command::Pause | Command::Resume => {}
             Command::Refreshed(section) => {
                 self.timer = None;
                 if let Some(pages) = self.pages.upgrade() {
                     self.reloading = Some(pages.reloaded(section));
                 }
             }
-            Command::Show(_, prefix) if prefix == self.prefix => self.pending_prefix = None,
-            Command::Show(_, prefix) => {
+            Command::Show(_, prefix, _) if prefix == self.prefix => self.pending_prefix = None,
+            Command::Show(_, prefix, _) => {
                 if self.pending_prefix.as_ref().is_none_or(|(pending, _)| *pending != prefix) {
                     self.pending_prefix = Some((prefix, Instant::now() + self.debounce));
                 }
@@ -519,11 +549,11 @@ impl<S: ChangeSource> Driver<S> {
         self.timer = None;
         let Some(pages) = self.pages.upgrade() else { return };
         let mut gate = self.gate.lock().expect("live gate");
-        if gate.paused || gate.stopped {
+        if gate.pauses != gate.resumed || gate.stopped {
             return;
         }
         gate.started = Some(self.section);
-        self.refreshing = Some(pages.soft_refresh(self.section));
+        self.refreshing = Some(pages.soft_refresh(self.section, self.visit));
     }
 
     /// Arms the timer [`FALLBACK`] from now while there is a source to follow and the updates are not paused.
