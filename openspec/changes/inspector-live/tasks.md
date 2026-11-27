@@ -14,8 +14,10 @@ of both soft-refresh changes; rebase onto them when they landed first). Follow `
   skipped one too, and running while reconnecting (decisions 2–5). Verify: the batch and timer tests, including recovery
   after a Retry with no hints.
 - [ ] 3. **Pause.** Pausing closes the stream, stops the timer, clears the batch and fences an automatic refresh in
-  flight; resume's first `resync` runs one; ⌘R works in every state and re-arms the timer (decision 6). Verify: the
-  pause tests.
+  flight; resume's first `resync` runs one; ⌘R works in every state and re-arms the timer (decision 6). A refresh
+  cancelled by pause or Retry marks the Actors page's root rows and the chosen parents whose reads it dropped "not
+  refreshed" (a code review note of `inspector-soft-refresh-actors`). Verify: the pause tests, and the marks after a
+  cancelled refresh.
 - [ ] 4. **The Live pill.** The toolbar pill: Live from the first valid event, Reconnecting with its tooltip, Paused;
   clicking toggles; every `unsafe` with its reason, borrows released before AppKit calls. Verify: `cargo build -p
   cicada-inspector`, `cargo clippy -p cicada-inspector --all-targets`, the in-process server test of a real change
