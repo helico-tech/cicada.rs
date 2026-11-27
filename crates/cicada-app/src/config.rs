@@ -467,7 +467,11 @@ impl std::fmt::Debug for Target {
 fn server_host(server: &str) -> Option<String> {
     let url = reqwest::Url::parse(server).ok()?;
     let host = url.host_str().filter(|host| !host.is_empty())?;
-    let port = url.port().or_else(|| url.port_or_known_default().filter(|_| names_port_digits(server)));
+    // Read the text as the parser does: without leading and trailing spaces and control characters, and without tabs
+    // and line breaks anywhere.
+    let written: String =
+        server.trim_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let port = url.port().or_else(|| url.port_or_known_default().filter(|_| names_port_digits(&written)));
     Some(port.map_or_else(|| host.to_owned(), |port| format!("{host}:{port}")))
 }
 
@@ -756,6 +760,8 @@ mod tests {
             ("empty", "https://bare.internal:"),
             ("slashes", "https:///odd.internal:8443/"),
             ("v6tls", "https://u:p@[::1]:443/"),
+            ("padded", " https://padded.internal:443 "),
+            ("broken-line", "https://line.internal:4\n43/"),
             ("broken", "not a url"),
         ] {
             config.contexts.insert(name.into(), Context { server: server.into(), ..Context::default() });
@@ -770,6 +776,12 @@ mod tests {
         assert_eq!(contexts.host("empty"), Some("bare.internal"), "no digits: no port");
         assert_eq!(contexts.host("slashes"), Some("odd.internal:8443"), "the parser's own port");
         assert_eq!(contexts.host("v6tls"), Some("[::1]:443"));
+        assert_eq!(contexts.host("padded"), Some("padded.internal:443"), "spaces around, as the parser trims them");
+        assert_eq!(
+            contexts.host("broken-line"),
+            Some("line.internal:443"),
+            "a line break inside, as the parser drops it"
+        );
         assert_eq!(contexts.host("broken"), None);
         assert_eq!(contexts.host("missing"), None);
         let shown = format!("{contexts:?}");
