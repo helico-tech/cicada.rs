@@ -34,8 +34,9 @@ menu match the boards, and follows `gui-mockup-boards`.
    second line. Registered Types with "K of T" on the right, Recent Turns with "N failed" on the right (none when 0).
    Then Open Inspector… (⌘I), Settings… (⌘,), Quit <app> (⌘Q).
 3. **Not connected (board Disconnected).** Header: "Not connected", the switch off. After a failed connection, a row
-   with the red icon: "Couldn't reach <context>" over "<error> at HH:MM" (the tray records when it failed; the error is
-   display text: credentials, URL queries and control characters removed, cut at 200 characters). No Running section and
+   with the red icon: "Couldn't reach <context>" over "<error> at HH:MM" (the tray records when it failed and the error's
+   root cause, the end of its source chain; a cause holding `@`, `:/`, `:\` or a scheme such as `https:` shows as
+   "Connection failed", otherwise the cause shows, cut at 200 characters). No Running section and
    no submenus. With no contexts at all the header says "Not connected · Run cicada config" and there is no Connect row.
    The Context rows: picking one selects it (the blue circle and the target of Connect) without connecting, also after a
    failure; the pick lives in `MenuControl`, starts from the config file's current context, survives the reload of the
@@ -49,7 +50,8 @@ menu match the boards, and follows `gui-mockup-boards`.
    · <error, first line, cut at 80>"), rescheduled after a failure (red cross as on board Running, "<type> · <error>,
    retry HH:MM", the retry's time, or the finish time plus a retry delay, or "retry now"), cancelled (grey, "<type> ·
    cancelled"), abandoned (red cross, "<type> · abandoned"); "Kept until the app quits" at the end. The "N failed" on
-   the Recent Turns row counts failed, abandoned and rescheduled turns, as board Main counts the retried one.
+   the Recent Turns row counts failed, abandoned and rescheduled turns, as board Main counts the retried one. An error
+   text that fails the same check shows as "failed".
 5. **Disconnecting (board Disconnecting).** Header: "Disconnecting from <context>…", the switch dimmed. Below it, once
    the worker was ready, a bar from when stopping began to the tray's deadline (`TrayState::Stopping::until`: the grace
    period plus the cancel timeout) with "Taking no new turns" and "N s left" to that deadline. The worker starts its

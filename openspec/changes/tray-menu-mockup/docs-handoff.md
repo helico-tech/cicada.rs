@@ -37,7 +37,9 @@ Disconnecting, Running and Registered), with the eight departures its design lis
   Settings.
 - **Recent Turns.** "Finished on this worker", newest first: done ("<type> · done in m:ss"), failed ("<type> ·
   <error's first line>"), retried after a failure ("<type> · <error>, retry HH:MM" or "retry now"), cancelled and
-  abandoned; "Kept until the app quits" at the end. "N failed" counts failed, retried and abandoned turns.
+  abandoned; "Kept until the app quits" at the end. "N failed" counts failed, retried and abandoned turns. An error
+  line that might hold an address or credentials (the check of the failure row) shows as "failed" ("failed, retry
+  HH:MM" for a retried turn).
 - **Status item.** A hexagon with a dot: filled while connected, hollow and dimmed otherwise (also while connecting
   and disconnecting).
 

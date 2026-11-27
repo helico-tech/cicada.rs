@@ -227,18 +227,23 @@ impl TrayState {
 /// What the failure row says when the cause might hold an address or credentials.
 pub(crate) const HIDDEN_FAILURE: &str = "Connection failed";
 
-/// The failure row's text: the failure's innermost cause, cut at [`FAILURE_LENGTH`], unless it might hold an address
-/// or credentials. Redacting inside free text cannot be made safe, as the URL parser accepts many forms and white
-/// space inside a URL, so a doubtful cause is not shown at all: one that, without its control characters, holds `@`, a
-/// `:` directly followed by `/` or `\`, or `http`, `https`, `ws` or `wss` (any case) directly followed by `:`.
-pub(crate) fn failure_text(cause: &str) -> String {
-    let bare: String = cause.chars().filter(|c| !c.is_control()).collect();
+/// Whether `text` might hold an address or credentials: whether, without its control characters, it holds `@`, a `:`
+/// directly followed by `/` or `\`, or `http`, `https`, `ws` or `wss` (any case) directly followed by `:`. Redacting
+/// inside free text cannot be made safe, as the URL parser accepts many forms and white space inside a URL, so the menu
+/// does not show such text at all.
+pub(crate) fn doubtful(text: &str) -> bool {
+    let bare: String = text.chars().filter(|c| !c.is_control()).collect();
     let lower = bare.to_lowercase();
-    let doubtful = bare.contains('@')
+    bare.contains('@')
         || bare.contains(":/")
         || bare.contains(":\\")
-        || ["http:", "https:", "ws:", "wss:"].iter().any(|scheme| lower.contains(scheme));
-    if doubtful { HIDDEN_FAILURE.to_owned() } else { plain_text(cause, FAILURE_LENGTH) }
+        || ["http:", "https:", "ws:", "wss:"].iter().any(|scheme| lower.contains(scheme))
+}
+
+/// The failure row's text: the failure's innermost cause, cut at [`FAILURE_LENGTH`], or [`HIDDEN_FAILURE`] when it is
+/// [`doubtful`].
+pub(crate) fn failure_text(cause: &str) -> String {
+    if doubtful(cause) { HIDDEN_FAILURE.to_owned() } else { plain_text(cause, FAILURE_LENGTH) }
 }
 
 /// `text` with each run of control characters and white space made one space, cut at `limit` characters, the last an
@@ -337,7 +342,11 @@ fn running_row(turn: &RunningTurn, icon: Icon, now: Timestamp) -> RunningRow {
 /// A finished turn's row, and whether it counts as failed.
 fn recent_row(turn: &FinishedTurn, zone: FixedOffset) -> (RecentRow, bool) {
     let kind = &turn.turn.message_type;
-    let error = |error: &str| plain_text(error.lines().next().unwrap_or_default(), TURN_ERROR_LENGTH);
+    // The error's first line, cut at 80, or "failed" when it might hold an address or credentials.
+    let error = |error: &str| {
+        let line = error.lines().next().unwrap_or_default();
+        if doubtful(line) { "failed".to_owned() } else { plain_text(line, TURN_ERROR_LENGTH) }
+    };
     let (icon, line, failed) = match &turn.outcome {
         TurnResult::Committed(TurnOutcome::Done) => {
             (Icon::Done, format!("done in {}", minutes(between(turn.turn.claimed_at, turn.finished_at))), false)
@@ -912,6 +921,45 @@ mod tests {
         assert_eq!((failure.chars().count(), rows[4].1), (TURN_ERROR_LENGTH, Icon::Failed));
         assert!(failure.starts_with("first line xxx") && failure.ends_with('…') && !failure.contains("second"));
         assert_eq!(submenus.recent_right.as_deref(), Some("4 failed"), "failed, rescheduled and abandoned");
+    }
+
+    #[test]
+    fn a_recent_turn_whose_error_might_hold_an_address_says_failed() {
+        let committed = TurnResult::Committed;
+        let mut fixture = Fixture::new(online());
+        let failed = |reason: &str| committed(TurnOutcome::Failed(reason.into()));
+        let retry = |reason: &str| {
+            committed(TurnOutcome::Rescheduled { delivery: Delivery::At(at(14, 40, 0)), error: reason.into() })
+        };
+        fixture.turns.finished = vec![
+            finished(
+                "a/1",
+                "Fetch",
+                at(14, 0, 0),
+                at(14, 1, 0),
+                failed("GET https://user:secret@api.internal/x failed"),
+            ),
+            finished("a/2", "Fetch", at(14, 0, 0), at(14, 2, 0), retry("token for admin@host expired")),
+            finished("a/3", "Fetch", at(14, 0, 0), at(14, 3, 0), failed("cannot open C:\\keys\\token")),
+            finished("a/4", "Fetch", at(14, 0, 0), at(14, 4, 0), retry("WSS:relay closed")),
+            finished("a/5", "Fetch", at(14, 0, 0), at(14, 5, 0), failed("timed out\nhttps://user:secret@host")),
+            finished("a/6", "Fetch", at(14, 0, 0), at(14, 6, 0), TurnResult::Abandoned),
+        ];
+        let submenus = fixture.model().submenus.unwrap();
+        let rows: Vec<_> = submenus.recent.iter().map(|row| (row.row.subtitle.as_str(), row.row.icon)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("Fetch · abandoned", Icon::Failed),
+                ("Fetch · timed out", Icon::Failed),
+                ("Fetch · failed, retry 14:40", Icon::Failed),
+                ("Fetch · failed", Icon::Failed),
+                ("Fetch · failed, retry 14:40", Icon::Failed),
+                ("Fetch · failed", Icon::Failed),
+            ],
+            "only the first line is shown, and so only it is checked"
+        );
+        assert_eq!(submenus.recent_right.as_deref(), Some("6 failed"));
     }
 
     /// Board Disconnected, and the scenario "Not connected after a failure".
