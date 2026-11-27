@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
 use crate::actors::Actors;
+use crate::messages::Messages;
 
 /// What the inspector says where it cannot run.
 pub const NEEDS_MACOS: &str = "the Cicada inspector requires macOS 14 or later";
@@ -252,6 +253,7 @@ pub struct Session {
     handle: Handle,
     shared: Arc<Shared>,
     actors: Actors,
+    messages: Messages,
 }
 
 struct Shared {
@@ -275,12 +277,18 @@ impl Session {
     pub fn new(env: Env, handle: Handle, limits: Limits) -> Self {
         let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
         let actors = Actors::new(handle.clone(), limits);
-        Self { env, limits, handle, shared, actors }
+        let messages = Messages::new(handle.clone(), limits);
+        Self { env, limits, handle, shared, actors, messages }
     }
 
     /// The Actors page's reads, on the client of the context in use.
     pub fn actors(&self) -> &Actors {
         &self.actors
+    }
+
+    /// The Messages page's reads, on the client of the context in use.
+    pub fn messages(&self) -> &Messages {
+        &self.messages
     }
 
     /// The views, newest last.
@@ -289,7 +297,7 @@ impl Session {
     }
 
     /// Reads the contexts again, makes the client for `picked` (`None`: as `cicada` picks one) and refreshes. The
-    /// Overview, the Actors list and the pane of the context before are dropped.
+    /// Overview, the Actors and Messages lists and their panes of the context before are dropped.
     pub fn use_context(&self, picked: Option<String>) {
         let contexts = Contexts::load(&self.env);
         let target = cicada_app::context_client(&self.env, picked.as_deref());
@@ -320,6 +328,7 @@ impl Session {
                 }
             });
             self.actors.use_client(current.client.clone());
+            self.messages.use_client(current.client.clone());
         }
         self.refresh();
     }
@@ -350,10 +359,11 @@ impl Session {
         std::mem::take(&mut self.shared.current.lock().expect("inspector session").superseded)
     }
 
-    /// Cancels a refresh and the Actors page's reads, and discards their results; for a window that closes.
+    /// Cancels a refresh and the pages' reads, and discards their results; for a window that closes.
     pub fn stop(&self) {
         self.shared.current.lock().expect("inspector session").supersede();
         self.actors.stop();
+        self.messages.stop();
         self.shared.view.send_modify(|view| view.refreshing = false);
     }
 }
@@ -385,7 +395,7 @@ pub enum Section {
     Overview,
     /// Actors (`inspector-actors`).
     Actors,
-    /// Pending messages.
+    /// Pending messages (`inspector-messages`).
     Messages,
     /// Running turns.
     RunningTurns,
@@ -420,7 +430,7 @@ impl Section {
 
     /// True for an item with a page; the others say "Coming soon" until their change lands.
     pub fn ready(self) -> bool {
-        matches!(self, Self::Overview | Self::Actors)
+        matches!(self, Self::Overview | Self::Actors | Self::Messages)
     }
 }
 

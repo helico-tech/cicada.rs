@@ -7,7 +7,7 @@ onto it when it landed first). Follow `design.md`; the spec is `specs/inspector/
 - [x] 1. **The root pager.** `pager.rs`: the Actors list's root paging factored out, with its generation, debounce,
   Retry and cancellation; Actors (with its children) on top of it (decision 1). Verify: every Actors test passes
   unchanged.
-- [ ] 2. **The Messages model.** `messages.rs`: `list_pending` under the prefix through the pager, the first row per id
+- [x] 2. **The Messages model.** `messages.rs`: `list_pending` under the prefix through the pager, the first row per id
   within a generation, the cursor advanced and paging rechecked after a page of only duplicates, even when the visible
   row count stays the same; the pane from the row, its payload formatted on selection only, the raw payload shared
   across view snapshots and a formatting result guarded by the selection (decisions 2 and 3). Verify: the Messages

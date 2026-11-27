@@ -5,6 +5,7 @@
 
 mod actors;
 mod json;
+mod messages;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -583,7 +584,7 @@ fn a_failed_stats_shows_its_error_on_the_tiles() {
     let tiles = tiles(&Part::Failed(error.clone()), chrono::Utc::now());
     assert!(tiles.iter().all(|tile| tile.error && tile.value == "—" && tile.note == error));
     let ready: Vec<_> = Section::BROWSE.into_iter().filter(|section| section.ready()).collect();
-    assert_eq!(ready, [Section::Actors]);
+    assert_eq!(ready, [Section::Actors, Section::Messages]);
     assert!(Section::Overview.ready());
     assert_eq!(crate::model::check_macos((13, 6, 0)), Err(crate::model::NEEDS_MACOS));
     assert_eq!(crate::model::check_macos((14, 0, 0)), Ok(()));
