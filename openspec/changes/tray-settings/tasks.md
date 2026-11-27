@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `worker-stop-now` (same c
 first). Follow `design.md` (eight decisions, five design review rounds in `.reviews/tray-settings.design.*`); the spec
 is `specs/menu-bar-tray/spec.md`. No ADR.
 
-- [ ] 1. **`ContextFile` in `cicada-app`.** The accessors, `set_context` and `set_server_and_token`, `use_context`,
+- [x] 1. **`ContextFile` in `cicada-app`.** The accessors, `set_context` and `set_server_and_token`, `use_context`,
   `save`, and `update` with the lock on the resolved target; sanitized parse errors in the shared loader; `Debug`
   redaction of tokens, header values and URL passwords in `ContextEntry`, `Config` and `Context`; the shared URL check;
   the `config` operator commands on it, their output unchanged (decisions 1, 2, 8). Verify: its tests (two threads'

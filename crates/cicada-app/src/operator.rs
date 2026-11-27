@@ -15,7 +15,7 @@ use crate::Env;
 use crate::cli::{
     Cancel, Cli, Command, ConfigCommand, Create, Delete, Describe, Get, Page, Retry, Selection, WatchArgs,
 };
-use crate::config::{self, Config, Overrides};
+use crate::config::{self, Config, ContextEntry, ContextFile, Overrides};
 use crate::output::{self, Format, list, one, structured};
 
 /// `error` and its causes, each cause only when the text so far does not already hold it (a `ClientError` repeats
@@ -264,40 +264,36 @@ fn config_command(
     env: &Env,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let path = config::path(env)?;
-    let mut config = Config::load(&path)?;
     match command {
         ConfigCommand::GetContexts => {
-            let rows: Vec<Vec<String>> = config
-                .contexts
-                .iter()
-                .map(|(name, c)| {
-                    let current = if config.current_context.as_ref() == Some(name) { "*" } else { "" };
-                    vec![current.to_owned(), name.clone(), c.server.clone()]
+            let file = ContextFile::load(env)?;
+            let rows: Vec<Vec<String>> = file
+                .names()
+                .map(|name| {
+                    let current = if file.current() == Some(name) { "*" } else { "" };
+                    let server = file.context(name).map(|c| c.server).unwrap_or_default();
+                    vec![current.to_owned(), name.to_owned(), server]
                 })
                 .collect();
             write!(out, "{}", output::table(&["CURRENT", "NAME", "SERVER"], &rows))?;
         }
         ConfigCommand::CurrentContext => {
-            let name = config
-                .current_context
+            let file = ContextFile::load(env)?;
+            let current = file
+                .current()
                 .with_context(|| format!("no current context; set one with `{name} config use-context`"))?;
-            writeln!(out, "{name}")?;
+            writeln!(out, "{current}")?;
         }
         ConfigCommand::UseContext { name } => {
-            if !config.contexts.contains_key(&name) {
-                bail!("no context '{name}' in {}", path.display());
-            }
-            config.current_context = Some(name.clone());
-            config.save(&path)?;
+            ContextFile::update(env, |file| file.use_context(&name))?;
             writeln!(out, "switched to context {name}")?;
         }
         ConfigCommand::SetContext { name, headers } => {
-            let server = server.context("set-context needs --server")?;
-            let context = config::Context { server, token, headers: headers.into_iter().collect() };
-            config.contexts.insert(name.clone(), context);
-            config.current_context.get_or_insert_with(|| name.clone());
-            config.save(&path)?;
+            let path = ContextFile::update(env, |file| {
+                let server = server.context("set-context needs --server")?;
+                file.set_context(&name, ContextEntry { server, token, headers: headers.into_iter().collect() });
+                Ok(file.path().to_owned())
+            })?;
             writeln!(out, "context {name} set in {}", path.display())?;
         }
     }
