@@ -461,20 +461,24 @@ impl std::fmt::Debug for Target {
 /// `url` with its password, if any, as `***`, read as a URL rather than scanned as text, so that no character of a
 /// password ends it early. A value that is not a URL with a host (`user:pw@host` reads as the scheme `user`) keeps
 /// only its scheme: `scheme://***`, else `***`.
-/// The host of `server`, with its port when the URL names one, its scheme's default port included: the parser drops a
-/// default port, so the authority of the text itself says whether one was named.
+/// The host of `server` and its port as the URL parser reads them. The port shows when the URL names one in digits,
+/// its scheme's default included, which the parser drops: `https://host:443` gives `host:443`, `https://host:` gives
+/// `host`.
 fn server_host(server: &str) -> Option<String> {
     let url = reqwest::Url::parse(server).ok()?;
     let host = url.host_str().filter(|host| !host.is_empty())?;
-    let authority = server.split_once("://").map_or("", |(_, rest)| rest);
-    let authority = &authority[..authority.find(['/', '?', '#']).unwrap_or(authority.len())];
+    let port = url.port().or_else(|| url.port_or_known_default().filter(|_| names_port_digits(server)));
+    Some(port.map_or_else(|| host.to_owned(), |port| format!("{host}:{port}")))
+}
+
+/// Whether the authority of `server` ends in `:` and digits, as the parser reads it: after the scheme and any slashes,
+/// up to a path, query or fragment, and after the last `@`.
+fn names_port_digits(server: &str) -> bool {
+    let rest = server.split_once(':').map_or("", |(_, rest)| rest).trim_start_matches(['/', '\\']);
+    let authority = &rest[..rest.find(['/', '\\', '?', '#']).unwrap_or(rest.len())];
     let address = &authority[authority.rfind('@').map_or(0, |at| at + 1)..];
     let after_host = address.rfind(']').map_or(address, |end| &address[end + 1..]);
-    let named = after_host.contains(':');
-    match url.port_or_known_default() {
-        Some(port) if named => Some(format!("{host}:{port}")),
-        _ => Some(host.to_owned()),
-    }
+    after_host.rsplit_once(':').is_some_and(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn redacted_url(url: &str) -> String {
@@ -749,6 +753,9 @@ mod tests {
             ("v6", "http://u@[::1]:9000/x"),
             ("tls", "https://actors.internal:443/api"),
             ("web", "http://u:p@web.internal:80"),
+            ("empty", "https://bare.internal:"),
+            ("slashes", "https:///odd.internal:8443/"),
+            ("v6tls", "https://u:p@[::1]:443/"),
             ("broken", "not a url"),
         ] {
             config.contexts.insert(name.into(), Context { server: server.into(), ..Context::default() });
@@ -760,6 +767,9 @@ mod tests {
         assert_eq!(contexts.host("v6"), Some("[::1]:9000"));
         assert_eq!(contexts.host("tls"), Some("actors.internal:443"), "a named default port is kept");
         assert_eq!(contexts.host("web"), Some("web.internal:80"));
+        assert_eq!(contexts.host("empty"), Some("bare.internal"), "no digits: no port");
+        assert_eq!(contexts.host("slashes"), Some("odd.internal:8443"), "the parser's own port");
+        assert_eq!(contexts.host("v6tls"), Some("[::1]:443"));
         assert_eq!(contexts.host("broken"), None);
         assert_eq!(contexts.host("missing"), None);
         let shown = format!("{contexts:?}");
