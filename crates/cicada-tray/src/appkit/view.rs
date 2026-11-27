@@ -4,15 +4,16 @@
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSAutoresizingMaskOptions, NSColor, NSControlSize, NSControlStateValue, NSControlStateValueOff,
-    NSControlStateValueOn, NSFont, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSMenuItemBadge, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSStatusBar, NSStatusBarButton, NSStatusItem, NSSwitch, NSTextAlignment, NSTextField,
-    NSVariableStatusItemLength, NSView,
+    NSAccessibility, NSAttributedStringNSStringDrawing, NSAutoresizingMaskOptions, NSColor, NSControlSize,
+    NSControlStateValue, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontAttributeName,
+    NSFontWeightSemibold, NSForegroundColorAttributeName, NSImage, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSMenuItemBadge, NSProgressIndicator, NSProgressIndicatorStyle, NSStatusBar, NSStatusBarButton, NSStatusItem,
+    NSSwitch, NSTextAlignment, NSTextField, NSVariableStatusItemLength, NSView,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use super::Target;
 use super::icons::{self, Icons};
@@ -95,7 +96,9 @@ impl MenuView {
         root.setMinimumWidth(WIDTH);
         let header = HeaderView::new(mtm);
         let failure = item(mtm, ns_string!(""), None, ns_string!(""));
-        let running_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Running"), mtm);
+        // A disabled item styled as the boards' headers, as a badge on a native section header may not draw.
+        let running_section = item(mtm, ns_string!("Running"), None, ns_string!(""));
+        running_section.setEnabled(false);
         let context_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Context"), mtm);
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
         let (recent, recent_item) = submenu(mtm, ns_string!("Recent Turns"));
@@ -233,11 +236,15 @@ impl MenuView {
         let mtm = target.mtm();
         let dark = icons::dark(mtm);
         let swapped = self.dark.replace(dark) != dark;
+        let (title_font, subtitle_font) = (title_font(), subtitle_font());
         let rich = |item: &NSMenuItem, row: &Row| {
             let (title, subtitle) = row_text(row, self.subtitles);
-            item.setTitle(&NSString::from_str(&title));
+            // As the boards' `text-overflow: ellipsis`: long text ends in "…" instead of widening the menu.
+            let width = if row.right.is_some() { TEXT } else { WIDE_TEXT };
+            item.setTitle(&NSString::from_str(&fit(&title, &title_font, width)));
             if self.subtitles {
-                item.setSubtitle(subtitle.map(|subtitle| NSString::from_str(&subtitle)).as_deref());
+                let subtitle = subtitle.map(|subtitle| NSString::from_str(&fit(&subtitle, &subtitle_font, width)));
+                item.setSubtitle(subtitle.as_deref());
             }
             item.setBadge(row.right.as_deref().map(badge).as_deref());
             item.setImage(Some(&self.icons.image(row.icon, dark)));
@@ -245,7 +252,9 @@ impl MenuView {
         };
 
         self.header.update(model.header, model.bar);
-        let mut shown = self.shown.borrow_mut();
+        // Every RefCell of the view is taken out for the render and put back at its end, so no borrow spans an AppKit
+        // call: a render that AppKit re-entered would find empty state and redraw, never panic.
+        let mut shown = self.shown.take();
         if shown.connected != model.connected {
             self.button.setImage(Some(&self.status_images[usize::from(model.connected)]));
             shown.connected = model.connected;
@@ -264,6 +273,7 @@ impl MenuView {
         if shown.running != running_header {
             if let Some((title, right)) = &running_header {
                 self.running_section.setTitle(&NSString::from_str(title));
+                self.running_section.setAttributedTitle(Some(&section_title(title)));
                 self.running_section.setBadge(Some(&badge(right)));
             }
             show(&self.running_section, running_header.is_some());
@@ -271,7 +281,7 @@ impl MenuView {
             shown.running = running_header;
         }
         let start = self.root.indexOfItem(&self.running_section) + 1;
-        let mut running = self.running_rows.borrow_mut();
+        let mut running = self.running_rows.take();
         running.sync(
             &self.root,
             start,
@@ -283,13 +293,13 @@ impl MenuView {
         if swapped {
             running.items.iter().for_each(|(row, item)| rich(item, &row.row));
         }
-        drop(running);
+        self.running_rows.replace(running);
 
         let contexts = model.contexts.unwrap_or_default();
         show(&self.context_section, !contexts.is_empty());
         show(&self.context_separator, !contexts.is_empty());
         let start = self.root.indexOfItem(&self.context_section) + 1;
-        let mut rows = self.context_rows.borrow_mut();
+        let mut rows = self.context_rows.take();
         rows.sync(
             &self.root,
             start,
@@ -317,7 +327,7 @@ impl MenuView {
             }
             shown.contexts_enabled = model.contexts_enabled;
         }
-        drop(rows);
+        self.context_rows.replace(rows);
 
         let submenus = model.submenus;
         for item in [&self.registered_item, &self.recent_item, &self.submenus_separator] {
@@ -334,18 +344,20 @@ impl MenuView {
             self.recent_item.setBadge(recent_right.as_deref().map(badge).as_deref());
             shown.recent_right = recent_right;
         }
-        self.registered_rows.borrow_mut().sync(
+        let mut registered_rows = self.registered_rows.take();
+        registered_rows.sync(
             &self.registered,
             1,
             types,
             |old, new| old.name == new.name,
-            |row| item(mtm, &NSString::from_str(row.name), None, ns_string!("")),
+            |row| item(mtm, &NSString::from_str(&fit(row.name, &title_font, TEXT)), None, ns_string!("")),
             |item, row| {
                 item.setState(mark(row.runs));
                 item.setBadge(row.right.as_deref().map(badge).as_deref());
             },
         );
-        let mut recent_rows = self.recent_rows.borrow_mut();
+        self.registered_rows.replace(registered_rows);
+        let mut recent_rows = self.recent_rows.take();
         recent_rows.sync(
             &self.recent,
             1,
@@ -357,11 +369,11 @@ impl MenuView {
         if swapped {
             recent_rows.items.iter().for_each(|(row, item)| rich(item, &row.row));
         }
-        drop(recent_rows);
+        self.recent_rows.replace(recent_rows);
 
         if shown.connect != model.connect {
             if let Some(title) = &model.connect {
-                self.connect.setTitle(&NSString::from_str(title));
+                self.connect.setTitle(&NSString::from_str(&fit(title, &title_font, PLAIN_TEXT)));
             }
             show(&self.connect, model.connect.is_some());
             shown.connect = model.connect;
@@ -378,11 +390,70 @@ impl MenuView {
         show(&self.settings, model.settings);
         let quit = (model.quit, model.quit_enabled);
         if shown.quit != quit {
-            self.quit.setTitle(&NSString::from_str(&quit.0));
+            self.quit.setTitle(&NSString::from_str(&fit(&quit.0, &title_font, PLAIN_TEXT)));
             self.quit.setEnabled(quit.1);
             shown.quit = quit;
         }
+        self.shown.replace(shown);
     }
+}
+
+/// The longest text of a row with a badge, and of one without, and of a plain item, in points: with the icon, the
+/// badge and the margins they keep a row within the boards' 300 pt menu.
+const TEXT: f64 = 170.0;
+const WIDE_TEXT: f64 = 210.0;
+const PLAIN_TEXT: f64 = 230.0;
+
+fn title_font() -> Retained<NSFont> {
+    NSFont::menuFontOfSize(0.0)
+}
+
+fn subtitle_font() -> Retained<NSFont> {
+    NSFont::systemFontOfSize(NSFont::smallSystemFontSize())
+}
+
+fn attributed(text: &str, font: &NSFont, color: Option<&NSColor>) -> Retained<NSAttributedString> {
+    // SAFETY: AppKit's attribute names are constants valid for the life of the process.
+    let (font_key, color_key) = unsafe { (NSFontAttributeName, NSForegroundColorAttributeName) };
+    let mut keys = vec![font_key];
+    let mut values: Vec<&AnyObject> = vec![font.as_ref()];
+    if let Some(color) = color {
+        keys.push(color_key);
+        values.push(color.as_ref());
+    }
+    let attributes = NSDictionary::from_slices(&keys, &values);
+    // SAFETY: The attributes map NSAttributedStringKeys to the value types AppKit expects: an NSFont and an NSColor.
+    unsafe {
+        NSAttributedString::initWithString_attributes(
+            NSAttributedString::alloc(),
+            &NSString::from_str(text),
+            Some(&attributes),
+        )
+    }
+}
+
+/// `text`, cut with a trailing "…" to fit `width` points in `font`.
+fn fit(text: &str, font: &NSFont, width: f64) -> String {
+    let fits = |text: &str| attributed(text, font, None).size().width <= width;
+    if fits(text) {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |count: usize| chars[..count].iter().collect::<String>().trim_end().to_owned() + "…";
+    // The longest prefix that fits with the ellipsis, by bisection.
+    let (mut short, mut long) = (0, chars.len());
+    while short < long {
+        let middle = (short + long).div_ceil(2);
+        if fits(&cut(middle)) { short = middle } else { long = middle - 1 }
+    }
+    cut(short)
+}
+
+/// A section header as the boards draw it: 11 pt, semibold, in the secondary colour.
+fn section_title(text: &str) -> Retained<NSAttributedString> {
+    // SAFETY: NSFontWeightSemibold is AppKit's constant.
+    let font = NSFont::systemFontOfSize_weight(11.0, unsafe { NSFontWeightSemibold });
+    attributed(text, &font, Some(&NSColor::secondaryLabelColor()))
 }
 
 /// Shows or hides an item, touching AppKit only on a change.
@@ -517,7 +588,8 @@ impl HeaderView {
     }
 
     fn update(&self, header: Header, bar: Option<Bar>) {
-        let mut shown = self.shown.borrow_mut();
+        // Taken out, so no borrow spans the AppKit calls below; put back at the end.
+        let shown = self.shown.take();
         let previous = shown.as_ref();
         if previous.map(|(header, _)| header) != Some(&header) {
             self.title.setStringValue(&NSString::from_str(&header.title));
@@ -542,7 +614,7 @@ impl HeaderView {
         if self.switch.state() != state {
             self.switch.setState(state);
         }
-        *shown = Some((header, bar));
+        self.shown.replace(Some((header, bar)));
     }
 }
 

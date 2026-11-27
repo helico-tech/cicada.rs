@@ -25,6 +25,7 @@ pub(crate) const FAILURE_LENGTH: usize = 200;
 pub(crate) const TURN_ERROR_LENGTH: usize = 80;
 
 pub(crate) struct MenuInput<'a> {
+    /// The app's name: the header says "<name> worker", the last item "Quit <name>".
     pub title: &'a str,
     pub state: &'a TrayState,
     pub turns: &'a TurnSnapshot,
@@ -222,19 +223,19 @@ impl TrayState {
 }
 
 /// `text` as the menu shows it: the user, password, query and fragment of each URL removed, each run of control
-/// characters and white space made one space, and cut at `limit` characters, the last an ellipsis when cut.
+/// characters and white space made one space, and cut at `limit` characters, the last an ellipsis when cut. The URLs
+/// are cleaned before the cut, so a cut never leaves part of a credential.
 pub(crate) fn display_text(text: &str, limit: usize) -> String {
     let mut shown = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("://") {
         shown.push_str(&rest[..at + 3]);
         let after = &rest[at + 3..];
-        let end =
-            after.find(|c: char| c.is_whitespace() || c.is_control() || "()<>\"'`".contains(c)).unwrap_or(after.len());
+        let end = url_end(after);
         let url = &after[..end];
-        let authority = url.find(['/', '?', '#']).unwrap_or(url.len());
-        let host = url[..authority].rfind('@').map_or(0, |at| at + 1);
-        let kept = url.find(['?', '#']).unwrap_or(url.len());
+        // The user and password end at the last `@` before the path, also when they hold `?`, `#` or parentheses.
+        let host = url[..url.find('/').unwrap_or(url.len())].rfind('@').map_or(0, |at| at + 1);
+        let kept = url[host..].find(['?', '#']).map_or(url.len(), |query| host + query);
         shown.push_str(&url[host..kept]);
         rest = &after[end..];
     }
@@ -247,6 +248,22 @@ pub(crate) fn display_text(text: &str, limit: usize) -> String {
     let mut cut: String = joined.chars().take(limit.saturating_sub(1)).collect();
     cut.push('…');
     cut
+}
+
+/// Where a URL that starts `text` ends: at white space, a control character, a quote or an angle bracket, or at a `)`
+/// that closes a parenthesis opened before the URL. Parentheses opened inside it belong to it.
+fn url_end(text: &str) -> usize {
+    let mut depth = 0usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return at,
+            ')' => depth -= 1,
+            c if c.is_whitespace() || c.is_control() || "<>\"'`".contains(c) => return at,
+            _ => {}
+        }
+    }
+    text.len()
 }
 
 fn clock(at: Timestamp, zone: FixedOffset) -> String {
@@ -298,17 +315,20 @@ fn recent_row(turn: &FinishedTurn, zone: FixedOffset) -> (RecentRow, bool) {
     (RecentRow { turn: turn.clone(), row }, failed)
 }
 
-/// The disconnecting bar: the grace period's share used, or full once it ended, after Stop Now or with no grace.
-fn bar(grace: Duration, began: Instant, stopped_now: bool, now: Instant) -> Bar {
-    let elapsed = now.saturating_duration_since(began);
-    if stopped_now || elapsed >= grace {
-        let label = "Grace period over: cancelling turns".to_owned();
+/// The disconnecting bar, from when the stop began to `until`, the tray's deadline: the grace period plus the cancel
+/// timeout. The worker's grace period starts only once its polling loop stopped, which the tray does not see, so the
+/// bar runs to that deadline. It is full, cancelling, after Stop Now, with no grace period, or past the deadline.
+fn bar(grace: Duration, began: Instant, until: Instant, stopped_now: bool, now: Instant) -> Bar {
+    if stopped_now || grace.is_zero() || now >= until {
+        let label = "Disconnecting: cancelling turns".to_owned();
         return Bar { fraction: 1.0, text: "Cancelling turns…", left: None, label };
     }
-    let left = grace - elapsed;
+    let total = until.saturating_duration_since(began);
+    let elapsed = now.saturating_duration_since(began);
+    let left = until - now;
     let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
-    let label = format!("Grace period: {} of {} seconds used", elapsed.as_secs(), grace.as_secs());
-    let fraction = elapsed.as_secs_f64() / grace.as_secs_f64();
+    let label = format!("Disconnecting: {} of {} seconds used", elapsed.as_secs(), total.as_secs());
+    let fraction = elapsed.as_secs_f64() / total.as_secs_f64();
     Bar { fraction, text: "Taking no new turns", left: Some(format!("{seconds} s left")), label }
 }
 
@@ -317,7 +337,7 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
     let marked = input.state.connection().or(selected);
     let enabled = !input.quitting;
     let header = |subtitle: String, on: bool, switch: bool| Header {
-        title: input.title.to_owned(),
+        title: format!("{} worker", input.title),
         subtitle,
         on,
         enabled: switch && enabled,
@@ -368,6 +388,11 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
                 let title = format!("Couldn't reach {context}");
                 model.failure = Some(Row { icon: Icon::Alert, title, subtitle, right: None });
             }
+            // Turns a stop left behind stay listed until they end (requirement "Turns after Stop Now").
+            let rows = rows(Icon::Finishing);
+            if !rows.is_empty() {
+                model.running = Some(Section { title: "Finishing", right: rows.len().to_string(), rows });
+            }
             model.contexts = Some(contexts());
             model.connect = selected.map(|name| format!("Connect to {name}"));
         }
@@ -384,10 +409,10 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
             model.contexts = Some(contexts());
             model.submenus = Some(submenus(input));
         }
-        TrayState::Stopping { context, .. } => {
+        TrayState::Stopping { context, until } => {
             model.header = header(format!("Disconnecting from {context}…"), false, false);
             if let (Some(worker), Some((began, stopped_now))) = (input.worker, input.stopping) {
-                model.bar = Some(bar(worker.grace_period, began, stopped_now, input.monotonic_now));
+                model.bar = Some(bar(worker.grace_period, began, *until, stopped_now, input.monotonic_now));
                 model.stop_now = true;
             }
             let rows = rows(Icon::Finishing);
@@ -654,7 +679,7 @@ mod tests {
 
         fn model(&self) -> MenuModel {
             menu(&MenuInput {
-                title: "myapp worker",
+                title: "myapp",
                 state: &self.state,
                 turns: &self.turns,
                 registered_types: &["reports", "invoices", "mailer", "audit"],
@@ -747,7 +772,7 @@ mod tests {
         assert!(model.connect.is_none());
         assert!(model.settings);
         assert_eq!(model.inspector.is_some(), cfg!(feature = "inspector"));
-        assert_eq!((model.quit.as_str(), model.quit_enabled), ("Quit myapp worker", true));
+        assert_eq!((model.quit.as_str(), model.quit_enabled), ("Quit myapp", true));
     }
 
     #[test]
@@ -852,15 +877,37 @@ mod tests {
         let failure = model.failure.as_ref().expect("the failure row");
         assert_eq!(texts(failure), ("Couldn't reach staging", "Connection refused at 14:05", None));
         assert_eq!(failure.icon, Icon::Alert);
-        assert!(model.running.is_none() && model.submenus.is_none() && model.bar.is_none() && !model.connected);
+        assert!(model.submenus.is_none() && model.bar.is_none() && !model.connected);
+        let stranded = model.running.as_ref().expect("turns a stop left behind");
+        assert_eq!((stranded.title, stranded.right.as_str(), stranded.rows.len()), ("Finishing", "3", 3));
         assert_eq!(context_icons(&model)[1], ("prod", "actors.internal", Icon::Context { selected: true }));
         assert_eq!(model.connect.as_deref(), Some("Connect to prod"));
         assert!(model.settings && !model.stop_now);
 
         fixture.failed_at = None;
+        fixture.turns.running.clear();
+        assert!(fixture.model().running.is_none(), "no turns left: no section");
         assert_eq!(fixture.model().failure.unwrap().subtitle, "Connection refused", "no time recorded");
         fixture.state = TrayState::Offline;
         assert!(fixture.model().failure.is_none(), "offline has no failure row");
+    }
+
+    /// Scenario "Stop Now while the release is slow": the tray is offline while a cancelled turn's release is still in
+    /// flight; the menu keeps the turn under Finishing until it ends, as `tests/control.rs` keeps it in the history.
+    #[test]
+    fn offline_after_stop_now_keeps_a_turn_left_behind_until_it_ends() {
+        let mut fixture = Fixture::new(TrayState::Offline);
+        fixture.ready = false;
+        fixture.turns.running = vec![running("work/a", "Work", 1, at(14, 31, 0))];
+        let model = fixture.model();
+        let finishing = model.running.as_ref().expect("the turn left behind");
+        assert_eq!((finishing.title, finishing.right.as_str()), ("Finishing", "1"));
+        assert_eq!(texts(&finishing.rows[0].row), ("work/a", "Work · attempt 1", Some("1:00")));
+        assert_eq!(finishing.rows[0].row.icon, Icon::Finishing);
+        assert!(model.bar.is_none() && !model.stop_now && model.submenus.is_none());
+        assert_eq!(model.header.subtitle, "Not connected");
+        fixture.turns.running.clear();
+        assert!(fixture.model().running.is_none(), "gone once it ended");
     }
 
     #[test]
@@ -879,6 +926,13 @@ mod tests {
         assert_eq!(shown.chars().count(), FAILURE_LENGTH);
         assert!(shown.starts_with("http://b/yyy") && shown.ends_with('…'));
         assert_eq!(display_text("a://u@h?q b://h#f ok", 200), "a://h b://h ok");
+        assert_eq!(
+            display_text("for url (https://user:sec(ret)@host/path?token=abc(def)): refused", 200),
+            "for url (https://host/path): refused"
+        );
+        assert_eq!(display_text("https://u:p?a#b@host/x?q=1", 200), "https://host/x", "a password holding ? and #");
+        let cut = display_text(&format!("{} https://user:secret@host?token=abc", "z".repeat(190)), 200);
+        assert!(!cut.contains("user") && !cut.contains("secret") && !cut.contains("tok"), "{cut}");
     }
 
     #[test]
@@ -919,7 +973,8 @@ mod tests {
     #[test]
     fn disconnecting_shows_the_bar_the_finishing_turns_and_stop_now_only() {
         let now = Instant::now();
-        let mut fixture = Fixture::new(stopping(now + Duration::from_secs(40)));
+        // A 30 s grace period and a 10 s cancel timeout: the tray's deadline is 40 s after the stop began.
+        let mut fixture = Fixture::new(stopping(now + Duration::from_secs(28)));
         fixture.turns.running = main_turns()[..2].to_vec();
         fixture.stopping = Some((now - Duration::from_secs(12), false));
         fixture.monotonic_now = now;
@@ -934,9 +989,9 @@ mod tests {
             }
         );
         let bar = model.bar.as_ref().expect("the bar");
-        assert!((bar.fraction - 0.4).abs() < 1e-9);
-        assert_eq!((bar.text, bar.left.as_deref()), ("Taking no new turns", Some("18 s left")));
-        assert_eq!(bar.label, "Grace period: 12 of 30 seconds used");
+        assert!((bar.fraction - 0.3).abs() < 1e-9);
+        assert_eq!((bar.text, bar.left.as_deref()), ("Taking no new turns", Some("28 s left")));
+        assert_eq!(bar.label, "Disconnecting: 12 of 40 seconds used");
         let finishing = model.running.as_ref().unwrap();
         assert_eq!((finishing.title, finishing.right.as_str()), ("Finishing", "2"));
         assert!(finishing.rows.iter().all(|row| row.row.icon == Icon::Finishing));
@@ -944,16 +999,22 @@ mod tests {
         assert_eq!(STOP_NOW_HELP, "Stopping now cancels these turns. Their messages stay and run again later.");
         assert!(model.contexts.is_none() && model.submenus.is_none() && model.connect.is_none());
         assert!(model.inspector.is_none() && !model.settings && model.failure.is_none() && !model.connected);
-        assert_eq!(model.quit, "Quit myapp worker");
+        assert_eq!(model.quit, "Quit myapp");
 
-        fixture.monotonic_now = now + Duration::from_millis(17_100);
+        fixture.monotonic_now = now + Duration::from_millis(27_100);
         assert_eq!(fixture.model().bar.unwrap().left.as_deref(), Some("1 s left"), "rounded up");
+        fixture.monotonic_now = now + Duration::from_secs(20);
+        let bar = fixture.model().bar.unwrap();
+        assert_eq!(
+            bar.text, "Taking no new turns",
+            "past the grace period, before the deadline: the worker's grace may still run"
+        );
     }
 
     #[test]
-    fn the_bar_is_full_with_no_grace_after_the_grace_and_after_stop_now() {
+    fn the_bar_is_full_with_no_grace_past_the_deadline_and_after_stop_now() {
         let now = Instant::now();
-        let mut fixture = Fixture::new(stopping(now));
+        let mut fixture = Fixture::new(stopping(now + Duration::from_secs(10)));
         fixture.monotonic_now = now;
         let full = |fixture: &Fixture| {
             let bar = fixture.model().bar.unwrap();
@@ -963,8 +1024,10 @@ mod tests {
         fixture.stopping = Some((now, false));
         assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "zero grace");
         fixture.grace = Duration::from_secs(30);
-        fixture.stopping = Some((now - Duration::from_secs(31), false));
-        assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "the grace ended");
+        fixture.stopping = Some((now - Duration::from_secs(30), false));
+        fixture.monotonic_now = now + Duration::from_secs(10);
+        assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "the deadline passed");
+        fixture.monotonic_now = now;
         fixture.stopping = Some((now - Duration::from_secs(2), true));
         assert_eq!(full(&fixture), (1.0, "Cancelling turns…", None), "after Stop Now");
     }

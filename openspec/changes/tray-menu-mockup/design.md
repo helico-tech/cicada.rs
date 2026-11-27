@@ -28,7 +28,7 @@ menu match the boards, and follows `gui-mockup-boards`.
    never its title, so joining the second line into the title on older macOS changes nothing it does. The header stays
    the one custom view and gains the disconnecting bar (decision 5). Native items keep keyboard, VoiceOver and the
    system highlight.
-2. **Connected (board Main).** Header: the app's title, "Connected to <context>", the switch on. "Running" with "N of M"
+2. **Connected (board Main).** Header: "<app> worker" (the last item stays "Quit <app>"), "Connected to <context>", the switch on. "Running" with "N of M"
    on the right (M: the started worker's concurrency from its config, a new field `concurrency` of `WorkerReady`); rows:
    actor, "<message type> · attempt N", elapsed as m:ss on the right. "Context" rows: name, the server's host on the
    second line. Registered Types with "K of T" on the right, Recent Turns with "N failed" on the right (none when 0).
@@ -51,14 +51,17 @@ menu match the boards, and follows `gui-mockup-boards`.
    cancelled"), abandoned (red cross, "<type> · abandoned"); "Kept until the app quits" at the end. The "N failed" on
    the Recent Turns row counts failed, abandoned and rescheduled turns, as board Main counts the retried one.
 5. **Disconnecting (board Disconnecting).** Header: "Disconnecting from <context>…", the switch dimmed. Below it, once
-   the worker was ready and while the grace period runs, a bar at elapsed / grace (the worker's `grace_period`, from
-   when stopping began) with "Taking no new turns" and "N s left" (the grace left, not the cancel timeout); once the
-   grace ends, after Stop Now, or with a grace of zero, the bar is full and the text is "Cancelling turns…". "Finishing"
+   the worker was ready, a bar from when stopping began to the tray's deadline (`TrayState::Stopping::until`: the grace
+   period plus the cancel timeout) with "Taking no new turns" and "N s left" to that deadline. The worker starts its
+   grace period only once its polling loop stopped, which the tray cannot see, so the bar runs to the deadline the tray
+   holds (code review 1). After Stop Now, with a grace of zero, or past the deadline, the bar is full and the text is
+   "Cancelling turns…". "Finishing"
    with the count and the running rows with the orange clock icon; Stop Now, offered only when the worker was ready, as
    today (a stop before the worker was ready shows no bar and no Stop Now), then the help "Stopping now cancels these
    turns. Their messages stay and run again later." as a disabled row, then Quit <app>. No Context section, submenus,
    Inspector or Settings while disconnecting. Turns still listed when the tray goes offline after Stop Now stay as the
-   existing requirement "Turns after Stop Now" says.
+   existing requirement "Turns after Stop Now" says: the not-connected menu shows them under "Finishing" until they
+   end.
 6. **The server's host.** `cicada_app::Contexts` gains `host(name) -> Option<String>`: the host and port of the
    context's server URL, never its user, password, path or query. The tray shows it under the context's name.
 7. **The status item.** A template image drawn from the boards' hexagon path: a filled dot when connected, a hollow

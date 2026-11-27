@@ -58,5 +58,11 @@ finishing turns and Stop Now; and the submenus' rows as drawn.
 
 #### Scenario: Disconnecting
 
-- **WHEN** the tray stops a worker with a 30 second grace period and 12 seconds have passed
-- **THEN** the menu shows the bar at 40%, "18 s left", the finishing turns and Stop Now, and no Context section
+- **WHEN** the tray stops a worker with a 30 second grace period and a 10 second cancel timeout, and 12 seconds have
+  passed
+- **THEN** the menu shows the bar at 30%, "28 s left", the finishing turns and Stop Now, and no Context section
+
+#### Scenario: A turn left behind while not connected
+
+- **WHEN** Stop Now made the tray `Offline` while a cancelled turn's release is still in flight
+- **THEN** the menu lists the turn under "Finishing" until it ends

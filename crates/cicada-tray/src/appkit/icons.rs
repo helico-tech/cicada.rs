@@ -192,32 +192,30 @@ pub(super) struct Icons {
 impl Icons {
     /// The icon's image for the light or dark appearance: not a template, so it keeps the boards' colours.
     pub fn image(&self, icon: Icon, dark: bool) -> Retained<NSImage> {
-        self.made
-            .borrow_mut()
-            .entry((icon, dark))
-            .or_insert_with(|| {
-                let (fill, ink, glyph) = style(icon, dark);
-                let image = image(CIRCLE, move || {
-                    color(fill).setFill();
-                    NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::ZERO, NSSize::new(CIRCLE, CIRCLE)))
-                        .fill();
-                    draw(glyph, CIRCLE, ink);
-                });
-                image.setTemplate(false);
-                let description = match icon {
-                    Icon::Running => Some("Running"),
-                    Icon::Finishing => Some("Finishing"),
-                    Icon::Context { selected: true } => Some("Selected"),
-                    Icon::Context { selected: false } => None,
-                    Icon::Done => Some("Done"),
-                    Icon::Failed => Some("Failed"),
-                    Icon::Cancelled => Some("Cancelled"),
-                    Icon::Alert => Some("Error"),
-                };
-                image.setAccessibilityDescription(description.map(NSString::from_str).as_deref());
-                image
-            })
-            .clone()
+        if let Some(image) = self.made.borrow().get(&(icon, dark)) {
+            return image.clone();
+        }
+        // Made with no borrow held: AppKit runs no code of ours here, but a borrow must never span an AppKit call.
+        let (fill, ink, glyph) = style(icon, dark);
+        let image = image(CIRCLE, move || {
+            color(fill).setFill();
+            NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::ZERO, NSSize::new(CIRCLE, CIRCLE))).fill();
+            draw(glyph, CIRCLE, ink);
+        });
+        image.setTemplate(false);
+        let description = match icon {
+            Icon::Running => Some("Running"),
+            Icon::Finishing => Some("Finishing"),
+            Icon::Context { selected: true } => Some("Selected"),
+            Icon::Context { selected: false } => None,
+            Icon::Done => Some("Done"),
+            Icon::Failed => Some("Failed"),
+            Icon::Cancelled => Some("Cancelled"),
+            Icon::Alert => Some("Error"),
+        };
+        image.setAccessibilityDescription(description.map(NSString::from_str).as_deref());
+        self.made.borrow_mut().insert((icon, dark), image.clone());
+        image
     }
 }
 

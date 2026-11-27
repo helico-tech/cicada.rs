@@ -25,14 +25,14 @@ toml.workspace = true
 block2 = "0.6.2"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
-    "std", "block2", "NSAccessibilityProtocols", "NSAppearance", "NSApplication", "NSBezierPath", "NSBox", "NSButton",
-    "NSButtonCell", "NSCell", "NSColor", "NSControl", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext",
+    "std", "block2", "NSAccessibilityProtocols", "NSAppearance", "NSAttributedString", "NSApplication", "NSBezierPath", "NSBox", "NSButton",
+    "NSButtonCell", "NSCell", "NSColor", "NSControl", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSGraphicsContext",
     "NSImage", "NSMenu", "NSMenuItem", "NSMenuItemBadge", "NSParagraphStyle", "NSPopUpButton", "NSProgressIndicator",
     "NSResponder", "NSRunningApplication", "NSScrollView", "NSSecureTextField", "NSStatusBar", "NSStatusBarButton",
-    "NSStatusItem", "NSStepper", "NSSwitch", "NSText", "NSTextField", "NSView", "NSWindow", "objc2-core-foundation",
+    "NSStatusItem", "NSStepper", "NSStringDrawing", "NSSwitch", "NSText", "NSTextField", "NSView", "NSWindow", "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
-    "std", "NSArray", "NSBundle", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer",
+    "std", "NSArray", "NSAttributedString", "NSBundle", "NSDictionary", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer",
 ] }
 
 [dev-dependencies]
