@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tray menu, registered types</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t{--label:rgba(0,0,0,0.86);--secondary:rgba(0,0,0,0.52);--sep:rgba(0,0,0,0.1);--material:rgba(240,240,242,0.8);--edge:rgba(0,0,0,0.16);--hover:rgba(0,0,0,0.07);--fill:rgba(0,0,0,0.08);--blue:#007aff;--green:#34c759;--greenfill:rgba(52,199,89,0.18);--red:#ff3b30;--redfill:rgba(255,59,48,0.14);--orange:#ff9500;--bar:rgba(255,255,255,0.42);--bartext:rgba(0,0,0,0.86);--siopen:rgba(0,0,0,0.13);--desk:linear-gradient(155deg,#9bb8d8 0%,#c4b6dc 52%,#ecc6ae 100%)}
+.t.dark{--label:rgba(255,255,255,0.88);--secondary:rgba(255,255,255,0.56);--sep:rgba(255,255,255,0.12);--material:rgba(38,38,40,0.74);--edge:rgba(255,255,255,0.16);--hover:rgba(255,255,255,0.1);--fill:rgba(255,255,255,0.13);--blue:#0a84ff;--green:#30d158;--greenfill:rgba(48,209,88,0.2);--red:#ff453a;--redfill:rgba(255,69,58,0.2);--orange:#ff9f0a;--bar:rgba(0,0,0,0.32);--bartext:rgba(255,255,255,0.9);--siopen:rgba(255,255,255,0.2);--desk:linear-gradient(155deg,#1b2a44 0%,#35294a 55%,#4a3130 100%)}
+.t{position:relative;overflow:hidden;background:var(--desk);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;font-size:13px;line-height:16px;color:var(--label);-webkit-font-smoothing:antialiased}
+.bar{height:24px;display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:0 10px;background:var(--bar);backdrop-filter:blur(24px) saturate(1.6);-webkit-backdrop-filter:blur(24px) saturate(1.6);color:var(--bartext)}
+.si{position:relative;display:flex;align-items:center;justify-content:center;width:26px;height:20px;border-radius:5px}
+.si.open{background:var(--siopen)}
+.menu{position:absolute;box-sizing:border-box;padding:5px;border-radius:10px;background:var(--material);backdrop-filter:blur(40px) saturate(1.8);-webkit-backdrop-filter:blur(40px) saturate(1.8);box-shadow:0 0 0 0.5px var(--edge),0 12px 36px rgba(0,0,0,0.28);color:var(--label)}
+.row{display:flex;align-items:center;gap:8px;height:22px;padding:0 9px;border:0;border-radius:5px;background:none;font:inherit;color:var(--label);text-decoration:none;text-align:left;width:100%;box-sizing:border-box;cursor:default}
+.row:hover,.row.hi{background:var(--blue);color:#ffffff}
+.row:hover .sec,.row.hi .sec,.row:hover .key,.row.hi .key,.row:hover .chev,.row.hi .chev,.row:hover .tick,.row.hi .tick{color:rgba(255,255,255,0.85)}
+.row.rich{height:38px;padding:0 7px}
+.row.rich:hover{background:var(--hover);color:var(--label)}
+.row.rich:hover .sec{color:var(--secondary)}
+.row:focus-visible{outline:none;background:var(--blue);color:#ffffff}
+.row.off{color:var(--secondary)}
+.row.off:hover{background:none;color:var(--secondary)}
+.hdr{display:flex;justify-content:space-between;padding:5px 9px 3px;font-size:11px;line-height:14px;font-weight:600;color:var(--secondary)}
+.sep{height:1px;margin:5px 9px;background:var(--sep)}
+.sec{font-size:11px;line-height:14px;color:var(--secondary)}
+.key{margin-left:auto;color:var(--secondary)}
+.chev{color:var(--secondary)}
+.tick{flex:none;width:12px;color:var(--label)}
+.circ{flex:none;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--fill);color:var(--label)}
+.circ.on{background:var(--blue);color:#ffffff}
+.sw{flex:none;position:relative;display:block;width:32px;height:18px;border-radius:9px;background:var(--fill)}
+.sw.on{background:var(--blue)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,0.3)}
+.sw.on::after{left:16px}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.num{font-variant-numeric:tabular-nums}
+</style>
+</helmet>
+<div class="t {{theme}}" style="width: 820px; height: 660px">
+<div class="bar">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 6.5a8 8 0 0 1 11 0"></path><path d="M4.6 8.8a5 5 0 0 1 6.8 0"></path><circle cx="8" cy="11.5" r="0.9" fill="currentColor"></circle></svg>
+<span class="si open" aria-label="Cicada, connected">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75 13.5 4.9v6.2L8 14.25 2.5 11.1V4.9Z"></path><circle cx="8" cy="8" r="2" fill="currentColor"></circle></svg>
+</span>
+<span class="num" style="font-weight: 500">Thu 26 Nov 14:32</span>
+</div>
+
+<section class="menu" aria-label="Cicada menu" style="top: 30px; right: 10px; width: 300px">
+<div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 9px">
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+<span style="font-weight: 600">myapp worker</span>
+<span class="sec">Connected to prod</span>
+</div>
+<a class="sw on" href="Disconnecting.dc.html" aria-label="Disconnect"></a>
+</div>
+<div class="sep"></div>
+<div class="hdr"><span>Running</span><span class="num" style="font-weight: 400">3 of 4</span></div>
+<sc-for list="{{turns}}" as="t" hint-placeholder-count="3">
+<div class="row rich">
+<span class="circ" style="background: var(--greenfill); color: var(--green)">
+<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h2.8l1.7-4.5 3.2 9 1.7-4.5h3.6"></path></svg>
+</span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+<span class="ell">{{t.actor}}</span>
+<span class="sec ell">{{t.line}}</span>
+</span>
+<span class="sec num">{{t.elapsed}}</span>
+</div>
+</sc-for>
+<div class="sep"></div>
+<div class="hdr"><span>Context</span></div>
+<sc-for list="{{contexts}}" as="c" hint-placeholder-count="3">
+<a class="row rich" href="Main.dc.html">
+<span class="circ {{c.cls}}">
+<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="2.75" width="11" height="4.5" rx="1.2"></rect><rect x="2.5" y="8.75" width="11" height="4.5" rx="1.2"></rect></svg>
+</span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+<span>{{c.name}}</span>
+<span class="sec ell">{{c.host}}</span>
+</span>
+</a>
+</sc-for>
+<div class="sep"></div>
+<a class="row hi" href="Main.dc.html">
+<span style="flex: 1">Registered Types</span>
+<span class="key">3 of 4</span>
+<svg class="chev" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"></path></svg>
+</a>
+<a class="row" href="Running.dc.html">
+<span style="flex: 1">Recent Turns</span>
+<span class="key">1 failed</span>
+<svg class="chev" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"></path></svg>
+</a>
+<div class="sep"></div>
+<a class="row" href="InspectorOverview.dc.html"><span style="flex: 1">Open Inspector…</span><span class="key">⌘I</span></a>
+<a class="row" href="Settings.dc.html"><span style="flex: 1">Settings…</span><span class="key">⌘,</span></a>
+<button class="row" type="button"><span style="flex: 1">Quit myapp</span><span class="key">⌘Q</span></button>
+</section>
+
+<section class="menu" aria-label="Registered types" style="top: 379px; right: 306px; width: 260px">
+<div class="hdr"><span>Actor Types</span></div>
+<sc-for list="{{types}}" as="ty" hint-placeholder-count="4">
+<div class="row">
+<span class="tick" aria-label="{{ty.tickLabel}}">
+<sc-if value="{{ty.on}}" hint-placeholder-val="{{ true }}">
+<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 8.5 3.2 3.2L13 4.5"></path></svg>
+</sc-if>
+</span>
+<span style="flex: 1">{{ty.name}}</span>
+<span class="key" style="font-size: 12px">{{ty.state}}</span>
+</div>
+</sc-for>
+<div class="sep"></div>
+<div class="hdr"><span>Background Tasks</span></div>
+<div class="row off"><span class="tick"></span><span>Not available over HTTP</span></div>
+<div class="sep"></div>
+<a class="row" href="Settings.dc.html"><span class="tick"></span><span style="flex: 1">Choose Types…</span></a>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":820,"height":660}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+theme: this.props.dark ? 'dark' : '',
+turns: [
+{ actor: 'reports/2026-q3', line: 'GenerateReport · attempt 1', elapsed: '0:42' },
+{ actor: 'invoices/inv-10422', line: 'Render · attempt 2', elapsed: '0:07' },
+{ actor: 'mailer/daily-digest', line: 'Send · attempt 1', elapsed: '0:03' }
+],
+contexts: [
+{ name: 'prod', host: 'actors.internal', cls: 'on' },
+{ name: 'staging', host: 'staging.actors.internal', cls: '' },
+{ name: 'local', host: '127.0.0.1:8080', cls: '' }
+],
+types: [
+{ name: 'reports', state: '1 running', on: true, tickLabel: 'Runs here' },
+{ name: 'invoices', state: '1 running', on: true, tickLabel: 'Runs here' },
+{ name: 'mailer', state: '1 running', on: true, tickLabel: 'Runs here' },
+{ name: 'audit', state: 'Not on this worker', on: false, tickLabel: 'Not on this worker' }
+]
+};
+}
+}
+</script>
+</body>
+</html>
