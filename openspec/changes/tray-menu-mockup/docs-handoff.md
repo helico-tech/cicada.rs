@@ -18,9 +18,11 @@ Disconnecting, Running and Registered), with the eight departures its design lis
   <app>.
 - **Connecting.** "Connecting to <context>…", the contexts and the submenus, no Running section yet.
 - **Not connected.** "Not connected" (with no contexts at all, "Not connected · Run cicada config"). After a failed
-  connection, a row "Couldn't reach <context>" over "<kind> at HH:MM": a fixed summary of the failure ("Connection
-  refused", "No answer", or "Connection failed" for any other failure or one whose kind is not known). No error text
-  is shown. Picking a context now selects it (the blue circle) without connecting, also after a failure; "Connect to
+  connection, a row "Couldn't reach <context>" over "<kind> at HH:MM": a fixed summary of the failure, found by type
+  in the error's source chain: "Connection refused", "No answer", or "Connection failed" for any other failure or one
+  whose kind is not known. No error text is shown. "Host not found", "TLS error" and "HTTP <status>" follow when the
+  change `source-error-kinds` gives the worker's errors a typed kind; until then, a worker over HTTP mostly shows
+  "Connection failed". Picking a context now selects it (the blue circle) without connecting, also after a failure; "Connect to
   <context>" (⌘K) and the switch connect to the selected one. The pick starts from the config file's
   `current-context`, lasts while the app runs and that context exists, and is never written to the config file. No Running section, no submenus. A turn a stop left behind (Stop Now while its release
   is still in flight) stays listed under "Finishing" until it ends.

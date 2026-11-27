@@ -35,8 +35,9 @@ menu match the boards, and follows `gui-mockup-boards`.
    Then Open Inspector… (⌘I), Settings… (⌘,), Quit <app> (⌘Q).
 3. **Not connected (board Disconnected).** Header: "Not connected", the switch off. After a failed connection, a row
    with the red icon: "Couldn't reach <context>" over "<error> at HH:MM" (the tray records when it failed and the failure's
-   kind: Connection refused, No answer, Host not found, TLS error, HTTP <status>, or Connection failed; no error text is
-   shown). No Running section and
+   kind, found by type in the error's source chain: Connection refused, No answer, or Connection failed; no error text
+   is shown. Host not found, TLS error and HTTP <status> follow when `source-error-kinds` gives the worker's errors a
+   typed kind). No Running section and
    no submenus. With no contexts at all the header says "Not connected · Run cicada config" and there is no Connect row.
    The Context rows: picking one selects it (the blue circle and the target of Connect) without connecting, also after a
    failure; the pick lives in `MenuControl`, starts from the config file's current context, survives the reload of the
