@@ -22,6 +22,7 @@ use cicada_app::{App, AppError, Env, WorkerReady};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 
+use menu::FailureKind;
 use turns::TurnHistory;
 pub use turns::{FinishedTurn, RunningTurn, TurnResult, TurnSnapshot};
 
@@ -73,9 +74,9 @@ struct Control {
     state: watch::Sender<TrayState>,
     /// When the last connection failed, by the wall clock; written with the state, under the connection lock.
     failed_at: Mutex<Option<Timestamp>>,
-    /// The innermost cause of the last connection's failure, for the menu: usually "Connection refused (os error 61)",
-    /// with no URL. [`TrayState::Failed`] keeps the whole error. Written with the state, under the connection lock.
-    failure_cause: Mutex<Option<String>>,
+    /// The kind of the last connection's failure, for the menu, which shows no error text. [`TrayState::Failed`] keeps
+    /// the whole error. Written with the state, under the connection lock.
+    failure_kind: Mutex<Option<FailureKind>>,
     #[cfg(target_os = "macos")]
     registered_types: Mutex<Vec<&'static str>>,
     /// The arguments of the last worker command, for tests.
@@ -98,7 +99,7 @@ struct Details {
     ready: Option<WorkerReady>,
     stopping: Option<(Instant, bool)>,
     failed_at: Option<Timestamp>,
-    failure_cause: Option<String>,
+    failure_kind: Option<FailureKind>,
 }
 
 struct WorkerTaskGuard {
@@ -116,7 +117,7 @@ impl Tray {
                 connection: Mutex::new(None),
                 state: watch::channel(TrayState::Offline).0,
                 failed_at: Mutex::default(),
-                failure_cause: Mutex::default(),
+                failure_kind: Mutex::default(),
                 #[cfg(target_os = "macos")]
                 registered_types: Mutex::default(),
                 #[cfg(test)]
@@ -312,13 +313,13 @@ impl Control {
         });
     }
 
-    /// Ends the connection with `state`; `cause` is the innermost cause of a failure, for the menu.
-    fn finish(&self, state: TrayState, cause: Option<String>) {
+    /// Ends the connection with `state`; `kind` is the kind of a failure, for the menu.
+    fn finish(&self, state: TrayState, kind: Option<FailureKind>) {
         let mut connection = self.connection.lock().expect("tray connection");
         *connection = None;
         let failed = matches!(state, TrayState::Failed { .. });
         *self.failed_at.lock().expect("tray failure time") = failed.then(|| SystemTime::now().into());
-        *self.failure_cause.lock().expect("tray failure cause") = cause.filter(|_| failed);
+        *self.failure_kind.lock().expect("tray failure kind") = kind.filter(|_| failed);
         self.state.send_replace(state);
     }
 
@@ -333,7 +334,7 @@ impl Control {
             ready,
             stopping,
             failed_at: *self.failed_at.lock().expect("tray failure time"),
-            failure_cause: self.failure_cause.lock().expect("tray failure cause").clone(),
+            failure_kind: *self.failure_kind.lock().expect("tray failure kind"),
         }
     }
 }
@@ -341,7 +342,7 @@ impl Control {
 impl WorkerTaskGuard {
     fn fail(mut self, error: String) {
         let context = self.context.take().expect("the worker task has a context");
-        self.control.finish(TrayState::Failed { context, error: error.clone() }, Some(error));
+        self.control.finish(TrayState::Failed { context, error }, Some(FailureKind::Other));
     }
 
     fn complete(mut self, result: Result<(), AppError>) {
@@ -349,8 +350,8 @@ impl WorkerTaskGuard {
         match result {
             Ok(()) => self.control.finish(TrayState::Offline, None),
             Err(error) => {
-                let cause = root_cause(&error);
-                self.control.finish(TrayState::Failed { context, error: error.to_string() }, Some(cause));
+                let kind = failure_kind(&error);
+                self.control.finish(TrayState::Failed { context, error: error.to_string() }, Some(kind));
             }
         }
     }
@@ -364,16 +365,16 @@ impl Drop for WorkerTaskGuard {
         } else {
             "the HTTP worker task was cancelled before it returned"
         };
-        self.control.finish(TrayState::Failed { context, error: error.to_owned() }, Some(error.to_owned()));
+        self.control.finish(TrayState::Failed { context, error: error.to_owned() }, Some(FailureKind::Other));
     }
 }
 
-/// The innermost cause of a failed command: the end of its `source()` chain, such as "Connection refused (os error
-/// 61)" under "the server is not ready" and the request that failed.
-fn root_cause(error: &AppError) -> String {
+/// The kind of a failed command, from the types of its `source()` chain; a usage error is
+/// [`FailureKind::Other`].
+fn failure_kind(error: &AppError) -> FailureKind {
     match error {
-        AppError::Usage(message) => message.clone(),
-        AppError::Failed(error) => error.root_cause().to_string(),
+        AppError::Usage(_) => FailureKind::Other,
+        AppError::Failed(error) => FailureKind::of(error.chain()),
     }
 }
 

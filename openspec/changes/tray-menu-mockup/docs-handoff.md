@@ -18,12 +18,11 @@ Disconnecting, Running and Registered), with the eight departures its design lis
   <app>.
 - **Connecting.** "Connecting to <context>…", the contexts and the submenus, no Running section yet.
 - **Not connected.** "Not connected" (with no contexts at all, "Not connected · Run cicada config"). After a failed
-  connection, a row "Couldn't reach <context>" over "<cause> at HH:MM". The cause is the innermost cause of the
-  error, such as "Connection refused (os error 61)", cut at 200 characters. A cause that might hold an address or
-  credentials (one with `@`, `:/`, `:\`, or `http:`, `https:`, `ws:` or `wss:` in any case) is not shown: the row
-  says "Connection failed at HH:MM" instead. Picking a context now selects it (the blue circle) without connecting,
-  also after a failure; "Connect to <context>" (⌘K) and the switch connect to the selected one. The pick starts from the config file's `current-context`, lasts while the app runs and that context exists, and is never
-  written to the config file. No Running section, no submenus. A turn a stop left behind (Stop Now while its release
+  connection, a row "Couldn't reach <context>" over "<kind> at HH:MM": a fixed summary of the failure ("Connection
+  refused", "No answer", or "Connection failed" for any other failure or one whose kind is not known). No error text
+  is shown. Picking a context now selects it (the blue circle) without connecting, also after a failure; "Connect to
+  <context>" (⌘K) and the switch connect to the selected one. The pick starts from the config file's
+  `current-context`, lasts while the app runs and that context exists, and is never written to the config file. No Running section, no submenus. A turn a stop left behind (Stop Now while its release
   is still in flight) stays listed under "Finishing" until it ends.
 - **Disconnecting.** "Disconnecting from <context>…", the switch dimmed. Once the worker was ready, a bar from the
   disconnect to the tray's deadline (the grace period plus the cancel timeout) with "Taking no new turns" and "N s
@@ -37,8 +36,9 @@ Disconnecting, Running and Registered), with the eight departures its design lis
   Settings.
 - **Recent Turns.** "Finished on this worker", newest first: done ("<type> · done in m:ss"), failed ("<type> ·
   <error's first line>"), retried after a failure ("<type> · <error>, retry HH:MM" or "retry now"), cancelled and
-  abandoned; "Kept until the app quits" at the end. "N failed" counts failed, retried and abandoned turns. An error
-  line that might hold an address or credentials (the check of the failure row) shows as "failed" ("failed, retry
+  abandoned; "Kept until the app quits" at the end. "N failed" counts failed, retried and abandoned turns. The error
+  is the handler's own text, as the inspector's Outcomes page and `cicada get outcomes` show it; when any line of it
+  holds `@`, `:/`, `:\`, or `http:`, `https:`, `ws:` or `wss:` in any case, the row says "failed" ("failed, retry
   HH:MM" for a retried turn).
 - **Status item.** A hexagon with a dot: filled while connected, hollow and dimmed otherwise (also while connecting
   and disconnecting).

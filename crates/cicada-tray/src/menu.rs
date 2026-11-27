@@ -19,8 +19,6 @@ pub(crate) const CHOOSE_TYPES: &str = "Choose Types…";
 pub(crate) const RECENT: (&str, &str) = ("Finished on this worker", "Kept until the app quits");
 /// The help under Stop Now.
 pub(crate) const STOP_NOW_HELP: &str = "Stopping now cancels these turns. Their messages stay and run again later.";
-/// The longest failure text the menu shows.
-pub(crate) const FAILURE_LENGTH: usize = 200;
 /// The longest turn error a recent row shows.
 pub(crate) const TURN_ERROR_LENGTH: usize = 80;
 
@@ -36,8 +34,8 @@ pub(crate) struct MenuInput<'a> {
     pub stopping: Option<(Instant, bool)>,
     /// When the last connection failed, by the wall clock.
     pub failed_at: Option<Timestamp>,
-    /// The innermost cause of that failure; the state's whole error when it is unknown.
-    pub failure_cause: Option<&'a str>,
+    /// The kind of that failure; "Connection failed" when it is unknown.
+    pub failure_kind: Option<FailureKind>,
     /// Each context's name and its server's host.
     pub contexts: &'a [(String, Option<String>)],
     /// The context Connect targets while not connected.
@@ -224,8 +222,46 @@ impl TrayState {
     }
 }
 
-/// What the failure row says when the cause might hold an address or credentials.
-pub(crate) const HIDDEN_FAILURE: &str = "Connection failed";
+/// What kind of failure ended a connection. The failure row shows only its fixed label: no error text reaches the
+/// menu, as free text can hold secrets in forms no check catches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+    /// "Connection refused".
+    Refused,
+    /// "No answer": a timeout.
+    NoAnswer,
+    /// "Connection failed": any other failure, or one whose kind did not survive as a type.
+    Other,
+}
+
+impl FailureKind {
+    /// The failure row's text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Refused => "Connection refused",
+            Self::NoAnswer => "No answer",
+            Self::Other => "Connection failed",
+        }
+    }
+
+    /// The kind of the first error of `chain` whose type tells it, by downcasting: a `std::io::Error` that is a refused
+    /// connection or a timeout, or Tokio's elapsed timeout. Text is never read.
+    pub fn of<'a>(chain: impl IntoIterator<Item = &'a (dyn std::error::Error + 'static)>) -> Self {
+        for error in chain {
+            if let Some(io) = error.downcast_ref::<std::io::Error>() {
+                match io.kind() {
+                    std::io::ErrorKind::ConnectionRefused => return Self::Refused,
+                    std::io::ErrorKind::TimedOut => return Self::NoAnswer,
+                    _ => {}
+                }
+            }
+            if error.is::<tokio::time::error::Elapsed>() {
+                return Self::NoAnswer;
+            }
+        }
+        Self::Other
+    }
+}
 
 /// Whether `text` might hold an address or credentials: whether, without its control characters, it holds `@`, a `:`
 /// directly followed by `/` or `\`, or `http`, `https`, `ws` or `wss` (any case) directly followed by `:`. Redacting
@@ -238,12 +274,6 @@ pub(crate) fn doubtful(text: &str) -> bool {
         || bare.contains(":/")
         || bare.contains(":\\")
         || ["http:", "https:", "ws:", "wss:"].iter().any(|scheme| lower.contains(scheme))
-}
-
-/// The failure row's text: the failure's innermost cause, cut at [`FAILURE_LENGTH`], or [`HIDDEN_FAILURE`] when it is
-/// [`doubtful`].
-pub(crate) fn failure_text(cause: &str) -> String {
-    if doubtful(cause) { HIDDEN_FAILURE.to_owned() } else { plain_text(cause, FAILURE_LENGTH) }
 }
 
 /// `text` with each run of control characters and white space made one space, cut at `limit` characters, the last an
@@ -342,10 +372,14 @@ fn running_row(turn: &RunningTurn, icon: Icon, now: Timestamp) -> RunningRow {
 /// A finished turn's row, and whether it counts as failed.
 fn recent_row(turn: &FinishedTurn, zone: FixedOffset) -> (RecentRow, bool) {
     let kind = &turn.turn.message_type;
-    // The error's first line, cut at 80, or "failed" when it might hold an address or credentials.
+    // The handler's error, as the Outcomes page shows it: its first line, cut at 80, or "failed" when any part of it
+    // might hold an address or credentials.
     let error = |error: &str| {
-        let line = error.lines().next().unwrap_or_default();
-        if doubtful(line) { "failed".to_owned() } else { plain_text(line, TURN_ERROR_LENGTH) }
+        if doubtful(error) {
+            "failed".to_owned()
+        } else {
+            plain_text(error.lines().next().unwrap_or_default(), TURN_ERROR_LENGTH)
+        }
     };
     let (icon, line, failed) = match &turn.outcome {
         TurnResult::Committed(TurnOutcome::Done) => {
@@ -436,8 +470,8 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
             let subtitle =
                 if input.contexts.is_empty() { "Not connected · Run cicada config" } else { "Not connected" };
             model.header = header(subtitle.to_owned(), false, selected.is_some());
-            if let TrayState::Failed { context, error } = input.state {
-                let error = failure_text(input.failure_cause.unwrap_or(error));
+            if let TrayState::Failed { context, .. } = input.state {
+                let error = input.failure_kind.unwrap_or(FailureKind::Other).label().to_owned();
                 let subtitle = match input.failed_at {
                     Some(at) => format!("{error} at {}", clock(at, input.zone)),
                     None => error,
@@ -703,7 +737,7 @@ mod tests {
         stopping: Option<(Instant, bool)>,
         grace: Duration,
         failed_at: Option<Timestamp>,
-        failure_cause: Option<&'static str>,
+        failure_kind: Option<FailureKind>,
         contexts: Vec<(String, Option<String>)>,
         selected: Option<&'static str>,
         monotonic_now: Instant,
@@ -724,7 +758,7 @@ mod tests {
                 stopping: None,
                 grace: Duration::from_secs(30),
                 failed_at: None,
-                failure_cause: None,
+                failure_kind: None,
                 contexts: vec![
                     ("local".into(), Some("127.0.0.1:8080".into())),
                     ("prod".into(), Some("actors.internal".into())),
@@ -749,7 +783,7 @@ mod tests {
                 }),
                 stopping: self.stopping,
                 failed_at: self.failed_at,
-                failure_cause: self.failure_cause,
+                failure_kind: self.failure_kind,
                 contexts: &self.contexts,
                 selected: self.selected,
                 now: at(14, 32, 0),
@@ -942,7 +976,8 @@ mod tests {
             finished("a/2", "Fetch", at(14, 0, 0), at(14, 2, 0), retry("token for admin@host expired")),
             finished("a/3", "Fetch", at(14, 0, 0), at(14, 3, 0), failed("cannot open C:\\keys\\token")),
             finished("a/4", "Fetch", at(14, 0, 0), at(14, 4, 0), retry("WSS:relay closed")),
-            finished("a/5", "Fetch", at(14, 0, 0), at(14, 5, 0), failed("timed out\nhttps://user:secret@host")),
+            finished("a/5", "Fetch", at(14, 0, 0), at(14, 5, 0), failed("//alice:example-password\n@host")),
+            finished("a/7", "Fetch", at(14, 0, 0), at(14, 7, 0), failed("timed out\nafter 30 s")),
             finished("a/6", "Fetch", at(14, 0, 0), at(14, 6, 0), TurnResult::Abandoned),
         ];
         let submenus = fixture.model().submenus.unwrap();
@@ -952,14 +987,15 @@ mod tests {
             [
                 ("Fetch · abandoned", Icon::Failed),
                 ("Fetch · timed out", Icon::Failed),
+                ("Fetch · failed", Icon::Failed),
                 ("Fetch · failed, retry 14:40", Icon::Failed),
                 ("Fetch · failed", Icon::Failed),
                 ("Fetch · failed, retry 14:40", Icon::Failed),
                 ("Fetch · failed", Icon::Failed),
             ],
-            "only the first line is shown, and so only it is checked"
+            "every line is checked; only the first is shown"
         );
-        assert_eq!(submenus.recent_right.as_deref(), Some("6 failed"));
+        assert_eq!(submenus.recent_right.as_deref(), Some("7 failed"));
     }
 
     /// Board Disconnected, and the scenario "Not connected after a failure".
@@ -968,6 +1004,7 @@ mod tests {
         let mut fixture = Fixture::new(failed());
         fixture.turns.running = main_turns();
         fixture.failed_at = Some(at(14, 5, 30));
+        fixture.failure_kind = Some(FailureKind::Refused);
         let model = fixture.model();
         assert_eq!(
             model.header,
@@ -1010,54 +1047,43 @@ mod tests {
     }
 
     #[test]
-    fn the_failure_row_shows_the_root_cause_not_the_whole_error() {
-        let error = "the server is not ready: error sending request for url \
-                     (https://user:secret@actors.internal/api?token=hidden): Connection refused (os error 61)";
+    fn the_failure_row_shows_only_the_kind_of_the_failure() {
+        let error = "the server is not ready: turn source failed: Listing the types: HTTP 401 Unauthorized: rejected \
+                     bearer example-token";
         let mut fixture = Fixture::new(TrayState::Failed { context: "prod".into(), error: error.into() });
         fixture.failed_at = Some(at(9, 1, 0));
-        fixture.failure_cause = Some("Connection refused (os error 61)");
-        assert_eq!(fixture.model().failure.unwrap().subtitle, "Connection refused (os error 61) at 09:01");
-        fixture.failure_cause = None;
-        assert_eq!(
-            fixture.model().failure.unwrap().subtitle,
-            "Connection failed at 09:01",
-            "no cause: the whole error"
+        for (kind, shown) in [
+            (Some(FailureKind::Refused), "Connection refused at 09:01"),
+            (Some(FailureKind::NoAnswer), "No answer at 09:01"),
+            (Some(FailureKind::Other), "Connection failed at 09:01"),
+            (None, "Connection failed at 09:01"),
+        ] {
+            fixture.failure_kind = kind;
+            let failure = fixture.model().failure.unwrap();
+            assert_eq!(failure.subtitle, shown, "{kind:?}");
+            assert!(!failure.subtitle.contains("bearer") && !failure.subtitle.contains("401"), "no error text");
+        }
+    }
+
+    #[test]
+    fn the_kind_comes_from_the_types_of_the_source_chain_never_its_text() {
+        use std::io::{Error, ErrorKind};
+        let kind = |error: anyhow::Error| FailureKind::of(error.chain());
+        let refused = anyhow::Error::new(Error::new(ErrorKind::ConnectionRefused, "x"))
+            .context("error sending request for url (https://user:secret@host/)")
+            .context("the server is not ready");
+        assert_eq!(kind(refused), FailureKind::Refused);
+        assert_eq!(kind(anyhow::Error::new(Error::new(ErrorKind::TimedOut, "x")).context("a")), FailureKind::NoAnswer);
+        assert_eq!(kind(anyhow::anyhow!("Connection refused (os error 61)")), FailureKind::Other, "text is not read");
+        let fatal = cicada::runtime::SourceError::Fatal(
+            "Listing the types: HTTP 401 Unauthorized: rejected bearer example-token".into(),
         );
-    }
-
-    #[test]
-    fn a_plain_cause_shows_as_is_with_control_characters_as_spaces_and_cut() {
-        for (cause, shown) in [
-            ("Connection refused (os error 61)", "Connection refused (os error 61)"),
-            ("operation timed out: no answer\nafter\u{7}30 s", "operation timed out: no answer after 30 s"),
-            ("dns error: failed to lookup address information", "dns error: failed to lookup address information"),
-        ] {
-            assert_eq!(failure_text(cause), shown, "{cause}");
-        }
-        let long = failure_text(&"y".repeat(400));
-        assert_eq!(long.chars().count(), FAILURE_LENGTH);
-        assert!(long.ends_with('…'));
-    }
-
-    #[test]
-    fn a_cause_that_might_hold_an_address_or_credentials_is_hidden() {
-        for cause in [
-            "https://user:pa\u{a0}ss@host/private?token=hidden#frag",
-            "https:/\\user:pass@host/private",
-            "https:user:pass@host/private",
-            "https://user:pa\tss@host/private?token=hidden#frag",
-            "https:\t//user:pass@host/private",
-            "connect to HTTP:host failed",
-            "Wss:relay closed",
-            "ws:x",
-            "for url (https://[::1]): refused",
-            "login as admin@host refused",
-            "file at C:\\secrets\\token",
-            "ftp://h/x refused",
-            "x:/y",
-        ] {
-            assert_eq!(failure_text(cause), HIDDEN_FAILURE, "{cause:?}");
-        }
+        assert_eq!(kind(anyhow::Error::new(fatal).context("the server is not ready")), FailureKind::Other);
+        assert_eq!(kind(anyhow::Error::new(Error::new(ErrorKind::PermissionDenied, "x"))), FailureKind::Other);
+        assert_eq!(
+            (FailureKind::Refused.label(), FailureKind::NoAnswer.label(), FailureKind::Other.label()),
+            ("Connection refused", "No answer", "Connection failed")
+        );
     }
 
     #[test]

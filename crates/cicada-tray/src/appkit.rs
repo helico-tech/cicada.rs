@@ -437,7 +437,7 @@ impl Target {
             }),
             stopping: details.stopping,
             failed_at: details.failed_at,
-            failure_cause: details.failure_cause.as_deref(),
+            failure_kind: details.failure_kind,
             contexts: &hosts,
             selected: control.selected(contexts.names(), contexts.current()),
             now: wall.to_utc(),
