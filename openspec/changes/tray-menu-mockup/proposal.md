@@ -14,8 +14,8 @@ Match the boards in `mockup/` (Main, Disconnected, Disconnecting, Running, Regis
 - Context rows with a circle icon, the name and the server's host on a second line; the current one filled.
 - Running rows with a circle icon, the actor, "<type> · attempt N" and the elapsed time; "Running 3 of 4" (running of
   the worker's limit); no Running section while not connected.
-- Not connected: "Not connected" under the name, the last connection error as a row ("Couldn't reach <context>",
-  when and how often), and "Connect to <context>" (⌘K).
+- Not connected: "Not connected" under the name, the last connection error as a row ("Couldn't reach <context>"
+  with the error and when), and "Connect to <context>" (⌘K).
 - Disconnecting: the grace period as a bar with "Taking no new turns" and the seconds left, the "Finishing" turns, Stop
   Now with its explanation.
 - Submenu rows with their counts ("3 of 4", "1 failed"); Registered Types as "Actor Types" with each type's state, a
