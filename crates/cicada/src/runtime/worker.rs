@@ -446,11 +446,19 @@ impl Worker {
     /// Ends the grace period of a stop that has begun, as if it had run out: the running turns are cancelled now and
     /// the stop returns within the cancel timeout of this call (a wait for the polling loop ends too, and the loop is
     /// aborted). Called during a stop, also before the stop reaches its wait, it takes effect; called before a stop
-    /// begins or after it ended, it does nothing and is not remembered, so it never shortens a later stop. A plain call:
-    /// it does not wait for the stop.
+    /// begins or after it ended, it does nothing and is not remembered, so it never shortens a later stop. A plain
+    /// call: it does not wait for the stop.
     pub fn end_grace(&self) {
         if let Some(end) = &self.lifecycle().end_grace {
             end.cancel();
+        }
+    }
+
+    /// Replaces the polling loop with `poll`, aborting the loop it replaces, for the tests of this crate.
+    #[cfg(test)]
+    pub(crate) fn replace_polling_loop(&self, poll: JoinHandle<()>) {
+        if let Some(old) = self.lifecycle().poll.replace(poll) {
+            old.abort();
         }
     }
 

@@ -168,9 +168,10 @@ impl Stopping {
     }
 }
 
-/// Stop Now for a worker over HTTP, from [`WorkerReady`](crate::WorkerReady): [`Self::now`] ends the grace period of the
-/// worker's stop, so its running turns are cancelled at once and give their leases back, and the stop ends within the
-/// cancel timeout. Cheap to clone; it holds no reference to the worker.
+/// Stop Now for a worker over HTTP, from [`WorkerReady`](crate::WorkerReady): [`Self::now`] ends the grace period of
+/// the worker's stop, so its running turns are cancelled at once and the stop ends within the cancel timeout. A turn
+/// whose handler had not ended gives its lease back once its work stopped; one whose handler had ended still
+/// completes. Cheap to clone; it holds no reference to the worker.
 #[derive(Debug, Clone)]
 pub struct StopNow(CancellationToken);
 
@@ -449,7 +450,8 @@ pub(crate) async fn http_worker(
     for f in parts.on_worker_ready {
         let ready = ready.clone();
         if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| f(ready))) {
-            worker.stop().await;
+            // An earlier function may hold the handle already.
+            stop_worker(&worker, &stop_now).await;
             return Err(AppError::Failed(anyhow!("App::on_worker_ready panicked: {}", panic_text(panic.as_ref()))));
         }
     }
@@ -461,22 +463,25 @@ pub(crate) async fn http_worker(
 async fn run_until_stopped(worker: &Worker, stop: &Stop, stop_now: &StopNow) -> Result<(), AppError> {
     tokio::select! {
         biased;
-        () = stop.wait() => {
-            let stopping = worker.stop();
-            tokio::pin!(stopping);
-            // The stop is polled first: it sets `Stopping` before `end_grace` is called, which before then is lost.
-            tokio::select! {
-                biased;
-                () = &mut stopping => {}
-                () = stop_now.requested() => {
-                    worker.end_grace();
-                    stopping.await;
-                }
-            }
-        }
+        () = stop.wait() => stop_worker(worker, stop_now).await,
         _ = worker.stopped() => {}
     }
     stopped(worker).await
+}
+
+/// Stops `worker` with its grace period, which `stop_now`, set before or during the stop, ends.
+async fn stop_worker(worker: &Worker, stop_now: &StopNow) {
+    let stopping = worker.stop();
+    tokio::pin!(stopping);
+    // The stop is polled first: it sets `Stopping` before `end_grace` is called, which before then is lost.
+    tokio::select! {
+        biased;
+        () = &mut stopping => {}
+        () = stop_now.requested() => {
+            worker.end_grace();
+            stopping.await;
+        }
+    }
 }
 
 /// The end of a stopped `worker`: an error it recorded when it stopped by itself, also when a stop came at the same
@@ -1638,5 +1643,35 @@ mod worker_tests {
         worker.await.unwrap().expect("exit code 0");
         assert!(signalled.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", signalled.elapsed());
         assert_eq!(server.count("POST", "/leases/release"), 1);
+    }
+
+    /// A function of `on_worker_ready` that panics while a turn runs, after an earlier one used the handle: the stop
+    /// of the panic takes Stop Now, and the command fails with the panic. On real time: the functions are synchronous,
+    /// so a turn runs meanwhile only on a multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_panicking_worker_ready_function_still_takes_stop_now() {
+        let fake = Arc::new(Fake::new());
+        fake.system.register_contract(&contract_of::<GatedActor>().unwrap()).await.unwrap();
+        let gated = Gated { id: "g".into() };
+        fake.system.create(&gated, &NoState {}).await.unwrap();
+        fake.system.send(&gated, GatedMsg::Wait).await.unwrap();
+        let gate = gate();
+        let began = gate.began.clone();
+        let parts = App::new()
+            .host(GatedActor(gate))
+            .on_worker_ready(|ready| ready.stop_now.now())
+            .on_worker_ready(move |_| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        tokio::time::timeout(Duration::from_secs(10), began.notified()).await.expect("a turn runs")
+                    })
+                });
+                panic!("late");
+            })
+            .into_parts();
+        let started = std::time::Instant::now();
+        let error = http_worker(parts, gated_settings(), fake, never()).await.unwrap_err();
+        assert!(error.to_string().contains("App::on_worker_ready panicked: late"), "{error}");
+        assert!(started.elapsed() < CANCEL_TIMEOUT, "the grace period of 30 s ended early: {:?}", started.elapsed());
     }
 }

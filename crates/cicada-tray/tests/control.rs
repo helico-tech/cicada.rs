@@ -486,10 +486,12 @@ async fn abandoned(server: &Server, tray: &Tray, id: &cicada::store::MessageId) 
 }
 
 /// Scenario: Stop Now during the grace period. `until` moves to now plus the cancel timeout, a second Stop Now keeps
-/// it, and the tray is offline within the cancel timeout, not the grace period.
+/// it, and the tray is offline at the cancel timeout, not the grace period, even while the cancelled turn's release
+/// is held: the turn is still listed as running then, and as abandoned once its release ends.
 #[tokio::test(start_paused = true)]
-async fn stop_now_while_stopping_a_ready_worker_abandons_its_turn_within_the_cancel_timeout() {
+async fn stop_now_while_stopping_a_ready_worker_is_offline_at_the_cancel_timeout_and_abandons_its_turn() {
     let (server, tray, mut state, _actor, id) = online_in_a_long_turn().await;
+    let mut changes = tray.turn_changes();
     let stopped = Instant::now();
     tray.disconnect();
     assert_eq!(*state.borrow(), stopping(stopped + Duration::from_secs(33)));
@@ -499,12 +501,26 @@ async fn stop_now_while_stopping_a_ready_worker_abandons_its_turn_within_the_can
     let asked = Instant::now();
     tray.stop_now();
     assert_eq!(*state.borrow(), stopping(asked + CANCEL_TIMEOUT));
+    // Let the worker take it before the clock moves.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
     tokio::time::advance(Duration::from_secs(1)).await;
     tray.stop_now();
     assert_eq!(*state.borrow(), stopping(asked + CANCEL_TIMEOUT), "a second Stop Now never moves it later");
-    server.releases.send_replace(true);
+    // The release stays held through the cancel timeout: the worker leaves the turn behind and returns.
+    tokio::time::advance(CANCEL_TIMEOUT - Duration::from_secs(1)).await;
     wait_for(&mut state, TrayState::Offline).await;
-    assert!(asked.elapsed() < CANCEL_TIMEOUT, "offline after {:?}", asked.elapsed());
+    assert_eq!(asked.elapsed(), CANCEL_TIMEOUT, "offline at the cancel timeout");
+    assert_eq!(tray.turns().running.len(), 1, "listed as running until its release ends");
+    server.releases.send_replace(true);
+    timeout(TEST_TIMEOUT, async {
+        while !tray.turns().running.is_empty() {
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
     abandoned(&server, &tray, &id).await;
 }
 

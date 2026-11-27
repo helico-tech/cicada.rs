@@ -29,13 +29,16 @@ the value.
   `end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it` and
   `end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period`.
 - `cicada-app`: `StopNow`, a cloneable handle in `WorkerReady::stop_now`. `StopNow::now()` ends the grace period of
-  the worker over HTTP's stop; a request before the stop begins is kept until it does, and one after the stop does
-  nothing. It does not stop the worker by itself. Covered by the `over_http_stop_now_…` tests in
+  the worker over HTTP's stop, also of the stop after a panicking `App::on_worker_ready` function; a request before
+  the stop begins is kept until it does, and one after the stop does nothing. It does not stop the worker by itself.
+  Covered by the `over_http_stop_now_…` tests and `a_panicking_worker_ready_function_still_takes_stop_now` in
   `crates/cicada-app/src/node.rs`.
 - `cicada-tray`: `Tray::stop_now()`, and a Stop Now row in the menu while the tray stops a worker that was ready. It
-  ends the grace period, so the running turns are listed as abandoned, and moves the countdown's `until` to now plus
-  the cancel timeout when that is earlier. It does nothing in any other state. Covered by the `stop_now_…` tests in
-  `crates/cicada-tray/tests/control.rs`.
+  ends the grace period, so the running turns are cancelled, and moves the countdown's `until` to now plus the cancel
+  timeout when that is earlier; the tray is offline within the cancel timeout. A cancelled turn whose handler had not
+  ended is listed as abandoned once its lease is given back; one whose handler had ended may still commit; one whose
+  release is still in flight stays listed as running until it ends. It does nothing in any other state. Covered by
+  the `stop_now_…` tests in `crates/cicada-tray/tests/control.rs`.
 
 ## 0.25.0 — 2026-11-27
 
