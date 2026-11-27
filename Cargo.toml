@@ -9,6 +9,7 @@ members = [
     "crates/cicada-actors",
     "crates/cicada-app",
     "crates/cicada-tray",
+    "crates/cicada-inspector",
     "crates/cicada-containers",
     "examples",
     "sample-service",
@@ -32,6 +33,7 @@ cicada-otel = { path = "crates/cicada-otel" }
 cicada-actors = { path = "crates/cicada-actors" }
 cicada-app = { path = "crates/cicada-app" }
 cicada-tray = { path = "crates/cicada-tray" }
+cicada-inspector = { path = "crates/cicada-inspector" }
 cicada-examples = { path = "examples" }
 
 aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-query"] }

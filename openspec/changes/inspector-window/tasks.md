@@ -4,13 +4,13 @@ Normal lane, version 0.26.0 (unreleased). Builds after `stats-failed-count` and 
 rebase onto them when they landed first). Follow `design.md`; the spec is `specs/inspector/spec.md`; the design reviews
 are `.reviews/inspector-window.design.*`.
 
-- [ ] 1. **ADR 0076 and `context_client`.** The ADR (scope of decision 1) with its row in `docs/adr/README.md` and ADR
+- [x] 1. **ADR 0076 and `context_client`.** The ADR (scope of decision 1) with its row in `docs/adr/README.md` and ADR
   0011's status line; the gate's dependency check gains `cicada-inspector` with the one named exception;
   `cicada_app::context_client` on `resolve` and `Target::client`, returning the effective context (decisions 1 and 3).
   Verify: its tests, including credential redaction for a transport error and a malformed server URL (the client's
   parse error quotes the raw base URL today); `cargo test -p cicada-app`; the script tests if the dependency check
   changed.
-- [ ] 2. **The crate and its model.** `crates/cicada-inspector` in the workspace; `Overview` with per-part results, the
+- [x] 2. **The crate and its model.** `crates/cicada-inspector` in the workspace; `Overview` with per-part results, the
   bounded refresh (8 at a time, 50 types, 10 s; completed results kept at the deadline; "not counted" apart from
   failed), a superseded refresh cancelled, the `/turns` first page; `Navigation` (decision 2). Verify: the model tests
   of the design against an in-process server.

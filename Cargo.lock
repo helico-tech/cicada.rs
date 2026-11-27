@@ -700,6 +700,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cicada-inspector"
+version = "0.26.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "cicada",
+ "cicada-app",
+ "cicada-axum",
+ "cicada-client",
+ "cicada-test",
+ "futures",
+ "objc2",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cicada-otel"
 version = "0.26.0"
 dependencies = [

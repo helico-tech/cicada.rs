@@ -1,0 +1,37 @@
+[package]
+name = "cicada-inspector"
+description = "A native macOS inspector of a running Cicada system, over the HTTP API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+cicada.workspace = true
+cicada-app.workspace = true
+cicada-client.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+
+[dev-dependencies]
+axum.workspace = true
+cicada-axum.workspace = true
+cicada-test.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+# Keep these in sync with [workspace.lints]. Only unsafe_code differs so the appkit module can allow AppKit calls.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,464 @@
+//! The portable model: what the inspector fetches over the HTTP API, how a refresh is bounded, which context it shows,
+//! and the sidebar's history. The AppKit view only renders it.
+
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use cicada::api::{NodeView, RunningTurnView, StatsView};
+use cicada::time::Timestamp;
+use cicada_app::{Contexts, Env};
+use cicada_client::{ActorClient, ClientError};
+use futures::{StreamExt, stream};
+use tokio::runtime::Handle;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio::time::{Instant, timeout_at};
+
+/// What the inspector says where it cannot run.
+pub const NEEDS_MACOS: &str = "the Cicada inspector requires macOS 14 or later";
+/// The running turns the Overview shows: the first page of `/turns`.
+pub const TURNS_PAGE: usize = 20;
+/// The text of a part whose call had not answered at the deadline.
+pub const TIMED_OUT: &str = "no answer within 10 s";
+/// The variables that win over the picked context, as they do for `cicada`.
+const OVERRIDES: [&str; 2] = ["CICADA_SERVER", "CICADA_TOKEN"];
+
+/// Refuses a macOS before 14, as the tray does.
+pub fn check_macos(version: (isize, isize, isize)) -> Result<(), &'static str> {
+    if version < (14, 0, 0) { Err(NEEDS_MACOS) } else { Ok(()) }
+}
+
+/// The bounds of one refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The most types whose actors are counted.
+    pub types: usize,
+    /// The most per-type counts in flight at once.
+    pub concurrent: usize,
+    /// How long the whole refresh may take; what has not answered by then is not shown.
+    pub deadline: Duration,
+}
+
+impl Limits {
+    /// 50 types, 8 at a time, 10 seconds.
+    pub const DEFAULT: Self = Self { types: 50, concurrent: 8, deadline: Duration::from_secs(10) };
+}
+
+/// One part of the Overview: its value, or why it has none.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Part<T> {
+    /// The call answered.
+    Ready(T),
+    /// The call failed or did not answer by the deadline: the text to show, without credentials.
+    Failed(String),
+}
+
+impl<T> Part<T> {
+    /// The value, if the call answered.
+    pub fn ready(&self) -> Option<&T> {
+        match self {
+            Self::Ready(value) => Some(value),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
+/// The actor count of one type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Count {
+    /// `/stats?prefix=<type>/` answered.
+    Counted(u64),
+    /// The count's call failed: the text to show.
+    Failed(String),
+    /// Not asked: the type is past the most types counted, or the deadline came first.
+    NotCounted,
+}
+
+/// A registered type and its actor count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeRow {
+    /// The type's name.
+    pub name: String,
+    /// How many actors it has.
+    pub actors: Count,
+}
+
+/// The first page of the running turns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Turns {
+    /// At most [`TURNS_PAGE`] turns.
+    pub items: Vec<RunningTurnView>,
+    /// True when the server has more than this page.
+    pub more: bool,
+}
+
+/// What the Overview shows, each part with its own result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overview {
+    /// `/stats` of the whole store.
+    pub stats: Part<StatsView>,
+    /// `/health`: true when the node and its store answer.
+    pub health: Part<bool>,
+    /// `/nodes`.
+    pub nodes: Part<Vec<NodeView>>,
+    /// The first page of `/turns`.
+    pub turns: Part<Turns>,
+    /// `/types`, with each type's actor count.
+    pub types: Part<Vec<TypeRow>>,
+}
+
+/// Gathers an Overview within `limits`: the base routes at once, and once `/types` answers, the actor counts of the
+/// first types, a bounded number at a time. At the deadline the answers that came are kept; a base route still out
+/// fails with [`TIMED_OUT`], and a type still uncounted is [`Count::NotCounted`].
+pub async fn overview(client: &ActorClient, limits: Limits) -> Overview {
+    let deadline = Instant::now() + limits.deadline;
+    let turns = async {
+        let page = client.turns(None, "", None, Some(TURNS_PAGE)).await?;
+        Ok(Turns { more: page.next.is_some(), items: page.items })
+    };
+    // The counts start as soon as `/types` answers, not after the other base routes.
+    let types = async {
+        match within(deadline, client.types()).await {
+            Part::Ready(types) => {
+                Part::Ready(count(client, types.into_iter().map(|t| t.name).collect(), deadline, limits).await)
+            }
+            Part::Failed(error) => Part::Failed(error),
+        }
+    };
+    let (stats, health, nodes, turns, types) = tokio::join!(
+        within(deadline, client.stats("")),
+        within(deadline, client.health()),
+        within(deadline, client.nodes()),
+        within(deadline, turns),
+        types,
+    );
+    Overview { stats, health, nodes, turns, types }
+}
+
+async fn within<T>(deadline: Instant, call: impl Future<Output = Result<T, ClientError>>) -> Part<T> {
+    match timeout_at(deadline, call).await {
+        Ok(Ok(value)) => Part::Ready(value),
+        Ok(Err(error)) => Part::Failed(error_text(&error)),
+        Err(_) => Part::Failed(TIMED_OUT.into()),
+    }
+}
+
+/// The actor counts of the first `limits.types` of `names`, in their order, at most `limits.concurrent` at a time.
+async fn count(client: &ActorClient, names: Vec<String>, deadline: Instant, limits: Limits) -> Vec<TypeRow> {
+    let asked = names.len().min(limits.types);
+    let counts: Vec<Count> = stream::iter(names[..asked].iter().cloned().map(|name| async move {
+        // A count that starts after the deadline ends at once, uncounted.
+        match timeout_at(deadline, client.stats(&format!("{name}/"))).await {
+            Ok(Ok(stats)) => Count::Counted(stats.actors),
+            Ok(Err(error)) => Count::Failed(error_text(&error)),
+            Err(_) => Count::NotCounted,
+        }
+    }))
+    .buffered(limits.concurrent.max(1))
+    .collect()
+    .await;
+    let counts = counts.into_iter().chain(std::iter::repeat(Count::NotCounted));
+    names.into_iter().zip(counts).map(|(name, actors)| TypeRow { name, actors }).collect()
+}
+
+/// `error` and its causes, each only when the text so far does not hold it, with the password of every URL in it
+/// hidden (`scheme://user:***@host`).
+pub fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text = format!("{text}: {cause_text}");
+        }
+        source = cause.source();
+    }
+    cicada_app::hide_passwords(&text)
+}
+
+/// What the window shows: the contexts, the target in use and the latest Overview.
+#[derive(Debug, Clone, Default)]
+pub struct View {
+    /// The contexts of the config file.
+    pub contexts: Contexts,
+    /// Why the contexts could not be read.
+    pub contexts_error: Option<String>,
+    /// The context the user picked; `None` until they pick one.
+    pub picked: Option<String>,
+    /// The context in use, as `cicada` resolves it.
+    pub context: Option<String>,
+    /// The variables set in the environment that win over the picked context.
+    pub overrides: Vec<&'static str>,
+    /// Why no client could be made for the context; the window stays usable.
+    pub target_error: Option<String>,
+    /// The latest Overview of the context in use, if one finished.
+    pub overview: Option<Overview>,
+    /// True while a refresh runs.
+    pub refreshing: bool,
+}
+
+/// The context in use and its refreshes, publishing each [`View`] through a `watch`. A new refresh, or a switch of
+/// context, cancels the one before; a refresh that still finishes after that is discarded.
+pub struct Session {
+    env: Env,
+    limits: Limits,
+    handle: Handle,
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    view: watch::Sender<View>,
+    current: Mutex<Current>,
+}
+
+#[derive(Default)]
+struct Current {
+    /// Grows with every refresh and every switch of context; a refresh publishes only while it is its own.
+    generation: u64,
+    client: Option<ActorClient>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl Session {
+    /// A session with no context yet; [`Self::use_context`] picks one. Refreshes run on `handle`.
+    pub fn new(env: Env, handle: Handle, limits: Limits) -> Self {
+        let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
+        Self { env, limits, handle, shared }
+    }
+
+    /// The views, newest last.
+    pub fn view(&self) -> watch::Receiver<View> {
+        self.shared.view.subscribe()
+    }
+
+    /// Reads the contexts again, makes the client for `picked` (`None`: as `cicada` picks one) and refreshes. The
+    /// Overview of the context before is dropped.
+    pub fn use_context(&self, picked: Option<String>) {
+        let contexts = Contexts::load(&self.env);
+        let target = cicada_app::context_client(&self.env, picked.as_deref());
+        let overrides = OVERRIDES.into_iter().filter(|name| self.env.get(*name).is_some_and(|v| !v.is_empty()));
+        {
+            let mut current = self.shared.current.lock().expect("inspector session");
+            current.supersede();
+            self.shared.view.send_modify(|view| {
+                (view.contexts, view.contexts_error) = match contexts {
+                    Ok(contexts) => (contexts, None),
+                    Err(error) => (Contexts::default(), Some(error_text(error.as_ref()))),
+                };
+                view.picked = picked;
+                view.overrides = overrides.collect();
+                view.overview = None;
+                view.refreshing = false;
+                match target {
+                    Ok((client, context)) => {
+                        view.context = context;
+                        view.target_error = None;
+                        current.client = Some(client);
+                    }
+                    Err(error) => {
+                        view.context = None;
+                        view.target_error = Some(error_text(error.as_ref()));
+                        current.client = None;
+                    }
+                }
+            });
+        }
+        self.refresh();
+    }
+
+    /// Starts a refresh of the context in use, cancelling one that runs. Without a client it does nothing.
+    pub fn refresh(&self) {
+        let mut current = self.shared.current.lock().expect("inspector session");
+        current.supersede();
+        let Some(client) = current.client.clone() else { return };
+        let generation = current.generation;
+        self.shared.view.send_modify(|view| view.refreshing = true);
+        let (shared, limits) = (self.shared.clone(), self.limits);
+        current.task = Some(self.handle.spawn(async move {
+            let overview = overview(&client, limits).await;
+            let current = shared.current.lock().expect("inspector session");
+            if current.generation == generation {
+                shared.view.send_modify(|view| {
+                    view.overview = Some(overview);
+                    view.refreshing = false;
+                });
+            }
+        }));
+    }
+
+    /// Cancels a refresh that runs and discards its result; for a window that closes.
+    pub fn stop(&self) {
+        self.shared.current.lock().expect("inspector session").supersede();
+        self.shared.view.send_modify(|view| view.refreshing = false);
+    }
+}
+
+impl Current {
+    fn supersede(&mut self) {
+        self.generation += 1;
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Ok(mut current) = self.shared.current.lock() {
+            current.supersede();
+        }
+    }
+}
+
+/// An item of the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Section {
+    /// The Overview.
+    #[default]
+    Overview,
+    /// Actors (`inspector-actors`).
+    Actors,
+    /// Pending messages.
+    Messages,
+    /// Running turns.
+    RunningTurns,
+    /// Outcomes.
+    Outcomes,
+    /// Nodes.
+    Nodes,
+    /// Types.
+    Types,
+    /// Watches.
+    Watches,
+}
+
+impl Section {
+    /// The items under Browse, in the sidebar's order.
+    pub const BROWSE: [Self; 7] =
+        [Self::Actors, Self::Messages, Self::RunningTurns, Self::Outcomes, Self::Nodes, Self::Types, Self::Watches];
+
+    /// The sidebar's text.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Actors => "Actors",
+            Self::Messages => "Messages",
+            Self::RunningTurns => "Running Turns",
+            Self::Outcomes => "Outcomes",
+            Self::Nodes => "Nodes",
+            Self::Types => "Types",
+            Self::Watches => "Watches",
+        }
+    }
+
+    /// True for an item with a page; the others say "Coming soon" until their change lands.
+    pub fn ready(self) -> bool {
+        self == Self::Overview
+    }
+}
+
+/// The sidebar's selection with a back and forward history, as in a browser.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Navigation {
+    back: Vec<Section>,
+    current: Section,
+    forward: Vec<Section>,
+}
+
+impl Navigation {
+    /// The selected item.
+    pub fn current(&self) -> Section {
+        self.current
+    }
+
+    /// Selects `section`; a new selection drops the forward list. Selecting the current item changes nothing.
+    pub fn select(&mut self, section: Section) {
+        if section != self.current {
+            self.back.push(std::mem::replace(&mut self.current, section));
+            self.forward.clear();
+        }
+    }
+
+    /// Goes back one selection; false when there is none.
+    pub fn back(&mut self) -> bool {
+        let Some(section) = self.back.pop() else { return false };
+        self.forward.push(std::mem::replace(&mut self.current, section));
+        true
+    }
+
+    /// Goes forward one selection; false when there is none.
+    pub fn forward(&mut self) -> bool {
+        let Some(section) = self.forward.pop() else { return false };
+        self.back.push(std::mem::replace(&mut self.current, section));
+        true
+    }
+
+    /// True when [`Self::back`] can go back.
+    pub fn can_back(&self) -> bool {
+        !self.back.is_empty()
+    }
+
+    /// True when [`Self::forward`] can go forward.
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
+    }
+}
+
+/// A tile of the Overview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tile {
+    /// What it counts.
+    pub label: &'static str,
+    /// The number or text, `—` when there is none.
+    pub value: String,
+    /// The small text under the value: what it means, or the error of its call.
+    pub note: String,
+    /// True when `note` is an error.
+    pub error: bool,
+}
+
+/// The four tiles of `/stats`: actors, pending, oldest due and failed (kept by retention, which the API does not
+/// report). A failed call shows its error on each; a `failed` an older server omits shows `—`.
+pub fn tiles(stats: &Part<StatsView>, now: Timestamp) -> [Tile; 4] {
+    let tile = |label, value: String, note: &str| Tile { label, value, note: note.to_owned(), error: false };
+    match stats {
+        Part::Ready(stats) => [
+            tile("Actors", stats.actors.to_string(), "in the store"),
+            tile("Pending", stats.pending.to_string(), "messages, delayed ones included"),
+            match stats.oldest_due {
+                Some(due) => tile("Oldest due", age(due, now), "waiting since"),
+                None => tile("Oldest due", "—".into(), "nothing due"),
+            },
+            tile("Failed", stats.failed.map_or_else(|| "—".to_owned(), |n| n.to_string()), "kept by retention"),
+        ],
+        Part::Failed(error) => ["Actors", "Pending", "Oldest due", "Failed"].map(|label| Tile {
+            label,
+            value: "—".into(),
+            note: error.clone(),
+            error: true,
+        }),
+    }
+}
+
+/// How long ago `instant` was, short: `42s`, `5m`, `3h`, `2d`; `in 1m` for one ahead.
+pub fn age(instant: Timestamp, now: Timestamp) -> String {
+    let seconds = (now - instant).num_seconds();
+    let n = seconds.unsigned_abs();
+    let short = match n {
+        0..60 => format!("{n}s"),
+        60..3600 => format!("{}m", n / 60),
+        3600..172_800 => format!("{}h", n / 3600),
+        _ => format!("{}d", n / 86_400),
+    };
+    if seconds < 0 { format!("in {short}") } else { short }
+}
+
+/// The text of a type's count: the number, `not counted`, or `error`.
+pub fn count_text(count: &Count) -> String {
+    match count {
+        Count::Counted(n) => n.to_string(),
+        Count::Failed(_) => "error".into(),
+        Count::NotCounted => "not counted".into(),
+    }
+}
