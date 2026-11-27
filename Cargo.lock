@@ -619,6 +619,8 @@ dependencies = [
  "cicada-axum",
  "cicada-test",
  "futures",
+ "futures-core",
+ "futures-util",
  "reqwest",
  "schemars",
  "serde",

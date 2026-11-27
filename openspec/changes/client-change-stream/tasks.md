@@ -7,11 +7,11 @@ change. Follow `design.md`; the spec is `specs/change-feed-http/spec.md`; the de
 - [x] 1. **ADR 0077.** `docs/adr/0077-a-client-for-the-change-stream.md` (partly superseding ADR 0035's "no client
   streaming API"), its row in `docs/adr/README.md` and ADR 0035's status line (decision 1). Verify: `cargo test -p
   cicada-examples --test docs`.
-- [ ] 2. **Opening the stream.** `ActorClient::changes`: the client's own HTTP client, the per-request timeout of 24 h
+- [x] 2. **Opening the stream.** `ActorClient::changes`: the client's own HTTP client, the per-request timeout of 24 h
   and 1 min, the 10 s wait for headers (`ClientError::Body`), `ClientError::Api` for a status other than 200,
   `ClientError::Body` for another content type; `ClientError`'s rustdoc naming the new `Body` cases (decision 2).
   Verify: the opening tests of the design against an in-process server, and no secret in any error's text.
-- [ ] 3. **The parser and the stream.** Reading with `Response::chunk()`, the event-stream rules of decision 4, the
+- [x] 3. **The parser and the stream.** Reading with `Response::chunk()`, the event-stream rules of decision 4, the
   64 KiB line limit, `Idle`, `Lifetime` on the stream's own timer, `Transport`, `Malformed`, a clean end as `None`;
   `Change` and `ChangeStreamError` `#[non_exhaustive]`; `futures-core` as a dependency (decisions 3–5). Verify: the
   crafted-byte tests on virtual time, the real-time test with a short total timeout, and the in-process server tests.

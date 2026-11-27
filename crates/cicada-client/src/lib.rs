@@ -21,7 +21,8 @@
 //! Refs and messages are the same types the actor types are defined with, and the bodies are those of [`cicada::api`],
 //! so client and server cannot disagree on the format. Request bodies leave absent optional fields out, so a node that
 //! does not know a field yet still accepts a request that does not set it. The [`reqwest::Client`]'s own
-//! configuration (default headers for authentication, timeouts, TLS) applies to every request.
+//! configuration (default headers for authentication, timeouts, TLS) applies to every request. Only
+//! [`ActorClient::changes`] overrides the total request timeout, for its long-lived response body.
 //!
 //! **Results.** Expected alternatives are values: a missing instance or message is `None`, a create reports whether it
 //! [created](CreateActorResponse::created) the instance, a send whether it was a
@@ -37,8 +38,10 @@
 //! [`Worker`](cicada::runtime::Worker) can run ordinary Rust actors outside the database network with only the URL of
 //! a server's full API: see [`turns`] for its requests, timeouts and error mapping.
 
+mod changes;
 pub mod turns;
 
+use std::fmt;
 use std::time::Duration;
 
 use cicada::address::{TypeName, percent};
@@ -57,6 +60,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+pub use changes::{Change, ChangeStream, ChangeStreamError};
+
 /// A failed call.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -68,7 +73,8 @@ pub enum ClientError {
     /// The request could not be sent or its response not read.
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
-    /// A success response whose body is not what the API sends.
+    /// A success response whose body is not what the API sends. For [`ActorClient::changes`], also a missing or
+    /// wrong content type on a `200`, or no response headers within 10 s.
     #[error("Unexpected response body: {0}")]
     Body(String),
     /// The request cannot be made: a ref, message or state that cannot be encoded, or an address this client cannot
@@ -137,12 +143,19 @@ impl Answer {
     /// The problem in this error response, or one made up from the status when the body is not a problem.
     fn problem(&self) -> Problem {
         serde_json::from_str(&self.text).unwrap_or_else(|_| Problem {
-            problem_type: "about:blank".to_owned(),
-            title: self.status.canonical_reason().unwrap_or("Unknown status").to_owned(),
-            status: self.status.as_u16(),
             detail: Some(self.text.clone()).filter(|t| !t.trim().is_empty()),
-            instance: None,
+            ..Self::status_problem(self.status)
         })
+    }
+
+    fn status_problem(status: StatusCode) -> Problem {
+        Problem {
+            problem_type: "about:blank".to_owned(),
+            title: status.canonical_reason().unwrap_or("Unknown status").to_owned(),
+            status: status.as_u16(),
+            detail: None,
+            instance: None,
+        }
     }
 
     fn failure(&self) -> ClientError {
@@ -158,13 +171,33 @@ impl Answer {
 }
 
 /// Typed client for the actor HTTP API. Cheap to clone; clones share the connection pool.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ActorClient {
     base: String,
     http: reqwest::Client,
     send_attempts: u32,
     retry_delay: Duration,
     turn_timeout: Duration,
+}
+
+impl fmt::Debug for ActorClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut base = Url::parse(&self.base).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
+        if let Some(url) = &mut base {
+            let _ = url.set_password(None);
+            let _ = url.set_username("");
+            url.set_query(None);
+            url.set_fragment(None);
+        }
+        let base = base.as_ref().map_or("<invalid URL>", |url| url.as_str().trim_end_matches('/'));
+        // reqwest's Debug includes default headers, which may carry credentials.
+        f.debug_struct("ActorClient")
+            .field("base", &base)
+            .field("send_attempts", &self.send_attempts)
+            .field("retry_delay", &self.retry_delay)
+            .field("turn_timeout", &self.turn_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ActorClient {
@@ -175,7 +208,7 @@ impl ActorClient {
     }
 
     /// A client for the API mounted at `base_url` on `http`, whose configuration (authentication headers, timeouts,
-    /// TLS) applies to every request.
+    /// TLS) applies to every request, with a total timeout override for [`Self::changes`].
     pub fn with_client(base_url: impl AsRef<str>, http: reqwest::Client) -> Self {
         Self {
             base: base_url.as_ref().trim_end_matches('/').to_owned(),
@@ -741,7 +774,7 @@ impl ActorClient {
 
     fn url(&self, path: &str, query: &[(&str, String)]) -> ClientResult<Url> {
         let mut url = Url::parse(&format!("{}{path}", self.base))
-            .map_err(|e| ClientError::Invalid(format!("Invalid URL {}{path}: {e}", self.base)))?;
+            .map_err(|e| ClientError::Invalid(format!("Invalid API URL: {e}")))?;
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query);
         }
