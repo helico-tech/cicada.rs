@@ -94,7 +94,7 @@ stop the run and SHALL NOT be sent again on its own.
 #### Scenario: Bulk cancel
 
 - **WHEN** the operator cancels five selected pending messages and one has started running by then
-- **THEN** the page says 4 of 5 were cancelled
+- **THEN** the page says 4 of 5 were cancelled and 1 was not eligible by then
 
 #### Scenario: Too many rows
 

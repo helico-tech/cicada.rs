@@ -38,34 +38,41 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    pressed and not changed after.
 5. **Bulk, bounded and without sending twice.** Bulk calls go in chunks of 100 ids, one after another, each under the
    inspector's deadline, with a progress line ("N of M") and a Stop that sends no further chunk. Bulk Cancel asks
-   ("Cancel N messages? Ones that are running or finished by then are skipped.") and shows "cancelled K of N". Bulk
-   Retry first reads Caused (limit 1) for each id, at most 8 at a time, within 60 s overall, with a progress line and
-   Stop; an id with a child (or an empty page with a next cursor) is skipped as already retried, one whose Caused
-   answers "not found" as gone, one whose read fails or did not answer in time as not read. The sheet then says "Retry K
-   of N as new messages? M already retried, G gone and S not read are skipped, as just read. It may repeat external
-   work."; with K = 0 it says nothing is left to retry and offers only Close. A confirmed sheet sends the K ids and
-   shows "retried K' of K". Stop during the checks ends the run with nothing sent; Stop during the writes shows
-   "stopped: D done of N; the rest not sent". A chunk whose call fails or times out stops the run: the page says how
-   many were done before it, that the result of that chunk is unknown and the rest were not sent, and to read the page
-   again; nothing is sent again on its own. Between the check and the send another client can retry.
-6. **One action at a time, results and refreshes.** As for the actor actions: from the press until the answer (for bulk,
-   the last chunk), the page's action and bulk buttons are disabled; a single action's target is the message id with the
-   pane's generation, checked again before sending and on confirming ("selection changed; nothing done"). A bulk
-   action's ids are fixed at the press; confirming its sheet after a manual Refresh, a new prefix, status or context
-   sends nothing ("selection changed; nothing done"). Once sent, a bulk result shows in the page's footer whatever the
-   list does meanwhile, and only a context switch or a closed window drops it (and stops further chunks), as it drops
-   any pending result. Alerts use the actor actions' text rules (problem title and detail or "HTTP <status>", control
-   characters and credentials removed, 500 characters per part). After a successful write, and after a bulk run that
-   wrote anything (also one stopped or failed), the page asks for a soft refresh queued behind one already running, also
-   with Live paused; a single action's message is also read by `status`, started after the answer. While the pane still
-   shows that message, the refresh's effect on the pane waits for the `status` answer: on success the answer fills the
-   pane, and the refresh neither refills it from a row it kept past its range nor clears it because the row left the
-   list; on failure the refresh applies to the pane as usual. A message that is no longer pending stays in the pane with
-   its new state ("cancelled", "finished: <status>") and no buttons, marked "no longer listed" when its row is gone,
-   until the user selects another; `MessagePane` gains that state. So a row past the soft refresh's range, or a refresh
-   that paging blocks, never leaves the pane showing the message as it was before the write. The Overview's and
-   sidebar's failed count follow from that refresh.
-7. **Where it lives.** A `message_actions` module in the model (the state rules, targets and checks, the selected-id
+   ("Cancel N messages? Ones that are running or finished by then are skipped.") with N the confirmed ids. Bulk Retry
+   first reads Caused (limit 1) for each id, at most 8 at a time, within 60 s overall, with a progress line and Stop; an
+   id with a child (or an empty page with a next cursor) is skipped as already retried, one whose Caused answers "not
+   found" as gone, one whose read fails or did not answer in time as not read. The sheet then says "Retry K of N as new
+   messages? M already retried, G gone and S not read are skipped, as just read. It may repeat external work."; with K =
+   0 it says nothing is left to retry and offers only Close; the K ids are the confirmed ids. Stop during the checks
+   ends the run with nothing sent. The result counts against the confirmed ids, from the chunks' `affected`: "cancelled
+   A of N" or "retried A of K", then, when not all went, "X not eligible by then" (sent but not counted by the server)
+   and "U not sent" (after Stop or a failed chunk). A chunk whose call fails or times out stops the run: its result is
+   unknown (it may have written), so the page says so beside the counts and asks to read the page again; nothing is sent
+   again on its own. Between the check and the send another client can retry.
+6. **One action at a time.** As for the actor actions: from the press until the answer (for bulk, the last chunk), the
+   page's action and bulk buttons are disabled; a single action's target is the message id with the pane's generation,
+   checked again before sending and on confirming ("selection changed; nothing done"). A bulk action's ids are fixed at
+   the press; confirming its sheet after a manual Refresh, a new prefix, status or context sends nothing ("selection
+   changed; nothing done"). Once sent, a bulk result shows in the page's footer whatever the list does meanwhile, and
+   only a context switch or a closed window drops it (and stops further chunks), as it drops any pending result. Alerts
+   use the actor actions' text rules (problem title and detail or "HTTP <status>", control characters and credentials
+   removed, 500 characters per part).
+7. **Refreshes and the pane after a write.** After a successful write, after a bulk run that wrote anything, and after
+   any stopped or failed bulk run that may have written (also when its first chunk failed), the page asks for a soft
+   refresh queued behind one already running, also with Live paused. A single action holds its pane from just before the
+   request is sent, keyed by the message id and the pane's generation, so a refresh already in flight cannot act on the
+   pane first: while the hold lasts, a soft refresh replaces the rows as usual but defers what it would do to the pane
+   (refill it from a row, clear it because the row left the list, or read a followed link again). When the write answers
+   with success, the message is read by `status`, started after the answer; its answer fills the pane and ends the hold,
+   and the deferred pane change is dropped. A message that is no longer pending stays in the pane with its new state
+   ("cancelled", "finished: <status>") and no buttons, marked "no longer listed" when its row is gone, through later
+   refreshes until the user selects another; a `status` of not found shows "gone" with no buttons, the same way. When
+   the write fails, finds nothing, or the `status` read fails, the hold ends and the deferred pane change applies as
+   usual. `MessagePane` gains that state. On the Outcomes pane the same hold covers the row refill and a followed link's
+   read; Retry leaves the original outcome as it was and adds a child, so after a successful Retry the pane's Caused is
+   read again from its first page under a new generation that drops older Caused reads, also when paging blocks the soft
+   refresh. The Overview's and sidebar's failed count follow from the soft refresh.
+8. **Where it lives.** A `message_actions` module in the model (the state rules, targets and checks, the selected-id
    sets' rules, the chunked bulk runs and the Caused checks, the sheet texts and counts, the result mapping) using the
    `actions` module's alert text and refresh request; the tables' multiple selection, buttons, sheets and alerts in the
    `appkit` module. Nothing in the tray or the library changes.
