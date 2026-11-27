@@ -7,9 +7,13 @@
 //! ```
 //!
 //! The window has a sidebar (Overview; Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches), a
-//! toolbar with back and forward, a context pop-up and Refresh (⌘R), and the Overview: the store's counts, the health,
-//! the nodes, the running turns and the types with their actor counts. The other items say "Coming soon". The server
-//! comes from the contexts of `cicada config`, resolved as `cicada` resolves them. Refresh is by hand.
+//! toolbar with back and forward, a search field, a context pop-up, Refresh (⌘R) and a toggle of the pane, and the
+//! Overview: the store's counts, the health, the nodes, the running turns and the types with their actor counts.
+//! Actors lists the actors under the searched address prefix, 100 at a time as the table scrolls, with their type,
+//! version, created time and status (running from one sample of the first 200 running turns, paused from the actor);
+//! the pane shows the selected actor's details, running turn, state as highlighted JSON (cut at 256 KiB), mailbox and
+//! watches, read only. The other items say "Coming soon". The server comes from the contexts of `cicada config`,
+//! resolved as `cicada` resolves them. Refresh is by hand.
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod actors;

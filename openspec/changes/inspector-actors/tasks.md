@@ -15,7 +15,7 @@ Normal lane, version 0.26.0 (unreleased). Builds on `inspector-in-tray` (landed)
 - [x] 3. **The JSON formatter.** Pretty JSON cut at 256 KiB on a UTF-8 boundary with a notice, tokenized into at most
   20,000 runs (decision 5). Verify: its tests on nested JSON, escapes, numbers, non-ASCII text at the cut and the run
   cap.
-- [ ] 4. **The AppKit table and pane.** The `NSTableView` with its columns and paging on scroll, the search field, the
+- [x] 4. **The AppKit table and pane.** The `NSTableView` with its columns and paging on scroll, the search field, the
   pane as an `NSTabView` with the two watch lists apart, the runs applied as UTF-16 ranges in one batch, the pane
   toggle and Refresh; every `unsafe` with its reason (decisions 5–7). Verify: `cargo build -p cicada-inspector`,
   `cargo clippy -p cicada-inspector --all-targets`, and the manual check list below, each item noted as done or not

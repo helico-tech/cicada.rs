@@ -1,13 +1,16 @@
 //! Main-thread AppKit lifecycle: the window with its sidebar, toolbar and content, the main menu, and their actions.
 #![allow(unsafe_code)]
 
+mod actors;
 mod content;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::process::ExitCode;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
+use cicada::ActorAddress;
 use cicada_app::Env;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -16,11 +19,12 @@ use objc2_app_kit::{
     NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
     NSAutoresizingMaskOptions, NSBackingStoreType, NSControl, NSControlStateValueOn, NSControlTextEditingDelegate,
     NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSScrollView,
-    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
-    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSView, NSViewController, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSSearchField, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewDataSource,
+    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
+    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSView, NSViewController, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
@@ -28,8 +32,11 @@ use objc2_foundation::{
 };
 use tokio::{runtime::Handle, sync::watch};
 
+use crate::actors::{ListView, PaneView};
+use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
+use actors::{Page, TableRow};
 use content::FlippedView;
 
 /// The rows of the sidebar: the Overview, then the items under Browse.
@@ -55,6 +62,8 @@ const FORWARD: &str = "inspector.forward";
 const CONTEXT: &str = "inspector.context";
 const REFRESH: &str = "inspector.refresh";
 const REFRESH_KEY: &str = "r";
+const SEARCH: &str = "inspector.search";
+const PANE: &str = "inspector.pane";
 
 /// A main-thread inspector in an existing macOS 14 or later AppKit application.
 ///
@@ -154,6 +163,22 @@ struct Controller {
     back: RefCell<Option<Retained<NSToolbarItem>>>,
     forward: RefCell<Option<Retained<NSToolbarItem>>>,
     refresh: RefCell<Option<Retained<NSToolbarItem>>>,
+    pane_toggle: RefCell<Option<Retained<NSToolbarItem>>>,
+    /// The Actors page's rows and the pane's reads.
+    list: RefCell<watch::Receiver<ListView>>,
+    pane: RefCell<watch::Receiver<PaneView>>,
+    /// The rows the table shows; the data source reads them.
+    list_shown: RefCell<ListView>,
+    /// The selected actor, kept across reloads of the table.
+    selected: RefCell<Option<ActorAddress>>,
+    /// The prefix last searched, so that a field that sends the same text again reads nothing.
+    searched: RefCell<String>,
+    /// The state the pane's text view holds.
+    state_shown: RefCell<Option<Arc<Json>>>,
+    /// Whether the pane shows on the Actors page; outside it the pane is collapsed.
+    pane_shown: Cell<bool>,
+    /// The section last rendered, to place the pane only when the page changes.
+    rendered: Cell<Option<Section>>,
     /// What the context pop-up shows, so that it is rebuilt only when that changes.
     contexts_shown: RefCell<Option<ContextsShown>>,
     /// True while the sidebar's selection is set from the navigation, so that its change is not taken as a pick.
@@ -253,6 +278,10 @@ define_class!(
                 let view = c.view.borrow().borrow().clone();
                 let section = c.navigation.borrow().current();
                 content::render(&window.document, &window.content, section, &view);
+                if section == Section::Actors {
+                    self.render_pane();
+                    self.check_more();
+                }
             }
         }
     }
@@ -263,39 +292,40 @@ define_class!(
     // SAFETY: The callback has the signature required by NSTableViewDataSource.
     unsafe impl NSTableViewDataSource for Target {
         #[unsafe(method(numberOfRowsInTableView:))]
-        fn number_of_rows(&self, _: &NSTableView) -> NSInteger {
-            ROWS as NSInteger
+        fn number_of_rows(&self, table: &NSTableView) -> NSInteger {
+            if self.is_sidebar(table) {
+                ROWS as NSInteger
+            } else {
+                actors::row_count(&self.ivars().list_shown.borrow()) as NSInteger
+            }
         }
     }
 
     // SAFETY: These callbacks have the signatures required by NSTableViewDelegate.
     unsafe impl NSTableViewDelegate for Target {
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
-        fn view_for_row(&self, _: &NSTableView, _: Option<&NSTableColumn>, row: NSInteger) -> Option<Retained<NSView>> {
-            row_at(row).map(|row| sidebar_cell(self.mtm(), row))
+        fn view_for_row(
+            &self,
+            table: &NSTableView,
+            column: Option<&NSTableColumn>,
+            row: NSInteger,
+        ) -> Option<Retained<NSView>> {
+            self.cell_for(table, column, row)
         }
 
         #[unsafe(method(tableView:isGroupRow:))]
-        fn is_group_row(&self, _: &NSTableView, row: NSInteger) -> bool {
-            matches!(row_at(row), Some(Row::Group(_)))
+        fn is_group_row(&self, table: &NSTableView, row: NSInteger) -> bool {
+            self.is_group(table, row)
         }
 
         #[unsafe(method(tableView:shouldSelectRow:))]
-        fn should_select_row(&self, _: &NSTableView, row: NSInteger) -> bool {
-            matches!(row_at(row), Some(Row::Item(_)))
+        fn should_select_row(&self, table: &NSTableView, row: NSInteger) -> bool {
+            self.can_select(table, row)
         }
 
         #[unsafe(method(tableViewSelectionDidChange:))]
-        fn selection_did_change(&self, _: &NSNotification) {
-            let c = self.ivars();
-            if c.syncing.get() {
-                return;
-            }
-            let row = self.window().sidebar.selectedRow();
-            if let Some(Row::Item(section)) = row_at(row) {
-                c.navigation.borrow_mut().select(section);
-                self.render();
-            }
+        fn selection_did_change(&self, notification: &NSNotification) {
+            self.selection_changed(notification);
         }
     }
 
@@ -326,9 +356,56 @@ define_class!(
         // SAFETY: NSTimer sends inspectorTick: with the timer as the only argument.
         #[unsafe(method(inspectorTick:))]
         fn tick(&self, _: &NSTimer) {
-            if self.ivars().view.borrow().has_changed().unwrap_or(false) {
+            let c = self.ivars();
+            if c.view.borrow().has_changed().unwrap_or(false) {
                 self.render();
             }
+            if c.navigation.borrow().current() == Section::Actors {
+                if c.list.borrow().has_changed().unwrap_or(false) {
+                    self.render_list();
+                }
+                if c.pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_pane();
+                }
+            }
+        }
+
+        // SAFETY: The search field sends this action with itself as the sender, at every change of its text.
+        #[unsafe(method(inspectorSearch:))]
+        fn search(&self, sender: &NSSearchField) {
+            let c = self.ivars();
+            if c.finished.get() {
+                return;
+            }
+            let prefix = sender.stringValue().to_string();
+            if *c.searched.borrow() == prefix {
+                return;
+            }
+            c.searched.replace(prefix.clone());
+            c.session.actors().search(&prefix);
+            self.render_list();
+        }
+
+        // SAFETY: The Retry button of the table's status row sends this action with itself as the sender.
+        #[unsafe(method(inspectorRetry:))]
+        fn retry(&self, _: Option<&AnyObject>) {
+            if !self.ivars().finished.get() {
+                self.ivars().session.actors().retry();
+            }
+        }
+
+        // SAFETY: The pane toolbar item and menu item send this action with themselves as the sender.
+        #[unsafe(method(inspectorTogglePane:))]
+        fn toggle_pane(&self, _: Option<&AnyObject>) {
+            let c = self.ivars();
+            if c.finished.get() || c.navigation.borrow().current() != Section::Actors {
+                return;
+            }
+            // From the pane's own state: the user may also have dragged it shut.
+            let show = self.window().pane_item.isCollapsed();
+            c.pane_shown.set(show);
+            self.collapse_pane(!show);
+            self.render_pane();
         }
 
         // SAFETY: The Back toolbar item and menu item send this action with themselves as the sender.
@@ -357,6 +434,8 @@ define_class!(
             }
             let Some(item) = sender.selectedItem() else { return };
             let name = item.title().to_string();
+            // The selection goes with the context; the session drops the pane's reads.
+            self.ivars().selected.replace(None);
             self.ivars().session.use_context(Some(name));
             self.render();
         }
@@ -371,6 +450,11 @@ define_class!(
                 Some(action) if action == sel!(inspectorBack:) => navigation.can_back(),
                 Some(action) if action == sel!(inspectorForward:) => navigation.can_forward(),
                 Some(action) if action == sel!(inspectorRefresh:) => self.can_refresh(),
+                Some(action) if action == sel!(inspectorTogglePane:) => {
+                    let collapsed = self.window().pane_item.isCollapsed();
+                    item.setTitle(if collapsed { ns_string!("Show Pane") } else { ns_string!("Hide Pane") });
+                    navigation.current() == Section::Actors
+                }
                 _ => true,
             }
         }
@@ -380,6 +464,7 @@ define_class!(
 impl Target {
     fn new(mtm: MainThreadMarker, session: Session, owner: Option<Weak<Windows>>) -> Retained<Self> {
         let view = session.view();
+        let (list, pane) = (session.actors().list(), session.actors().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
             session,
             owner,
@@ -389,6 +474,15 @@ impl Target {
             back: RefCell::default(),
             forward: RefCell::default(),
             refresh: RefCell::default(),
+            pane_toggle: RefCell::default(),
+            list: RefCell::new(list),
+            pane: RefCell::new(pane),
+            list_shown: RefCell::default(),
+            selected: RefCell::default(),
+            searched: RefCell::default(),
+            state_shown: RefCell::default(),
+            pane_shown: Cell::new(true),
+            rendered: Cell::new(None),
             contexts_shown: RefCell::default(),
             syncing: Cell::new(false),
             timer: RefCell::default(),
@@ -441,11 +535,150 @@ impl Target {
         !c.finished.get() && c.view.borrow().borrow().target_error.is_none()
     }
 
+    /// ⌘R: the Actors page reloads its list from the top and its pane; another page refreshes the Overview.
     fn refresh_view(&self) {
         if self.can_refresh() {
-            self.ivars().session.refresh();
+            let c = self.ivars();
+            if c.navigation.borrow().current() == Section::Actors {
+                c.session.actors().refresh();
+            } else {
+                c.session.refresh();
+            }
             self.render();
         }
+    }
+
+    fn cell_for(
+        &self,
+        table: &NSTableView,
+        column: Option<&NSTableColumn>,
+        row: NSInteger,
+    ) -> Option<Retained<NSView>> {
+        if self.is_sidebar(table) {
+            return row_at(row).map(|row| sidebar_cell(self.mtm(), row));
+        }
+        let row = usize::try_from(row).ok()?;
+        let column = column.map(|column| column.identifier().to_string());
+        let (view, wants_more) = {
+            let list = self.ivars().list_shown.borrow();
+            let target: &AnyObject = self.as_ref();
+            let cell = actors::table_row(&list, row)
+                .map(|cell| actors::cell(self.mtm(), &list, cell, column.as_deref(), target, sel!(inspectorRetry:)));
+            (cell, list.wants_more(row))
+        };
+        // A row near the end comes into view: the next page is asked for.
+        if wants_more {
+            self.ivars().session.actors().more();
+        }
+        view
+    }
+
+    fn is_group(&self, table: &NSTableView, row: NSInteger) -> bool {
+        if self.is_sidebar(table) {
+            return matches!(row_at(row), Some(Row::Group(_)));
+        }
+        let list = self.ivars().list_shown.borrow();
+        let row = usize::try_from(row).unwrap_or(usize::MAX);
+        matches!(actors::table_row(&list, row), Some(TableRow::Status(_)))
+    }
+
+    fn can_select(&self, table: &NSTableView, row: NSInteger) -> bool {
+        if self.is_sidebar(table) {
+            return matches!(row_at(row), Some(Row::Item(_)));
+        }
+        let list = self.ivars().list_shown.borrow();
+        usize::try_from(row).is_ok_and(|row| row < list.rows.len())
+    }
+
+    /// A pick in the sidebar navigates; a pick in the Actors table reads the actor into the pane.
+    fn selection_changed(&self, notification: &NSNotification) {
+        let c = self.ivars();
+        if c.syncing.get() || c.finished.get() {
+            return;
+        }
+        let window = self.window();
+        let sidebar: &AnyObject = window.sidebar.as_ref();
+        if notification.object().is_some_and(|object| std::ptr::eq(&*object, sidebar)) {
+            let row = window.sidebar.selectedRow();
+            if let Some(Row::Item(section)) = row_at(row) {
+                c.navigation.borrow_mut().select(section);
+                self.render();
+            }
+            return;
+        }
+        let row = window.page.table.selectedRow();
+        let address = usize::try_from(row)
+            .ok()
+            .and_then(|row| c.list_shown.borrow().rows.get(row).map(|actor| actor.address.clone()));
+        c.selected.replace(address.clone());
+        c.session.actors().select(address);
+        self.render_pane();
+    }
+
+    fn collapse_pane(&self, collapsed: bool) {
+        let window = self.window();
+        if window.pane_item.isCollapsed() != collapsed {
+            window.pane_item.setCollapsed(collapsed);
+            // The pane is laid out from its width, so the split view places it first.
+            if let Some(view) = window.window.contentView() {
+                view.layoutSubtreeIfNeeded();
+            }
+        }
+    }
+
+    fn is_sidebar(&self, table: &NSTableView) -> bool {
+        self.ivars().window.get().is_some_and(|window| std::ptr::eq(table, &*window.sidebar))
+    }
+
+    /// Shows the latest rows: the table reloads, keeps the selected actor selected when it is among them, and asks for
+    /// the next page when the end is in view.
+    fn render_list(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let Some(window) = c.window.get() else { return };
+        let list = c.list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        window.page.show_footer(&list, target_error.as_deref());
+        let selected = c.selected.borrow().clone();
+        let row = selected.and_then(|address| list.rows.iter().position(|row| row.address == address));
+        c.list_shown.replace(list);
+        c.syncing.set(true);
+        window.page.table.reloadData();
+        match row {
+            Some(row) => {
+                window.page.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false)
+            }
+            // SAFETY: deselectAll: takes an optional sender.
+            None => unsafe { window.page.table.deselectAll(None) },
+        }
+        c.syncing.set(false);
+        self.check_more();
+    }
+
+    /// Asks for the next page when the last visible row is near the end; after rows came in or the window resized.
+    fn check_more(&self) {
+        let c = self.ivars();
+        let Some(window) = c.window.get() else { return };
+        let last = window.page.last_visible();
+        let wants = c.list_shown.borrow().wants_more(last);
+        if wants {
+            c.session.actors().more();
+        }
+    }
+
+    /// Shows the latest reads of the selected actor.
+    fn render_pane(&self) {
+        let c = self.ivars();
+        if c.finished.get() {
+            return;
+        }
+        let Some(window) = c.window.get() else { return };
+        let pane = c.pane.borrow_mut().borrow_and_update().clone();
+        let shown = c.state_shown.borrow().clone();
+        let shown = window.page.show_pane(&pane, shown.as_ref());
+        c.state_shown.replace(shown);
     }
 
     fn change_history(&self, change: fn(&mut Navigation) -> bool) {
@@ -468,9 +701,13 @@ impl Target {
         };
         window.window.setTitle(&NSString::from_str(section.title()));
         window.window.setSubtitle(&NSString::from_str(&subtitle(&view)));
-        for (item, enabled) in
-            [(&c.back, can_back), (&c.forward, can_forward), (&c.refresh, view.target_error.is_none())]
-        {
+        let actors = section == Section::Actors;
+        for (item, enabled) in [
+            (&c.back, can_back),
+            (&c.forward, can_forward),
+            (&c.refresh, view.target_error.is_none()),
+            (&c.pane_toggle, actors),
+        ] {
             let item = item.borrow().clone();
             if let Some(item) = item {
                 item.setEnabled(enabled);
@@ -485,7 +722,22 @@ impl Target {
             window.sidebar.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
             c.syncing.set(false);
         }
+        window.search.setEnabled(actors);
+        window.content.setHidden(actors);
+        window.page.root.setHidden(!actors);
+        let before = c.rendered.replace(Some(section));
+        if before != Some(section) {
+            if before == Some(Section::Actors) {
+                c.pane_shown.set(!window.pane_item.isCollapsed());
+            }
+            self.collapse_pane(!(actors && c.pane_shown.get()));
+        }
         content::render(&window.document, &window.content, section, &view);
+        if actors {
+            c.session.actors().show();
+            self.render_list();
+            self.render_pane();
+        }
     }
 
     /// The context pop-up: the names of the config file, the context in use picked; then, when the environment wins
@@ -568,6 +820,15 @@ impl Target {
                 item.setToolTip(Some(ns_string!("The context of cicada config")));
                 item.setView(Some(&self.window().contexts));
             }
+            SEARCH => {
+                item.setLabel(ns_string!("Search"));
+                item.setToolTip(Some(ns_string!("Actors whose address starts with this text")));
+                item.setView(Some(&self.window().search));
+            }
+            PANE => {
+                button("sidebar.right", "Show or Hide Pane", sel!(inspectorTogglePane:));
+                c.pane_toggle.replace(Some(item.clone()));
+            }
             _ => return None,
         }
         Some(item)
@@ -593,11 +854,13 @@ impl Target {
         let window = self.window();
         window.window.setDelegate(None);
         window.toolbar.setDelegate(None);
-        // SAFETY: Clears the table's references to the target while it is still alive.
+        // SAFETY: Clears the table's and the search field's references to the target while it is still alive.
         unsafe {
             window.sidebar.setDataSource(None);
             window.sidebar.setDelegate(None);
+            NSControl::setTarget(&window.search, None);
         }
+        window.page.clear_actions();
         true
     }
 }
@@ -625,6 +888,11 @@ struct Window {
     content: Retained<NSScrollView>,
     document: Retained<FlippedView>,
     contexts: Retained<NSPopUpButton>,
+    search: Retained<NSSearchField>,
+    /// The Actors page, next to the Overview's scroll view in the content.
+    page: Page,
+    /// The inspector pane's split item, collapsed outside the Actors page and by the pane toggle.
+    pane_item: Retained<NSSplitViewItem>,
     /// Attached once the target holds the window, as its items need the pop-up.
     toolbar: Retained<NSToolbar>,
     // Kept for the life of the window; AppKit holds them too.
@@ -691,15 +959,38 @@ impl Window {
         };
         document.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         content.setDocumentView(Some(&document));
+        // The content holds the Overview's scroll view and the Actors page; one of them shows.
+        let fill = NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
+        let container =
+            NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(760.0, 600.0)));
+        let page = Page::new(mtm);
+        for view in [&**content, &*page.root] {
+            view.setFrame(container.bounds());
+            view.setAutoresizingMask(fill);
+            container.addSubview(view);
+        }
+        page.root.setHidden(true);
+        // SAFETY: The target implements both protocols and clears them during teardown.
+        unsafe {
+            page.table.setDataSource(Some(ProtocolObject::from_ref(target)));
+            page.table.setDelegate(Some(ProtocolObject::from_ref(target)));
+        }
         let content_controller = NSViewController::new(mtm);
-        content_controller.setView(&content);
+        content_controller.setView(&container);
         let content_item = NSSplitViewItem::splitViewItemWithViewController(&content_controller);
-        content_item.setMinimumThickness(480.0);
+        content_item.setMinimumThickness(420.0);
+        let pane_controller = NSViewController::new(mtm);
+        pane_controller.setView(&page.pane);
+        let pane_item = NSSplitViewItem::inspectorWithViewController(&pane_controller);
+        pane_item.setMinimumThickness(280.0);
+        pane_item.setCanCollapse(true);
+        pane_item.setCollapsed(true);
 
         let split = NSSplitViewController::new(mtm);
         split.view().setFrame(rect);
         split.addSplitViewItem(&sidebar_item);
         split.addSplitViewItem(&content_item);
+        split.addSplitViewItem(&pane_item);
         window.setContentViewController(Some(&split));
         window.setContentMinSize(NSSize::new(720.0, 420.0));
         window.setContentSize(rect.size);
@@ -715,13 +1006,37 @@ impl Window {
             NSControl::setAction(&contexts, Some(sel!(inspectorContext:)));
         }
         contexts.setAccessibilityLabel(Some(ns_string!("Context")));
+        let search = NSSearchField::initWithFrame(
+            NSSearchField::alloc(mtm),
+            NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 24.0)),
+        );
+        search.setPlaceholderString(Some(ns_string!("Address prefix")));
+        search.setSendsSearchStringImmediately(true);
+        search.setAccessibilityLabel(Some(ns_string!("Search actors by address prefix")));
+        // SAFETY: The target implements inspectorSearch: with the field as the sender, and clears it during teardown.
+        unsafe {
+            NSControl::setTarget(&search, Some(target));
+            NSControl::setAction(&search, Some(sel!(inspectorSearch:)));
+        }
 
         let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("CicadaInspectorToolbar"));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(target)));
         window.setDelegate(Some(ProtocolObject::from_ref(target)));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-        Self { window: Retained::into_super(window), sidebar, content, document, contexts, toolbar, _split: split }
+        window.setAutorecalculatesKeyViewLoop(true);
+        Self {
+            window: Retained::into_super(window),
+            sidebar,
+            content,
+            document,
+            contexts,
+            search,
+            page,
+            pane_item,
+            toolbar,
+            _split: split,
+        }
     }
 }
 
@@ -733,7 +1048,9 @@ fn toolbar_identifiers() -> Retained<NSArray<NSToolbarItemIdentifier>> {
     let forward = NSString::from_str(FORWARD);
     let context = NSString::from_str(CONTEXT);
     let refresh = NSString::from_str(REFRESH);
-    NSArray::from_slice(&[tracking, &*back, &*forward, flexible, &*context, &*refresh])
+    let search = NSString::from_str(SEARCH);
+    let pane = NSString::from_str(PANE);
+    NSArray::from_slice(&[tracking, &*back, &*forward, flexible, &*search, &*context, &*refresh, &*pane])
 }
 
 /// A cell of the sidebar: a group's heading, or an item with its symbol.
@@ -807,6 +1124,7 @@ fn main_menu(mtm: MainThreadMarker, target: &Target) -> Retained<NSMenu> {
         ("Refresh", sel!(inspectorRefresh:), REFRESH_KEY),
         ("Back", sel!(inspectorBack:), "["),
         ("Forward", sel!(inspectorForward:), "]"),
+        ("Hide Pane", sel!(inspectorTogglePane:), ""),
     ] {
         let item = menu_item(mtm, title, Some(action), key);
         // SAFETY: The target implements the action and outlives the menu.

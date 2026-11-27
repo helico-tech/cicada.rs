@@ -1,4 +1,5 @@
-//! The content pane: the Overview, laid out from the top in a flipped view, or "Coming soon".
+//! The content pane: the Overview, laid out from the top in a flipped view, or "Coming soon"; and the layout that
+//! the Actors page's pane uses too.
 
 use cicada::api::NodeView;
 use objc2::rc::Retained;
@@ -43,7 +44,7 @@ pub(super) fn render(document: &FlippedView, scroll: &NSScrollView, section: Sec
     let mut layout = Layout { document, mtm: document.mtm(), y: MARGIN, width: size.width.max(480.0) };
     if section == Section::Overview {
         overview(&mut layout, view);
-    } else {
+    } else if !section.ready() {
         layout.y = (size.height / 2.0 - 40.0).max(MARGIN);
         layout.centered("Coming soon", 20.0, true);
         layout.centered(&format!("{} comes in a later version of the inspector.", section.title()), 13.0, false);
@@ -155,21 +156,36 @@ fn turns(layout: &mut Layout<'_>, overview: &Overview) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Style {
+pub(super) enum Style {
     Plain,
     Secondary,
     Error,
 }
 
 /// Places views from the top of the document, one under the other.
-struct Layout<'a> {
+pub(super) struct Layout<'a> {
     document: &'a FlippedView,
     mtm: MainThreadMarker,
     y: f64,
     width: f64,
 }
 
-impl Layout<'_> {
+impl<'a> Layout<'a> {
+    /// Empties `document` for a layout `width` wide, from `margin` below its top.
+    pub(super) fn new(document: &'a FlippedView, width: f64, margin: f64) -> Self {
+        for subview in document.subviews().to_vec() {
+            subview.removeFromSuperview();
+        }
+        Self { document, mtm: document.mtm(), y: margin, width }
+    }
+
+    /// Sizes the document to what was placed, at least `height` high; returns the height.
+    pub(super) fn finish(self, height: f64) -> f64 {
+        let height = (self.y + GAP).max(height);
+        self.document.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(self.width, height)));
+        height
+    }
+
     fn inner(&self) -> f64 {
         self.width - 2.0 * MARGIN
     }
@@ -179,14 +195,14 @@ impl Layout<'_> {
         self.document.addSubview(view);
     }
 
-    fn heading(&mut self, text: &str) {
+    pub(super) fn heading(&mut self, text: &str) {
         self.y += 18.0;
         let label = label(self.mtm, text, NSFont::boldSystemFontOfSize(15.0), Style::Plain);
         self.add(&label, MARGIN, self.inner(), LINE + 2.0);
         self.y += LINE + 6.0;
     }
 
-    fn text(&mut self, text: &str, style: Style) {
+    pub(super) fn text(&mut self, text: &str, style: Style) {
         let label = NSTextField::wrappingLabelWithString(&NSString::from_str(text), self.mtm);
         label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
         label.setTextColor(Some(&color(style)));
@@ -206,7 +222,7 @@ impl Layout<'_> {
     }
 
     /// A line with a text on the left and a count on the right; `tip` explains the count.
-    fn row(&mut self, left: &str, right: &str, tip: Option<&str>) {
+    pub(super) fn row(&mut self, left: &str, right: &str, tip: Option<&str>) {
         let name = label(self.mtm, left, NSFont::systemFontOfSize(13.0), Style::Plain);
         name.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
         name.setToolTip(Some(&NSString::from_str(left)));
@@ -264,7 +280,12 @@ impl Layout<'_> {
     }
 }
 
-fn label(mtm: MainThreadMarker, text: &str, font: objc2::rc::Retained<NSFont>, style: Style) -> Retained<NSTextField> {
+pub(super) fn label(
+    mtm: MainThreadMarker,
+    text: &str,
+    font: objc2::rc::Retained<NSFont>,
+    style: Style,
+) -> Retained<NSTextField> {
     let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     label.setFont(Some(&font));
     label.setTextColor(Some(&color(style)));
@@ -272,7 +293,7 @@ fn label(mtm: MainThreadMarker, text: &str, font: objc2::rc::Retained<NSFont>, s
     label
 }
 
-fn color(style: Style) -> Retained<NSColor> {
+pub(super) fn color(style: Style) -> Retained<NSColor> {
     match style {
         Style::Plain => NSColor::labelColor(),
         Style::Secondary => NSColor::secondaryLabelColor(),

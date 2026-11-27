@@ -3,7 +3,7 @@
 //! the parent module; every wait has a bound.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::http::StatusCode;
@@ -178,12 +178,11 @@ async fn a_failed_page_is_asked_again_only_by_retry() {
     for n in 0..150 {
         actors.create(&Counter { id: format!("{n:03}") }, &json!({})).await;
     }
-    let fails = Arc::new(AtomicUsize::new(1));
+    let fails = Arc::new(AtomicBool::new(true));
     let failing = fails.clone();
     let rule: Rule = Arc::new(move |target| {
         let next_page = target.starts_with("/actors/states?cursor=");
-        (next_page && failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok())
-            .then(|| problem(500))
+        (next_page && failing.swap(false, Ordering::SeqCst)).then(|| problem(500))
     });
     let mut server = serve(&actors, rule, Duration::ZERO).await;
     let model = model(&server, Limits::DEFAULT);
