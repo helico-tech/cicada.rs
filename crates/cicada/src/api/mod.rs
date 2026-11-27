@@ -265,7 +265,10 @@ pub struct MessageView {
     /// (e.g. a backoff kind of a newer node) is null rather than failing the whole response.
     #[serde(default, deserialize_with = "lenient_retry")]
     pub retry: Option<RetryPolicy>,
-    /// The message whose turn sent this one; null for a message sent from outside an actor.
+    /// The id of the message whose turn sent this one, or of the original message in an operator retry.
+    /// For a `Stopped` notice, it is the id of the message handled by the turn that stopped or deleted the actor,
+    /// removed it with an ancestor, or found it absent through `watch_existing`.
+    /// Null for ordinary sends from outside an actor, `Failed` notices, and notices of removals outside a turn.
     #[serde(default)]
     pub caused_by: Option<MessageId>,
     /// How long the sender wants the record kept once the message finished, or null (store default). Decoded

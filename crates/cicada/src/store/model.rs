@@ -176,7 +176,10 @@ pub struct Message {
     pub last_error: Option<String>,
     /// The retry policy its sender attached, or `None` (no retry).
     pub retry: Option<RetryPolicy>,
-    /// The id of the message whose turn sent this one; `None` for a message sent from outside an actor.
+    /// The id of the message whose turn sent this one, or of the original message in an operator retry.
+    /// For a `Stopped` notice, it is the id of the message handled by the turn that stopped or deleted the actor,
+    /// removed it with an ancestor, or found it absent through `watch_existing`.
+    /// `None` for ordinary sends from outside an actor, `Failed` notices, and notices of removals outside a turn.
     pub caused_by: Option<MessageId>,
     /// How long the sender wants the message's record kept once it finished; `None` for the store default.
     pub retention: Option<Retention>,
@@ -269,7 +272,8 @@ pub struct OutgoingMessage {
     pub headers: BTreeMap<String, String>,
     /// The sender's retry policy.
     pub retry: Option<RetryPolicy>,
-    /// The message whose turn sends this one; the runtime sets it for every send of a turn.
+    /// The cause to record in [`Message::caused_by`]. The runtime sets it for turn sends and operator retries,
+    /// and the store sets it for notices caused by a turn.
     pub caused_by: Option<MessageId>,
     /// How long the record is kept once the message finished.
     pub retention: Option<Retention>,

@@ -13,9 +13,9 @@ mockup's Live pill (https://claude.ai/artifact/S49tsmjjgjuVTZQuqkaNQH, page Insp
 - The toolbar shows Live, Reconnecting or Paused. Clicking it pauses and resumes the updates.
 - The selection, the scroll position and the folded rows stay as they are across reloads.
 
-Split by its design review (2026-11-27): the stream reader is `client-change-stream` and the bounded refresh that keeps
-the view is `inspector-soft-refresh`; this change keeps the scheduling and the pill, and its design is rewritten on
-them.
+Split by its design review (2026-11-27): the stream reader is `client-change-stream` (landed) and the bounded refresh
+that keeps the view is `inspector-soft-refresh` with `inspector-soft-refresh-actors`; this change keeps the scheduling
+and the pill.
 
 ## Out of scope
 
