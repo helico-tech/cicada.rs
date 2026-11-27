@@ -2,11 +2,12 @@
 
 ## Why
 
-The tray's failure row shows a fixed label by the kind of failure and never error text, as text from a server can echo
-a token (`tray-menu-mockup`, code review round 6). It finds the kind by type in the error's source chain, but
-`cicada-client` turns every failure of the HTTP turn source into a string (`turns.rs`: `client_error`, `unexpected`), and
-`SourceError` carries only that string. So a real HTTP worker's failure nearly always shows "Connection failed", where
-board Disconnected shows "Connection refused". The tray also cannot tell "Host not found", "TLS error" or "HTTP 401".
+The tray's failure row shows a fixed label by the kind of failure and never error text, as text from a server can echo a
+token (`tray-menu-mockup`, code review round 6). It finds the kind by type in the error's source chain, but
+`cicada-client` turns every failure of the HTTP turn source into a string (`turns.rs`: `client_error`, `unexpected`),
+and `SourceError` carries only that string. So a real HTTP worker's failure nearly always shows "Connection failed",
+where board Disconnected shows "Connection refused". The tray also cannot tell "Host not found", "TLS error" or "HTTP
+401".
 
 ## What Changes
 
