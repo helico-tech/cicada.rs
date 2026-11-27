@@ -33,8 +33,8 @@ actions use `cicada-client`'s calls, the same routes as `cicada`, so the server'
    local text: "actor not found" for pause, resume, purge and delete, "no turn was running" for cancel turn. Any other
    error shows an alert. Its text is untrusted: the problem's title and detail when the body is a problem, else only
    "HTTP <status>", or the transport error's text; control characters are removed, credentials removed, and each part
-   cut at 500 characters; and leaves the pane as it was. A success shows a short notice (purged N messages, deleted,
-   paused, resumed, cancel requested). Credentials never appear.
+   cut at 500 characters. Neither an alert nor an absence changes the pane. A success shows a short notice (purged N
+   messages, deleted, paused, resumed, cancel requested). Credentials never appear.
 6. **A fresh read after every write.** After a successful write the page asks for a soft refresh (from
    `inspector-soft-refresh-actors`), queued as a new refresh behind one already running (never merged into it, as that
    one's reads began before the write), so every pane read of the post-write refresh starts after the write's answer; it
