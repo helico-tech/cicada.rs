@@ -420,3 +420,34 @@ async fn a_late_refusal_survives_reselection_and_manual_refresh() {
     })
     .await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_late_absence_after_reselection_names_its_address() {
+    with_clock(async {
+        let actors = actors().await;
+        create(&actors, "a").await;
+        create(&actors, "b").await;
+        let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        let late = Fake::Later {
+            arrived: arrived.clone(),
+            release: release.clone(),
+            status: StatusCode::NOT_FOUND,
+            body: json!({"type": "urn:cicada:problem:no-such-instance", "title": "Not Found", "status": 404}),
+        };
+        let rule: Rule = Arc::new(move |target| (target == "/actors/counter/a/mailbox/purge").then(|| late.clone()));
+        let server = serve(&actors, rule, Duration::ZERO).await;
+        let model = model(&server);
+        let a = select(&model, "a").await;
+        let sheet = model.press_action(&a, Action::Purge).unwrap();
+        model.answer_action(sheet.id, true);
+        arrived.notified().await;
+        let b = select(&model, "b").await;
+        release.notify_one();
+
+        let view = model.actions().wait_for(|view| !view.busy).await.unwrap().clone();
+        let Some(Feedback::Alert(alert)) = view.feedback else { panic!("expected an alert, got {view:?}") };
+        assert_eq!((alert.title.as_str(), alert.detail.as_deref()), ("actor not found", Some("counter/a")));
+        assert_eq!(model.pane().borrow().generation, b.generation);
+    })
+    .await;
+}

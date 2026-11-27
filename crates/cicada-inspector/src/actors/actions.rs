@@ -261,6 +261,7 @@ impl Shared {
             let selected = pending.target.matches(&state);
             let feedback = match answer {
                 Ok(Ok(count)) => {
+                    let label = address.to_string();
                     if count.is_some() {
                         if action == Action::Delete {
                             shared.delete_acknowledged(&mut state, address, selected);
@@ -268,8 +269,15 @@ impl Shared {
                             shared.refresh_after_write(&mut state);
                         }
                     }
-                    (selected || count.is_none())
-                        .then(|| Feedback::Notice { generation: state.pane_generation, text: action.notice(count) })
+                    let text = action.notice(count);
+                    if selected {
+                        Some(Feedback::Notice { generation: state.pane_generation, text })
+                    } else if count.is_none() {
+                        // Another pane is shown: name the address, so the absence is not read as that pane's.
+                        Some(Feedback::Alert(Alert { title: text, detail: Some(label) }))
+                    } else {
+                        None
+                    }
                 }
                 Ok(Err(error)) => Some(Feedback::Alert(state.actions.redactions.alert(error))),
                 Err(_) => {
