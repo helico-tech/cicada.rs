@@ -82,5 +82,7 @@ None.
 ## Status
 
 Proposed prose for the core and app guides, the upgrade guide and the architecture. The changelog's 0.26.0 section
-names the new items under Added and the `WorkerReady` breaks under its BREAKING line. Checks run: see the change's
-task 5 and the report.
+names the new items under Added and the `WorkerReady` breaks under its BREAKING line. Checks run: the docs checks
+(11 link and guarantee tests, 51 doctests), `cargo fmt --all --check`, workspace Clippy with warnings denied, the
+workspace run with PostgreSQL (3,785 passed, 0 failed) and `openspec validate worker-stop-now --strict`. The AppKit
+row compiles and passes Clippy, but nobody has clicked it in a running menu yet.

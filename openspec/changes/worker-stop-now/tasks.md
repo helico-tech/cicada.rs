@@ -17,6 +17,6 @@ Normal lane, version 0.26.0 (unreleased; it already breaks `WorkerReady`). Build
   under Added, and the `WorkerReady` changes under its BREAKING line; `docs-handoff.md` carries the design's Docs
   section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test
   docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate worker-stop-now --strict`, commit. The change loop runs the gate at
   landing.
