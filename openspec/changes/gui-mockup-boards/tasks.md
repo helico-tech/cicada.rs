@@ -11,7 +11,7 @@ Normal lane, no version bump (process only). Follow `design.md`; the spec is `sp
 - [x] 3. **The review briefs.** `review-loop/design.md`: every screen named, every board element in the design or under
   Departures, every addition under Departures. `review-loop/code.md`: compare the screen's code with the board in both
   directions and block on an unagreed departure (decision 3).
-- [ ] 4. **The OpenSpec rules.** `openspec/config.yaml`: the design and tasks rules for GUI changes (decision 5).
+- [x] 4. **The OpenSpec rules.** `openspec/config.yaml`: the design and tasks rules for GUI changes (decision 5).
 - [ ] 5. **Checks.** `cargo test -p cicada-examples --test skill` and `--test docs`, `python3 -m unittest discover -s
   scripts -p 'test_*.py'`, `openspec validate gui-mockup-boards --strict`, commit. No `docs-handoff.md` content beyond
   "none".

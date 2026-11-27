@@ -31,6 +31,7 @@ rules:
     - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and its docs/architecture.md text in the docs handoff
     - Name the doc blocks, links, guarantee rows and skill routes the change breaks; the docs session owns that prose
     - A schema change is an appended migration
+    - "A GUI change (one that adds or changes a screen) names each screen with its mockup board or \"no board\" (built only when the owner agrees, in a named board's style); its boards are copied into mockup/ with mockup/SOURCE.md (URL, version, date); a section `Departures from the board` lists each difference and addition with its reason for the owner to agree, and nothing else departs (.claude/skills/change-loop, GUI changes)"
   tasks:
     - At most 5 tasks plus the finishing checks
     - "The last task runs `python3 scripts/gate.py run`; a change that touches sample-service/, e2e/, the serve or worker commands of cicada-app, or the HTTP crates (cicada-axum, cicada-client) runs `python3 scripts/gate.py run --e2e` as well; for any other change E2E runs at the release"
@@ -39,4 +40,5 @@ rules:
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)
     - Never ask the builder to edit README.md, AGENTS.md or the handwritten docs (AGENTS.md, Documentation ownership); ask for the content in docs-handoff.md, which every change writes
     - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md), the links, the guarantee rows and the skill routes passing; a break the design names is fixed by the docs session before landing
+    - "A GUI change: the task that builds a screen says \"match board X\", and the manual check list starts with \"next to board X, light and dark\""
     - End with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `openspec validate <change> --strict`
