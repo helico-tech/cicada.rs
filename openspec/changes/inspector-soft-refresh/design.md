@@ -9,10 +9,11 @@ refresh; ⌘R keeps today's full Refresh.
 
 ## Decisions
 
-1. **Where the re-read range ends.** Cursors are opaque, so the range is defined by the old last row's key (Running
-   Turns: the actor's address; Watches: target then watcher; Messages and Outcomes: the message id, as their order is
-   the server's and the id is unique). A soft refresh reads root pages from the start, by cursor, until a page's rows
-   reach or pass the old last key, at most 3 pages (300 rows), or the server has no more.
+1. **Where the re-read range ends.** Cursors are opaque, so the range is defined by the old last row. For the lists
+   ordered by a key the client knows (Running Turns: the actor's address; Watches: target then watcher), a soft refresh
+   reads root pages from the start, by cursor, until a page's rows reach or pass the old last key. Messages and Outcomes
+   are ordered by the server (by delivery or finish time and sequence, not by id), so their read stops at the page that
+   holds the old last message id. Either way it stops after at most 3 pages (300 rows), or when the server has no more.
 2. **The seam.** The new rows replace the old ones in the range. Old rows past the range are kept and marked "not
    refreshed" (the footer: "rows past 300 as of HH:MM"), after removing any whose key or id the new range already holds;
    the seen set of Messages and Outcomes is rebuilt from both. The cursor that survives is the new range's last one, so
@@ -24,11 +25,13 @@ refresh; ⌘R keeps today's full Refresh.
    root page or a Retry is in flight, and is skipped while paging has failed (the Retry row is the user's to press). At
    most one runs per page; a request while one runs is remembered once. A manual Refresh, a new prefix or status, a page
    switch or a context switch cancels it.
-4. **No snapshot: the model's state at the time of applying.** The selection lives in the model, so a soft refresh
-   applies its rows and then keeps the selection as it is at that moment: by id when the row is still in the list, else
-   cleared with an empty pane, as a manual Refresh does. A selection the user made while it ran is simply the current
-   one. The pane is read again without resetting to "Loading": its old content stays until the new read answers, under
-   the pane's generation. On Outcomes, a pane showing a followed link re-reads that message with `status`.
+4. **No snapshot: the model's state at the time of applying.** Watches keeps all its loaded rows and filters them for
+   the table: a soft refresh replaces the loaded rows and filters them again. The selection lives in the model, so a
+   soft refresh applies its rows and then keeps the selection as it is at that moment: by id when the row is still in
+   the list, else cleared with an empty pane, as a manual Refresh does. A selection the user made while it ran is simply
+   the current one. A pane filled from its row (Messages, Outcomes' selected outcome, Watches, Running Turns) is filled
+   again from the new row; a pane that reads (a Types schema, Outcomes' followed link with `status`) is read again
+   without resetting to "Loading": its old content stays until the new read answers, under the pane's generation.
 5. **The scroll position in AppKit.** Every `reloadData` of a page's table (soft refresh, paging, manual Refresh) keeps
    the first visible row by its key, or the same offset when that row is gone; the view does this itself, so the model
    needs no scroll state.
