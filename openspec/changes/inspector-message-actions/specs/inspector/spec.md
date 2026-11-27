@@ -1,3 +1,54 @@
+## MODIFIED Requirements
+
+### Requirement: The Messages page and Show Actor
+
+The inspector SHALL list the pending messages under a prefix a page at a time, each message once, with several rows
+selectable and a pane for the clicked one, read only except for the message actions of "Message actions in the
+inspector" and "Actions on several messages", and SHALL go from a message to its actor on the Actors page, recorded in
+back and forward.
+
+#### Scenario: A pending message
+
+- **WHEN** the user selects a pending message on the Messages page
+- **THEN** the pane shows its envelope and its payload as JSON
+
+#### Scenario: Duplicates across pages
+
+- **WHEN** a message is retried between two pages of Messages so that both pages hold it
+- **THEN** the table shows it once
+
+#### Scenario: Show Actor
+
+- **WHEN** the user picks Show Actor for a message, and later goes back
+- **THEN** the Actors page selects exactly that message's actor, and back returns to the message
+
+### Requirement: The Outcomes page
+
+The inspector SHALL list finished messages by status (failed by default) and prefix a page at a time, show the failed
+count in the sidebar, allow several rows to be selected, and show the clicked outcome's message, error and payload in a
+pane, read only except for the message actions of "Message actions in the inspector" and "Actions on several messages",
+with its cause chain one step at a time, recorded in back and forward.
+
+#### Scenario: Failed outcomes
+
+- **WHEN** two messages failed and one is done, and the user opens Outcomes
+- **THEN** the table lists the two failed ones and the sidebar shows 2
+
+#### Scenario: Following the cause
+
+- **WHEN** the user selects a failed outcome whose message was sent by another turn, follows Caused by, and goes back
+- **THEN** the pane shows the causing message, and back returns to the failed outcome
+
+#### Scenario: Past retention
+
+- **WHEN** the causing message is past retention
+- **THEN** following Caused by shows "not found" in the pane
+
+#### Scenario: Back to an outcome no longer listed
+
+- **WHEN** the user follows Caused by from a failed outcome, switches the status to Done, and goes back
+- **THEN** the pane shows the failed outcome as it was read
+
 ## ADDED Requirements
 
 ### Requirement: Message actions in the inspector

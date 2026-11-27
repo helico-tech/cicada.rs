@@ -12,8 +12,8 @@ once (owner's proposal for `inspector-actions`, split off by its design, 2026-11
 - Several rows at once: Retry… on the selected Outcomes rows (`bulk_retry`) and Cancel… on the selected Messages rows
   (`bulk_cancel`), at most 1,000 ids. Outcomes are finished, so cancel belongs to the pending messages of the Messages
   page, not to Outcomes (changed by the design).
-- A retry sends a new message and may repeat external work, so it asks first and says how often the message was
-  retried before; a bulk retry skips rows already retried.
+- A retry sends a new message and may repeat external work, so it asks first and names the message's retries still
+  kept; a bulk retry skips rows with a retry still kept.
 - Refusals show as alerts with the server's message, as the actor actions do.
 
 ## Order

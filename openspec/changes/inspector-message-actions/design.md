@@ -40,13 +40,14 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    inspector's deadline, with a progress line ("N of M") and a Stop that sends no further chunk. Bulk Cancel asks
    ("Cancel N messages? Ones that are running or finished by then are skipped.") and shows "cancelled K of N". Bulk
    Retry first reads Caused (limit 1) for each id, at most 8 at a time, within 60 s overall, with a progress line and
-   Stop; an id with a child is skipped as already retried, one whose Caused answers "not found" as gone, one whose read
-   fails or did not answer in time as not read. The sheet then says "Retry K of N as new messages? M already retried, G
-   gone and S not read are skipped, as just read. It may repeat external work."; with K = 0 it says nothing is left to
-   retry and offers only Close. A confirmed sheet sends the K ids and shows "retried K' of K". A chunk whose call fails
-   or times out stops the run: the page says how many were done before it, that the result of that chunk is unknown and
-   the rest were not sent, and to read the page again; nothing is sent again on its own. Between the check and the send
-   another client can retry.
+   Stop; an id with a child (or an empty page with a next cursor) is skipped as already retried, one whose Caused
+   answers "not found" as gone, one whose read fails or did not answer in time as not read. The sheet then says "Retry K
+   of N as new messages? M already retried, G gone and S not read are skipped, as just read. It may repeat external
+   work."; with K = 0 it says nothing is left to retry and offers only Close. A confirmed sheet sends the K ids and
+   shows "retried K' of K". Stop during the checks ends the run with nothing sent; Stop during the writes shows
+   "stopped: K done of N; the rest not sent". A chunk whose call fails or times out stops the run: the page says how
+   many were done before it, that the result of that chunk is unknown and the rest were not sent, and to read the page
+   again; nothing is sent again on its own. Between the check and the send another client can retry.
 6. **One action at a time, results and refreshes.** As for the actor actions: from the press until the answer (for bulk,
    the last chunk), the page's action and bulk buttons are disabled; a single action's target is the message id with the
    pane's generation, checked again before sending and on confirming ("selection changed; nothing done"). A bulk
@@ -55,9 +56,10 @@ write. The calls are `cicada-client`'s, on the same routes as `cicada`.
    list does meanwhile, and only a context switch or a closed window drops it (and stops further chunks), as it drops
    any pending result. Alerts use the actor actions' text rules (problem title and detail or "HTTP <status>", control
    characters and credentials removed, 500 characters per part). After a successful write (for bulk, after the run) the
-   page asks for a soft refresh queued behind one already running, also with Live paused; while paging blocks it, a
-   single action's pane is read again by a read started after the answer. The Overview's and sidebar's failed count
-   follow from that refresh.
+   page asks for a soft refresh queued behind one already running, also with Live paused; a single action's message is
+   also read by `status`, started after the answer, and fills the pane unless the pane shows another message by then, so
+   a row past the soft refresh's range, or a refresh that paging blocks, never leaves the pane showing the row as it was
+   before the write. The Overview's and sidebar's failed count follow from that refresh.
 7. **Where it lives.** A `message_actions` module in the model (the state rules, targets and checks, the selected-id
    sets' rules, the chunked bulk runs and the Caused checks, the sheet texts and counts, the result mapping) using the
    `actions` module's alert text and refresh request; the tables' multiple selection, buttons, sheets and alerts in the
@@ -74,9 +76,10 @@ Caused is not found and one whose read failed, and the K = 0 sheet; chunks of 10
 chunk, a failed chunk stopping the run and never sent again; the Caused checks' overall limit; more than 1,000 rows
 disabling the button; the selected-id set kept and dropped across a soft refresh and cleared by a manual Refresh and a
 new prefix; a bulk sheet confirmed after a Refresh sending nothing; one action at a time, a changed target sending
-nothing, a context switch dropping a result and stopping chunks; the fresh read after each write, also with Live paused.
-The table selection, sheets and alerts get a manual check list in the tasks (⇧- and ⌘-click, Cancel the default, Return
-and Escape cancel, Retry only by click, VoiceOver labels).
+nothing, a context switch dropping a result and stopping chunks; the fresh read after each write, also with Live paused,
+and a cancelled Messages row past the refreshed range read again by `status`; Stop during the checks and during the
+writes. The table selection, sheets and alerts get a manual check list in the tasks (⇧- and ⌘-click, Cancel the default,
+Return and Escape cancel, Retry only by click, VoiceOver labels).
 
 ## Docs
 
