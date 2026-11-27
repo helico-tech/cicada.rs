@@ -21,16 +21,16 @@ before sending.
    cannot be compiled shows a note ("the server does not check this type's payloads") and leaves Send on, as the server
    lets such payloads through. A test sends the same payloads to an in-process server and checks that the local verdict
    agrees with the server's 202 or 422.
-3. **Off the main thread, bounded.** The chosen type's schema is compiled once when it is chosen. An edit disables
-   Send at once; the payload is checked 300 ms after the last edit, on a thread with a 64 MiB stack (as the server
-   does), one check at a time; a result for an older payload or type is dropped. The check refuses a payload over 1 MiB
-   of text, one that does not parse, and one nested deeper than the server's limit of 64 levels
+3. **Off the main thread, bounded.** The chosen type's schema is compiled once when it is chosen. An edit disables Send
+   at once; the payload is checked 300 ms after the last edit, on a thread with a 64 MiB stack (as the server does), one
+   check at a time; a result for an older payload or type is dropped. The check refuses a payload over 1 MiB of text,
+   one that does not parse, and one nested deeper than the server's limit of 64 levels
    (`cicada::runtime::limits::MAX_DEPTH`, counted as the server does, ADR 0029) before any schema check, as the server
    does. Then it asks only `is_valid`, which stops at the first mismatch: `validate` cannot be stopped and can collect
    whole branches of errors, so the sheet shows "does not match the schema" with the schema beside it, not a pointer.
    Send is enabled only when the payload passes (or the schema could not be compiled). The server's check stays the
-   authority: its 422 or 400 shows in the sheet with the server's text (which names the pointer), cleaned and cut as
-   `inspector-actions` does, and the sheet stays open with the payload.
+   authority: its 422 or 400 shows in the sheet with the server's text, cleaned and cut as `inspector-actions` does, and
+   the sheet stays open with the payload.
 4. **One message id per payload.** The sheet makes a message id when it opens and makes a fresh one when the message
    type or the parsed payload changes (an edit that leaves the parsed value equal keeps it), so pressing Send again
    after a timeout re-sends the same id and the server does not deliver it twice; an edited payload after a lost answer
