@@ -147,11 +147,30 @@ async fn within<T>(deadline: Instant, call: impl Future<Output = Result<T, Clien
 
 /// The actor counts of the first `limits.types` of `names`, in their order, at most `limits.concurrent` at a time.
 async fn count(client: &ActorClient, names: Vec<String>, deadline: Instant, limits: Limits) -> Vec<TypeRow> {
+    let stats = |name: String| async move { client.stats(&format!("{name}/")).await.map(|stats| stats.actors) };
+    count_with(names, deadline, limits, stats).await
+}
+
+/// [`count`] with the call of one count given: `count_one` is called only for a count that starts before the
+/// deadline, so a count still queued then never starts; one that runs at the deadline is dropped, uncounted.
+pub(crate) async fn count_with<F, Fut>(
+    names: Vec<String>,
+    deadline: Instant,
+    limits: Limits,
+    count_one: F,
+) -> Vec<TypeRow>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<u64, ClientError>>,
+{
     let asked = names.len().min(limits.types);
+    let count_one = &count_one;
     let counts: Vec<Count> = stream::iter(names[..asked].iter().cloned().map(|name| async move {
-        // A count that starts after the deadline ends at once, uncounted.
-        match timeout_at(deadline, client.stats(&format!("{name}/"))).await {
-            Ok(Ok(stats)) => Count::Counted(stats.actors),
+        if Instant::now() >= deadline {
+            return Count::NotCounted;
+        }
+        match timeout_at(deadline, count_one(name)).await {
+            Ok(Ok(actors)) => Count::Counted(actors),
             Ok(Err(error)) => Count::Failed(error_text(&error)),
             Err(_) => Count::NotCounted,
         }
@@ -163,8 +182,8 @@ async fn count(client: &ActorClient, names: Vec<String>, deadline: Instant, limi
     names.into_iter().zip(counts).map(|(name, actors)| TypeRow { name, actors }).collect()
 }
 
-/// `error` and its causes, each only when the text so far does not hold it, with the password of every URL in it
-/// hidden (`scheme://user:***@host`).
+/// `error` and its causes, each only when the text so far does not hold it. It holds no credentials of the server
+/// URL: the client never has them ([`cicada_app::context_client`]).
 pub fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
@@ -175,7 +194,7 @@ pub fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
         }
         source = cause.source();
     }
-    cicada_app::hide_passwords(&text)
+    text
 }
 
 /// What the window shows: the contexts, the target in use and the latest Overview.

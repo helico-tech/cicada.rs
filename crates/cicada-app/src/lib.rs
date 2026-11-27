@@ -78,7 +78,6 @@ use cicada::runtime::NodeConfig;
 use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
-pub use crate::command::hide_passwords;
 pub use crate::config::{ContextEntry, ContextFile, Contexts, check_server_url, context_client};
 use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, OnWorkerReadyFn, Parts, Stop};
 pub use crate::node::{StopNow, Stopping};

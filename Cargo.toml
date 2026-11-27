@@ -40,7 +40,8 @@ aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-que
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 axum = "0.8.9"
-# The `auth` of Docker's config.json, in the Docker backend of cicada-containers; bollard uses the same version.
+# The `auth` of Docker's config.json in cicada-containers (bollard uses the same version), and the Basic credentials of
+# a server URL in `cicada_app::context_client`.
 base64 = "0.22.1"
 # The Docker backend of cicada-containers: the Unix socket, the Windows pipe and plain TCP; no TLS or SSH (no rustls).
 bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"] }
@@ -55,6 +56,8 @@ libsqlite3-sys = { version = ">=0.39", default-features = false }
 opentelemetry = "0.33.0"
 opentelemetry_sdk = "0.33.0"
 peak_alloc = "0.3.0"
+# The user and password of a server URL in `cicada_app::context_client`; url uses the same version.
+percent-encoding = "2.3.2"
 proptest = "1.12.0"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
+use base64::Engine as _;
 use cicada_client::ActorClient;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -488,14 +489,32 @@ pub fn check_server_url(server: &str) -> anyhow::Result<()> {
 /// The order is that of `cicada`: `CICADA_SERVER` and `CICADA_TOKEN` win, then the context named by `context`, else
 /// by `CICADA_CONTEXT`, else the file's `current-context`. The name returned is that effective context (`None` when no
 /// context is used, as with `CICADA_SERVER` alone), so a picker shows what is really used. The file is read as
-/// [`ContextFile::load`] reads it. The server URL is checked first ([`check_server_url`]), so that no error quotes it;
-/// the client sends the credentials of a URL as a header, and its transport errors name the URL without them.
+/// [`ContextFile::load`] reads it.
+///
+/// No error and no `Debug` of the client holds the credentials of the server URL: the URL is parsed and checked first
+/// ([`check_server_url`], whose errors do not quote it), its user and password move into a sensitive
+/// `Authorization: Basic` header (which, as before, wins over a token), and the client gets the parsed URL without
+/// them.
 pub fn context_client(env: &Env, context: Option<&str>) -> anyhow::Result<(ActorClient, Option<String>)> {
     let file = ContextFile::load(env)?;
     let flags = Overrides { context: context.map(str::to_owned), ..Overrides::default() };
     let target = resolve(&flags, env, &file.config, "cicada")?;
     check_server_url(&target.server)?;
-    Ok((target.client(crate::operator::TIMEOUT)?, target.context))
+    let mut url = reqwest::Url::parse(&target.server).context("invalid server URL")?;
+    let mut headers = target.headers()?;
+    if !url.username().is_empty() || url.password().is_some() {
+        let decode = |text: &str| percent_encoding::percent_decode_str(text).decode_utf8_lossy().into_owned();
+        let credentials = format!("{}:{}", decode(url.username()), url.password().map(decode).unwrap_or_default());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+        let mut value = HeaderValue::try_from(format!("Basic {encoded}")).context("invalid server credentials")?;
+        value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, value);
+        // A URL with a user or password has an authority, which takes both.
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+    }
+    let http = reqwest::Client::builder().default_headers(headers).timeout(crate::operator::TIMEOUT).build()?;
+    Ok((ActorClient::with_client(url.as_str(), http), target.context))
 }
 
 impl Target {
@@ -827,6 +846,45 @@ mod tests {
         let text = crate::operator::error_text(&anyhow::Error::new(error));
         assert!(text.contains("HTTP request failed") && text.contains(&address.to_string()), "{text}");
         assert!(!text.contains("s3cret") && !text.contains("user"), "{text}");
+    }
+
+    /// The review's case: a server URL whose password has a space and that ends in a space passes the URL check (the
+    /// parser trims it), but the raw text plus a path does not parse. The client gets the parsed URL without the
+    /// credentials, so neither its `Debug` nor an error of a call shows the password.
+    #[tokio::test]
+    async fn a_malformed_server_url_with_a_password_never_shows_it() {
+        let (_dir, e) = context_env(&[("CICADA_SERVER", "http://u:dummy secret@127.0.0.1:81 ")]);
+        let (client, _) = context_client(&e, None).unwrap();
+        assert_eq!(base(&client), "http://127.0.0.1:81");
+        let debug = format!("{client:?}");
+        let error = client.health().await.unwrap_err();
+        let text = crate::operator::error_text(&anyhow::Error::new(error));
+        for shown in [debug, text] {
+            assert!(!shown.contains("dummy") && !shown.contains("secret") && !shown.contains("u:"), "{shown}");
+        }
+    }
+
+    /// The user and password of the URL still reach the server, percent-decoded, as Basic credentials that win over a
+    /// token, as reqwest sent them when they were part of the URL.
+    #[tokio::test]
+    async fn the_credentials_of_a_server_url_are_sent_as_basic_credentials() {
+        use axum::http::{HeaderMap, StatusCode};
+        let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("us er:p@ss w"));
+        let app = axum::Router::new().route(
+            "/api/health",
+            axum::routing::get(move |headers: HeaderMap| async move {
+                let sent = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+                if sent == Some(expected.as_str()) { StatusCode::OK } else { StatusCode::UNAUTHORIZED }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let server = format!("http://us%20er:p%40ss%20w@{address}/api");
+        let (_dir, e) = context_env(&[("CICADA_SERVER", &server), ("CICADA_TOKEN", "t0ken")]);
+        let (client, _) = context_client(&e, None).unwrap();
+        assert_eq!(base(&client), format!("http://{address}/api"));
+        assert!(client.health().await.unwrap(), "the server saw the Basic credentials");
     }
 
     fn file_env(file: &Path) -> Env {

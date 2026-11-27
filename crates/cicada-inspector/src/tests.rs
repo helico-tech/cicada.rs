@@ -24,7 +24,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
-use crate::model::{Count, Limits, Navigation, Part, Section, Session, TIMED_OUT, TypeRow, overview, tiles};
+use crate::model::{
+    Count, Limits, Navigation, Part, Section, Session, TIMED_OUT, TypeRow, count_with, overview, tiles,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Counter {
@@ -85,8 +87,8 @@ enum Fake {
     Answer(StatusCode, Value),
     /// Never answers.
     Hang,
-    /// Answers after the notify fires.
-    Wait(Arc<Notify>),
+    /// Signals `arrived` when the request comes in, then answers after `release` fires.
+    Wait { arrived: Arc<Notify>, release: Arc<Notify> },
 }
 
 type Rule = Arc<dyn Fn(&str) -> Option<Fake> + Send + Sync>;
@@ -122,8 +124,9 @@ async fn serve(actors: &TestActors, rule: Rule, hold: Duration) -> Server {
                     response
                 }
                 Some(Fake::Hang) => std::future::pending::<Response>().await,
-                Some(Fake::Wait(notify)) => {
-                    notify.notified().await;
+                Some(Fake::Wait { arrived, release }) => {
+                    arrived.notify_one();
+                    release.notified().await;
                     next.run(request).await
                 }
                 None => next.run(request).await.into_response(),
@@ -254,7 +257,8 @@ async fn sixty_types_count_fifty_at_most_eight_at_a_time() {
 }
 
 /// At the deadline the answers that came are kept, a base route still out has failed and a type still uncounted is
-/// not counted; a count that failed is failed, not "not counted".
+/// not counted; a count that failed is failed, not "not counted". The stalled routes never answer and the deadline is
+/// far beyond a local round trip, so the result does not depend on the machine's speed.
 #[tokio::test]
 async fn the_deadline_keeps_what_answered() {
     let actors = actors().await;
@@ -266,14 +270,34 @@ async fn the_deadline_keeps_what_answered() {
         _ => None,
     });
     let server = serve(&actors, rule, Duration::ZERO).await;
-    let limits = Limits { deadline: Duration::from_millis(500), ..Limits::DEFAULT };
-    let overview = timeout(Duration::from_secs(5), overview(&server.client, limits)).await.expect("bounded");
+    let limits = Limits { deadline: Duration::from_secs(2), ..Limits::DEFAULT };
+    let overview = timeout(Duration::from_secs(20), overview(&server.client, limits)).await.expect("bounded");
     assert_eq!(overview.nodes, Part::Failed(TIMED_OUT.into()));
     assert!(overview.stats.ready().is_some() && overview.health.ready().is_some());
     let types = overview.types.ready().expect("types");
     assert_eq!(types[0].actors, Count::Counted(0));
     assert!(matches!(&types[1].actors, Count::Failed(error) if error.contains("500")), "{types:?}");
     assert_eq!(types[2].actors, Count::NotCounted);
+}
+
+/// A count still queued at the deadline never starts: two counts answer, the next eight stall and fill every slot,
+/// and the forty behind them are not counted without a call. On Tokio's paused clock, without sockets.
+#[tokio::test(start_paused = true)]
+async fn a_count_queued_at_the_deadline_never_starts() {
+    let started = std::sync::Mutex::new(Vec::new());
+    let names: Vec<String> = (0..50).map(|n| format!("t{n:02}")).collect();
+    let deadline = tokio::time::Instant::now() + Limits::DEFAULT.deadline;
+    let rows = count_with(names, deadline, Limits::DEFAULT, |name: String| {
+        let answers = name.as_str() < "t02";
+        started.lock().unwrap().push(name);
+        async move { if answers { Ok(1) } else { std::future::pending().await } }
+    })
+    .await;
+    assert!(tokio::time::Instant::now() >= deadline);
+    let started = started.into_inner().unwrap();
+    assert_eq!(started, (0..10).map(|n| format!("t{n:02}")).collect::<Vec<_>>(), "no count starts after the deadline");
+    assert!(rows[..2].iter().all(|row| row.actors == Count::Counted(1)), "{rows:?}");
+    assert!(rows[2..].iter().all(|row| row.actors == Count::NotCounted), "{rows:?}");
 }
 
 fn config(dir: &tempfile::TempDir, contexts: &[(&str, &str)]) -> Env {
@@ -286,16 +310,15 @@ fn config(dir: &tempfile::TempDir, contexts: &[(&str, &str)]) -> Env {
     Env::from([("CICADA_CONFIG".to_owned(), file.to_str().unwrap().to_owned())])
 }
 
-/// A refresh of one context that finishes after a switch to another is discarded.
+/// A refresh of one context that is still in flight when the user switches to another is dropped: its `/stats` is
+/// stalled at the server when the switch happens, and after it is released only the new context's Overview shows.
 #[tokio::test]
-async fn a_refresh_finished_after_a_context_switch_is_discarded() {
+async fn a_refresh_in_flight_at_a_context_switch_is_dropped() {
     let (slow_actors, fast_actors) = (actors().await, actors().await);
     slow_actors.create(&Counter { id: "old".into() }, &json!({})).await;
-    let release = Arc::new(Notify::new());
-    let waiting = release.clone();
-    let slow =
-        serve(&slow_actors, Arc::new(move |t| (t == "/stats").then(|| Fake::Wait(waiting.clone()))), Duration::ZERO)
-            .await;
+    let (arrived, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let stall = Fake::Wait { arrived: arrived.clone(), release: release.clone() };
+    let slow = serve(&slow_actors, Arc::new(move |t| (t == "/stats").then(|| stall.clone())), Duration::ZERO).await;
     let fast = serve(&fast_actors, no_rule(), Duration::ZERO).await;
     let dir = tempfile::tempdir().unwrap();
     let env = config(&dir, &[("slow", &slow.url), ("fast", &fast.url)]);
@@ -304,19 +327,40 @@ async fn a_refresh_finished_after_a_context_switch_is_discarded() {
 
     session.use_context(None);
     assert_eq!(view.borrow().context.as_deref(), Some("slow"));
-    assert!(view.borrow().refreshing);
+    timeout(Duration::from_secs(10), arrived.notified()).await.expect("the old refresh is in flight");
     session.use_context(Some("fast".into()));
     let done =
-        timeout(Duration::from_secs(5), view.wait_for(|v| v.overview.is_some())).await.expect("refreshed").unwrap();
+        timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some())).await.expect("refreshed").unwrap();
     assert_eq!(done.context.as_deref(), Some("fast"));
     assert_eq!(done.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0));
     drop(done);
 
+    // The old store has one actor: had its refresh published, the view would change and show it.
     release.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!view.has_changed().unwrap(), "nothing is published after the new Overview");
     let view = view.borrow();
     assert_eq!(view.overview.as_ref().unwrap().stats.ready().map(|s| s.actors), Some(0), "the old refresh is dropped");
     assert_eq!((view.context.as_deref(), view.picked.as_deref()), (Some("fast"), Some("fast")));
+}
+
+/// The review's malformed server URL with a password: no part of the Overview shows the password.
+#[tokio::test]
+async fn a_password_in_a_malformed_server_url_never_reaches_the_window() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = config(&dir, &[("prod", "http://unused")]);
+    env.insert("CICADA_SERVER".into(), format!("http://u:dummy secret@{address} "));
+    let session = Session::new(env, tokio::runtime::Handle::current(), Limits::DEFAULT);
+    session.use_context(None);
+    let mut view = session.view();
+    let done =
+        timeout(Duration::from_secs(10), view.wait_for(|v| v.overview.is_some())).await.expect("refreshed").unwrap();
+    let text = format!("{:?}", *done);
+    assert!(matches!(done.overview.as_ref().unwrap().stats, Part::Failed(_)), "{text}");
+    assert!(!text.contains("dummy") && !text.contains("secret"), "{text}");
 }
 
 /// A context without a server leaves the window usable: the error, no Overview, the contexts still listed; the
@@ -363,14 +407,31 @@ fn back_and_forward_follow_the_selection() {
     assert!(!navigation.forward());
 }
 
-/// A failed `/stats` puts its error on every tile; an error text hides a URL's password.
+/// A failed `/stats` puts its error on every tile; an error text names the error and its causes.
 #[test]
 fn a_failed_stats_shows_its_error_on_the_tiles() {
-    let error = crate::model::error_text(&std::io::Error::other("refused by http://u:s3cret@h/x"));
-    assert_eq!(error, "refused by http://u:***@h/x");
+    let cause = std::io::Error::other("connection refused");
+    let error = crate::model::error_text(&std::io::Error::other(OuterError(cause)));
+    assert_eq!(error, "cannot connect: connection refused");
     let tiles = tiles(&Part::Failed(error.clone()), chrono::Utc::now());
     assert!(tiles.iter().all(|tile| tile.error && tile.value == "—" && tile.note == error));
     assert!(Section::BROWSE.iter().all(|section| !section.ready()) && Section::Overview.ready());
     assert_eq!(crate::model::check_macos((13, 6, 0)), Err(crate::model::NEEDS_MACOS));
     assert_eq!(crate::model::check_macos((14, 0, 0)), Ok(()));
+}
+
+/// An error with a cause, for the error text.
+#[derive(Debug)]
+struct OuterError(std::io::Error);
+
+impl std::fmt::Display for OuterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cannot connect")
+    }
+}
+
+impl std::error::Error for OuterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
 }

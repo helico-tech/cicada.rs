@@ -21,6 +21,7 @@ tui = ["dep:crossterm", "dep:ratatui"]
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+base64.workspace = true
 chrono.workspace = true
 cicada.workspace = true
 cicada-axum.workspace = true
@@ -29,6 +30,7 @@ clap = { workspace = true, features = ["string"] }
 crossterm = { workspace = true, optional = true }
 futures.workspace = true
 http-body.workspace = true
+percent-encoding.workspace = true
 ratatui = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true

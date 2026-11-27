@@ -38,14 +38,16 @@ directly or use `..` in matches.
   oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
   turns with a mark when there are more, and the types with their actor counts. A refresh is by hand and bounded: at
   most 50 types counted, 8 counts at a time, 10 s in all; a part that fails shows its error alone, and a type past
-  the 50 or the deadline shows as not counted. A refresh superseded by another or by a context switch is cancelled
-  and its result discarded. Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual
-  check list.
+  the 50 or the deadline shows as not counted, and a count still queued at the deadline never starts. A refresh
+  superseded by another or by a context switch is cancelled, also while in flight, and its result discarded.
+  Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual check list.
 - `cicada-app`: `context_client(&Env, Option<&str>)`, a client for a context of the config file resolved as the
   operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
   the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL
-  first, so no error quotes it. `hide_passwords` is the password hiding of the usage errors
-  (`scheme://user:***@host`). Covered by the `a_context_client_…` tests in `crates/cicada-app/src/config.rs`.
+  first, so no error quotes it, and moves the URL's user and password into Basic credentials (which win over a token,
+  as before), so the client's URL, its errors and its `Debug` never hold them. Covered by the `a_context_client_…`,
+  `a_malformed_server_url_with_a_password_never_shows_it` and
+  `the_credentials_of_a_server_url_are_sent_as_basic_credentials` tests in `crates/cicada-app/src/config.rs`.
 - `cicada`, `cicada-client`, `cicada-app`: `GET /stats` and `cicada stats` report the number of failed outcomes
   currently visible under the address prefix, using the visibility rules of `GET /outcomes`. The CLI table shows
   `-` when an older server omits the count.

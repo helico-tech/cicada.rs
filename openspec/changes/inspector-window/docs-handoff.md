@@ -25,28 +25,33 @@ Refresh is by hand (Refresh or ⌘R; live updates come with `inspector-live`). A
 `/nodes`, the first page of `/turns` and `/types` at once, and, once `/types` answers, `/stats?prefix=<type>/` for at
 most 50 types, 8 at a time, all within 10 seconds. A part whose call fails shows its error while the others show their
 numbers; a part with no answer by the deadline says "no answer within 10 s"; a type past the 50, or not counted by the
-deadline, shows "not counted", which differs from a count that failed ("error", with the error as its tooltip). A new
-refresh or a context switch cancels the one before, and a result that still arrives is dropped.
+deadline, shows "not counted", which differs from a count that failed ("error", with the error as its tooltip). A count
+still waiting for a slot at the deadline never starts. A new refresh or a context switch cancels the one before, also
+one in flight, and a result that still arrives is dropped.
 
 The context: the window starts on the context `cicada` would use and the pop-up lists the config file's contexts,
 the one in use marked. Picking one makes a new client and refreshes. The order is that of `cicada`: `CICADA_SERVER`
 and `CICADA_TOKEN` win over the picked context, then the picked context, else `CICADA_CONTEXT`, else the file's
 `current-context`. When either variable is set, the pop-up, the subtitle and the Overview say
 "CICADA_SERVER overrides the context" (or both variables). A context without a usable server shows its error in the
-window, which stays usable; another context can be picked. Error texts hide the password of a URL
-(`scheme://user:***@host`); the client sends the URL's credentials as a header, so transport errors name the URL
-without them, and a malformed server URL is refused without quoting it.
+window, which stays usable; another context can be picked. The password of a server URL never reaches the window: the
+URL is parsed and checked first (a malformed one is refused without quoting it), its user and password move into a
+Basic `Authorization` header, and the client only ever holds the URL without them, so no error names them.
 
-New public items in `cicada-app`: `context_client(&Env, Option<&str>) -> anyhow::Result<(ActorClient,
-Option<String>)>` (the client, with the operator commands' 30 s timeout, and the context in use) and
-`hide_passwords(&str) -> String` (the usage errors' password hiding).
+New public item in `cicada-app`: `context_client(&Env, Option<&str>) -> anyhow::Result<(ActorClient,
+Option<String>)>` (the client, with the operator commands' 30 s timeout, and the context in use). It sends the URL's
+user and password as Basic credentials, which win over a token, as reqwest did when they were part of the URL.
 
 Tests: `crates/cicada-inspector/src/tests.rs` (the Overview against an in-process server, one failing route, an older
-server, 60 types with at most 8 counts at a time, the deadline, a refresh discarded after a context switch, a target
-error and an override, navigation); `crates/cicada-app/src/config.rs` (`a_context_client_resolves_as_the_operator_commands_and_names_its_context`,
+server, 60 types with at most 8 counts at a time, the deadline, no count started after it, a refresh in flight at a
+context switch dropped, a password in a malformed server URL kept out of the window, a target error and an override,
+navigation); `crates/cicada-app/src/config.rs`
+(`a_context_client_resolves_as_the_operator_commands_and_names_its_context`,
 `a_context_client_without_a_server_says_so_without_the_token`,
 `a_context_client_refuses_a_malformed_server_without_quoting_it`,
-`a_transport_error_of_a_context_client_hides_the_credentials`). The window has a manual check list in `tasks.md`.
+`a_transport_error_of_a_context_client_hides_the_credentials`,
+`a_malformed_server_url_with_a_password_never_shows_it`,
+`the_credentials_of_a_server_url_are_sent_as_basic_credentials`). The window has a manual check list in `tasks.md`.
 
 No guarantee row, wire format, schema, actor contract or command line changes. The CLI reference and the OpenAPI
 document are unchanged.
@@ -80,8 +85,8 @@ what retention keeps; the inspector cannot show the retention itself. A refresh 
 resolved exactly as the operator commands resolve their target, with their 30 s timeout, and the name of the context
 it really uses (`None` when only `CICADA_SERVER` names a server). `None` as the context picks it as `cicada` does.
 **Caveats.** It checks the server URL first (`invalid server URL` or `the server URL must use http or https`), so no
-error quotes it. `cicada_app::hide_passwords` hides URL passwords in a text as the usage errors do; it leaves alone a
-password with a raw `/`, `#`, `?`, `"`, `` ` `` or a space.
+error quotes it. A user and password in the URL are sent as Basic credentials and win over a token; the client's URL
+has neither, so its errors and `Debug` never show them.
 
 ## 3. The docs index
 
@@ -98,12 +103,14 @@ password with a raw `/`, `#`, `?`, `"`, `` ` `` or a space.
   and an AppKit window behind `cfg(target_os = "macos")`; on `cicada-client` and `cicada-app`
   (`context_client`); no library crate depends on it but `cicada-tray`'s optional feature `inspector`, which the gate
   checks".
-- `AGENTS.md`, the map after `crates/cicada-tray`: "`crates/cicada-inspector` | The inspector (ADR 0076): `src/model.rs`,
-  the portable Overview refresh, `Session` and `Navigation`; `src/appkit` (`appkit.rs`, `appkit/content.rs`), the
-  macOS window; `src/tests.rs` tests the model against an in-process server; no other library crate depends on it but
-  `cicada-tray`'s feature `inspector`". The `Build and test` block may name `cargo test -p cicada-inspector`.
+- `AGENTS.md`, the map after `crates/cicada-tray`: "`crates/cicada-inspector` | The inspector (ADR 0076):
+  `src/model.rs`, the portable Overview refresh, `Session` and `Navigation`; `src/appkit` (`appkit.rs`,
+  `appkit/content.rs`), the macOS window; `src/tests.rs` tests the model against an in-process server; no other
+  library crate depends on it but `cicada-tray`'s feature `inspector`". The `Build and test` block may name
+  `cargo test -p cicada-inspector`.
 - `docs/how-to/install.md`, after "Run a menu bar worker": "Inspect a system from a Mac | Add `cicada-inspector` from
-  the same tag and call `Inspector::new().run()` from a binary (app guide)", linking `../guide/app.md#inspector-on-macos`.
+  the same tag and call `Inspector::new().run()` from a binary (app guide)", linking
+  `../guide/app.md#inspector-on-macos`.
 - The consumer skill `skills/cicada/SKILL.md`: add `cicada-inspector` to the description's crate list and a route row
   "An inspector window on macOS | `docs/guide/app.md#inspector-on-macos`, `crates/cicada-inspector`" once the guide
   section exists (the skill test checks that routes resolve). The builder of a later inspector change can add it.
@@ -116,6 +123,8 @@ None.
 
 ## Status
 
-Ran `cargo test -p cicada-examples --test docs` (11 passed), `--doc` (54 passed) and `--test skill` (18 passed) on this branch,
-with this handoff in place (its proposed links are code spans, so the link check does not follow them): nothing fails,
-as no guide, README or skill route names the new crate yet. All text above is proposed; no protected prose is written.
+Ran `cargo test -p cicada-examples --test docs`, `--doc` and `--test skill` on this branch, with this handoff in place
+(its proposed links are code spans, so the link check does not follow them): nothing fails, as no guide, README or
+skill route names the new crate yet. All text above is proposed; no protected prose is written. Updated after code
+review 1: the URL's credentials leave the client's URL, queued counts never start after the deadline, and
+`hide_passwords` stays private.
