@@ -18,8 +18,8 @@ Disconnecting, Running and Registered), with the eight departures its design lis
   <app>.
 - **Connecting.** "Connecting to <context>…", the contexts and the submenus, no Running section yet.
 - **Not connected.** "Not connected" (with no contexts at all, "Not connected · Run cicada config"). After a failed
-  connection, a row "Couldn't reach <context>" over "<error> at HH:MM"; the error has no URL user, password, query or
-  control characters and is cut at 200 characters. Picking a context now selects it (the blue circle) without
+  connection, a row "Couldn't reach <context>" over "<error> at HH:MM"; each URL in the error shows only its scheme and
+  host (`<url>` when it does not parse), control characters are removed, and it is cut at 200 characters. Picking a context now selects it (the blue circle) without
   connecting, also after a failure; "Connect to <context>" (⌘K) and the switch connect to the selected one. The pick
   starts from the config file's `current-context`, lasts while the app runs and that context exists, and is never
   written to the config file. No Running section, no submenus. A turn a stop left behind (Stop Now while its release

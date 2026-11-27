@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -222,21 +222,29 @@ impl TrayState {
     }
 }
 
-/// `text` as the menu shows it: the user, password, query and fragment of each URL removed, each run of control
-/// characters and white space made one space, and cut at `limit` characters, the last an ellipsis when cut. The URLs
-/// are cleaned before the cut, so a cut never leaves part of a credential.
+/// `text` as the menu shows it: each URL (from its scheme's `xxx://` to the next white space, control character or
+/// quote) replaced by its scheme and host as the `url` crate parses them, or by `<url>` when it does not parse or has no
+/// host; each run of control characters and white space made one space; cut at `limit` characters, the last an
+/// ellipsis when cut. The URLs are replaced before the cut, so a cut never leaves part of one.
 pub(crate) fn display_text(text: &str, limit: usize) -> String {
     let mut shown = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("://") {
-        shown.push_str(&rest[..at + 3]);
-        let after = &rest[at + 3..];
-        let end = url_end(after);
-        let url = &after[..end];
-        // The user and password end at the last `@` before the path, also when they hold `?`, `#` or parentheses.
-        let host = url[..url.find('/').unwrap_or(url.len())].rfind('@').map_or(0, |at| at + 1);
-        let kept = url[host..].find(['?', '#']).map_or(url.len(), |query| host + query);
-        shown.push_str(&url[host..kept]);
+        let scheme = rest[..at]
+            .char_indices()
+            .rev()
+            .take_while(|&(_, c)| c.is_ascii_alphanumeric() || "+-.".contains(c))
+            .last()
+            .map_or(at, |(start, _)| start);
+        shown.push_str(&rest[..scheme]);
+        let after = &rest[scheme..];
+        let end =
+            after.find(|c: char| c.is_whitespace() || c.is_control() || "\"'`".contains(c)).unwrap_or(after.len());
+        let token = &after[..end];
+        // Sentence punctuation at the end, such as the `):` of "for url (…):", stays text: it has no letter or digit.
+        let url = token.trim_end_matches(|c: char| ")]}>,.;:!?".contains(c));
+        shown.push_str(&redacted_url(url));
+        shown.push_str(&token[url.len()..]);
         rest = &after[end..];
     }
     shown.push_str(rest);
@@ -250,20 +258,75 @@ pub(crate) fn display_text(text: &str, limit: usize) -> String {
     cut
 }
 
-/// Where a URL that starts `text` ends: at white space, a control character, a quote or an angle bracket, or at a `)`
-/// that closes a parenthesis opened before the URL. Parentheses opened inside it belong to it.
-fn url_end(text: &str) -> usize {
-    let mut depth = 0usize;
-    for (at, c) in text.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' if depth == 0 => return at,
-            ')' => depth -= 1,
-            c if c.is_whitespace() || c.is_control() || "<>\"'`".contains(c) => return at,
-            _ => {}
-        }
+/// A URL as its scheme and host only, or `<url>`.
+fn redacted_url(text: &str) -> String {
+    match url::Url::parse(text) {
+        Ok(url) => match url.host_str().filter(|host| !host.is_empty()) {
+            Some(host) => format!("{}://{host}", url.scheme()),
+            None => "<url>".to_owned(),
+        },
+        Err(_) => "<url>".to_owned(),
     }
-    text.len()
+}
+
+/// The boards' row geometry, in points: the menu's padding, a row's padding (rich rows and plain ones), the icon or the
+/// tick column before the text, and the gap between parts.
+const MENU_PADDING: f64 = 5.0;
+const RICH_PADDING: f64 = 7.0;
+const PLAIN_PADDING: f64 = 9.0;
+const GAP: f64 = 8.0;
+
+/// What a row shows before its text.
+#[derive(Clone, Copy)]
+pub(crate) enum Lead {
+    /// A rich row's 26 pt circle.
+    Icon,
+    /// A submenu row's 12 pt tick column.
+    Tick,
+    /// Nothing: a plain row.
+    Nothing,
+}
+
+/// The boards' menu widths: the menu, the Registered Types submenu and the Recent Turns submenu.
+pub(crate) const MENU_WIDTH: f64 = 300.0;
+pub(crate) const REGISTERED_WIDTH: f64 = 260.0;
+pub(crate) const RECENT_WIDTH: f64 = 290.0;
+
+/// The width left for a row's text in a menu `menu` points wide: the menu less its padding, the row's padding, what
+/// comes before the text and the gap after it, and the text on the right (`right` points wide) with its gap.
+pub(crate) fn text_space(menu: f64, lead: Lead, right: Option<f64>) -> f64 {
+    let (padding, lead) = match lead {
+        Lead::Icon => (RICH_PADDING, 26.0 + GAP),
+        Lead::Tick => (PLAIN_PADDING, 12.0 + GAP),
+        Lead::Nothing => (PLAIN_PADDING, 0.0),
+    };
+    menu - 2.0 * MENU_PADDING - 2.0 * padding - lead - right.map_or(0.0, |width| width + GAP)
+}
+
+/// Runs renders one at a time: a render asked for while one runs, such as by AppKit re-entering it, runs once the
+/// running one has put its state back.
+#[derive(Default)]
+pub(crate) struct Renders {
+    running: Cell<bool>,
+    again: Cell<bool>,
+}
+
+impl Renders {
+    /// Runs `render`, again as long as a render was asked for meanwhile; called during a render, only asks for one.
+    pub fn run(&self, render: impl Fn()) {
+        if self.running.replace(true) {
+            self.again.set(true);
+            return;
+        }
+        loop {
+            self.again.set(false);
+            render();
+            if !self.again.get() {
+                break;
+            }
+        }
+        self.running.set(false);
+    }
 }
 
 fn clock(at: Timestamp, zone: FixedOffset) -> String {
@@ -919,20 +982,56 @@ mod tests {
         let failure = fixture.model().failure.unwrap();
         assert_eq!(
             failure.subtitle,
-            "error sending request for url (https://actors.internal:8443/api/v1): connection refused at 09:01"
+            "error sending request for url (https://actors.internal): connection refused at 09:01"
         );
-        let long = format!("http://a@b/{}", "y".repeat(400));
+        let long = format!("http://a@b/x {}", "y".repeat(400));
         let shown = display_text(&long, FAILURE_LENGTH);
         assert_eq!(shown.chars().count(), FAILURE_LENGTH);
-        assert!(shown.starts_with("http://b/yyy") && shown.ends_with('…'));
+        assert!(shown.starts_with("http://b yyy") && shown.ends_with('…'));
         assert_eq!(display_text("a://u@h?q b://h#f ok", 200), "a://h b://h ok");
         assert_eq!(
             display_text("for url (https://user:sec(ret)@host/path?token=abc(def)): refused", 200),
-            "for url (https://host/path): refused"
+            "for url (https://host)): refused"
         );
-        assert_eq!(display_text("https://u:p?a#b@host/x?q=1", 200), "https://host/x", "a password holding ? and #");
+        for (text, shown) in [
+            ("https://host?token=abc@secret", "https://host"),
+            ("https://user:sec)ret@host/path?token=hidden", "https://host"),
+            ("see https://u:p?a#b@host/x?q=1.", "see <url>."),
+            ("at ://user:secret@host and http://[bad", "at <url> and <url>"),
+            ("\"https://u:p@h/p\" and 'ftp://h/x'", "\"https://h\" and 'ftp://h'"),
+        ] {
+            assert_eq!(display_text(text, 200), shown, "{text}");
+        }
         let cut = display_text(&format!("{} https://user:secret@host?token=abc", "z".repeat(190)), 200);
         assert!(!cut.contains("user") && !cut.contains("secret") && !cut.contains("tok"), "{cut}");
+    }
+
+    #[test]
+    fn text_space_follows_the_boards_geometry() {
+        assert_eq!(text_space(MENU_WIDTH, Lead::Icon, None), 242.0, "board Main's context row");
+        assert_eq!(text_space(MENU_WIDTH, Lead::Icon, Some(30.0)), 204.0, "a running row with its time");
+        assert_eq!(text_space(MENU_WIDTH, Lead::Nothing, Some(20.0)), 244.0, "Connect with its key");
+        assert_eq!(text_space(REGISTERED_WIDTH, Lead::Tick, Some(100.0)), 104.0, "a type and its state");
+        assert_eq!(text_space(RECENT_WIDTH, Lead::Icon, Some(32.0)), 192.0, "a recent turn and its time");
+    }
+
+    #[test]
+    fn a_render_asked_for_during_a_render_runs_after_it() {
+        let renders = Renders::default();
+        let (outer, depth, deepest) = (Cell::new(0), Cell::new(0), Cell::new(0));
+        renders.run(|| {
+            outer.set(outer.get() + 1);
+            depth.set(depth.get() + 1);
+            deepest.set(deepest.get().max(depth.get()));
+            if outer.get() == 1 {
+                renders.run(|| panic!("a nested render never runs inside the running one"));
+                renders.run(|| panic!("nor does a second"));
+            }
+            depth.set(depth.get() - 1);
+        });
+        assert_eq!((outer.get(), deepest.get()), (2, 1), "one more render, after the first, never nested");
+        renders.run(|| outer.set(outer.get() + 1));
+        assert_eq!(outer.get(), 3, "the next render runs at once");
     }
 
     #[test]

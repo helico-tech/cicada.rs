@@ -33,7 +33,7 @@ use tokio::time::Instant;
 
 #[cfg(feature = "inspector")]
 use crate::menu::InspectorItem;
-use crate::menu::{Action, MenuControl, MenuInput, QuitRequest, Terminate, Worker, macos_subtitles, menu};
+use crate::menu::{Action, MenuControl, MenuInput, QuitRequest, Renders, Terminate, Worker, macos_subtitles, menu};
 use crate::settings::SettingsForm;
 use crate::{Tray, TrayState};
 use settings::SettingsWindow;
@@ -149,6 +149,7 @@ fn run_app(
             #[cfg(feature = "inspector")]
             inspector_runtime,
             menu_open: Cell::new(false),
+            renders: Renders::default(),
             last_clock: Cell::new(Instant::now()),
         },
     );
@@ -192,6 +193,7 @@ struct Controller {
     #[cfg(feature = "inspector")]
     inspector_runtime: tokio::runtime::Handle,
     menu_open: Cell<bool>,
+    renders: Renders,
     last_clock: Cell<Instant>,
 }
 
@@ -403,7 +405,12 @@ impl Target {
         c.contexts.replace(contexts);
     }
 
+    /// Renders the menu; asked for during a render (AppKit re-entering it), renders again once that one ended.
     fn render(&self) {
+        self.ivars().renders.run(|| self.render_now());
+    }
+
+    fn render_now(&self) {
         let c = self.ivars();
         let (state, details) = {
             let connection = c.tray.control.connection.lock().expect("tray connection");

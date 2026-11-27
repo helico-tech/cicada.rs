@@ -18,12 +18,12 @@ use objc2_foundation::{NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize
 use super::Target;
 use super::icons::{self, Icons};
 use crate::menu::{
-    ACTOR_TYPES, BACKGROUND_TASKS, Bar, CHOOSE_TYPES, ContextRow, Header, InspectorItem, MenuModel, RECENT, RecentRow,
-    Row, RunningRow, STOP_NOW_HELP, TypeRow, row_text,
+    ACTOR_TYPES, BACKGROUND_TASKS, Bar, CHOOSE_TYPES, ContextRow, Header, InspectorItem, Lead, MENU_WIDTH, MenuModel,
+    RECENT, RECENT_WIDTH, REGISTERED_WIDTH, RecentRow, Row, RunningRow, STOP_NOW_HELP, TypeRow, row_text, text_space,
 };
 
 /// The boards' menu width.
-const WIDTH: f64 = 300.0;
+const WIDTH: f64 = MENU_WIDTH;
 /// The boards' horizontal padding of a row's text.
 const PADDING: f64 = 14.0;
 
@@ -237,10 +237,10 @@ impl MenuView {
         let dark = icons::dark(mtm);
         let swapped = self.dark.replace(dark) != dark;
         let (title_font, subtitle_font) = (title_font(), subtitle_font());
-        let rich = |item: &NSMenuItem, row: &Row| {
+        let rich = |item: &NSMenuItem, row: &Row, menu: f64| {
             let (title, subtitle) = row_text(row, self.subtitles);
             // As the boards' `text-overflow: ellipsis`: long text ends in "…" instead of widening the menu.
-            let width = if row.right.is_some() { TEXT } else { WIDE_TEXT };
+            let width = text_space(menu, Lead::Icon, row.right.as_deref().map(badge_width));
             item.setTitle(&NSString::from_str(&fit(&title, &title_font, width)));
             if self.subtitles {
                 let subtitle = subtitle.map(|subtitle| NSString::from_str(&fit(&subtitle, &subtitle_font, width)));
@@ -262,7 +262,7 @@ impl MenuView {
 
         if shown.failure != model.failure || swapped {
             if let Some(row) = &model.failure {
-                rich(&self.failure, row);
+                rich(&self.failure, row, MENU_WIDTH);
             }
             show(&self.failure, model.failure.is_some());
             show(&self.failure_separator, model.failure.is_some());
@@ -288,10 +288,10 @@ impl MenuView {
             model.running.map(|section| section.rows).unwrap_or_default(),
             |old, new| old.turn == new.turn,
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
-            |item, row| rich(item, &row.row),
+            |item, row| rich(item, &row.row, MENU_WIDTH),
         );
         if swapped {
-            running.items.iter().for_each(|(row, item)| rich(item, &row.row));
+            running.items.iter().for_each(|(row, item)| rich(item, &row.row, MENU_WIDTH));
         }
         self.running_rows.replace(running);
 
@@ -316,10 +316,10 @@ impl MenuView {
                 item.setEnabled(model.contexts_enabled);
                 item
             },
-            |item, row| rich(item, &row.row),
+            |item, row| rich(item, &row.row, MENU_WIDTH),
         );
         if swapped {
-            rows.items.iter().for_each(|(row, item)| rich(item, &row.row));
+            rows.items.iter().for_each(|(row, item)| rich(item, &row.row, MENU_WIDTH));
         }
         if shown.contexts_enabled != model.contexts_enabled {
             for (_, item) in &rows.items {
@@ -350,8 +350,10 @@ impl MenuView {
             1,
             types,
             |old, new| old.name == new.name,
-            |row| item(mtm, &NSString::from_str(&fit(row.name, &title_font, TEXT)), None, ns_string!("")),
+            |_| item(mtm, ns_string!(""), None, ns_string!("")),
             |item, row| {
+                let width = text_space(REGISTERED_WIDTH, Lead::Tick, row.right.as_deref().map(badge_width));
+                item.setTitle(&NSString::from_str(&fit(row.name, &title_font, width)));
                 item.setState(mark(row.runs));
                 item.setBadge(row.right.as_deref().map(badge).as_deref());
             },
@@ -364,16 +366,17 @@ impl MenuView {
             recent,
             |old, new| old.turn == new.turn,
             |_| item(mtm, ns_string!(""), None, ns_string!("")),
-            |item, row| rich(item, &row.row),
+            |item, row| rich(item, &row.row, RECENT_WIDTH),
         );
         if swapped {
-            recent_rows.items.iter().for_each(|(row, item)| rich(item, &row.row));
+            recent_rows.items.iter().for_each(|(row, item)| rich(item, &row.row, RECENT_WIDTH));
         }
         self.recent_rows.replace(recent_rows);
 
         if shown.connect != model.connect {
             if let Some(title) = &model.connect {
-                self.connect.setTitle(&NSString::from_str(&fit(title, &title_font, PLAIN_TEXT)));
+                let width = text_space(MENU_WIDTH, Lead::Nothing, Some(text_width("⌘K", &title_font)));
+                self.connect.setTitle(&NSString::from_str(&fit(title, &title_font, width)));
             }
             show(&self.connect, model.connect.is_some());
             shown.connect = model.connect;
@@ -390,7 +393,8 @@ impl MenuView {
         show(&self.settings, model.settings);
         let quit = (model.quit, model.quit_enabled);
         if shown.quit != quit {
-            self.quit.setTitle(&NSString::from_str(&fit(&quit.0, &title_font, PLAIN_TEXT)));
+            let width = text_space(MENU_WIDTH, Lead::Nothing, Some(text_width("⌘Q", &title_font)));
+            self.quit.setTitle(&NSString::from_str(&fit(&quit.0, &title_font, width)));
             self.quit.setEnabled(quit.1);
             shown.quit = quit;
         }
@@ -398,11 +402,17 @@ impl MenuView {
     }
 }
 
-/// The longest text of a row with a badge, and of one without, and of a plain item, in points: with the icon, the
-/// badge and the margins they keep a row within the boards' 300 pt menu.
-const TEXT: f64 = 170.0;
-const WIDE_TEXT: f64 = 210.0;
-const PLAIN_TEXT: f64 = 230.0;
+/// What a native badge adds around its text: the capsule's padding (the design's first departure).
+const BADGE_PADDING: f64 = 12.0;
+
+/// The width of a badge showing `text`.
+fn badge_width(text: &str) -> f64 {
+    text_width(text, &subtitle_font()) + BADGE_PADDING
+}
+
+fn text_width(text: &str, font: &NSFont) -> f64 {
+    attributed(text, font, None).size().width
+}
 
 fn title_font() -> Retained<NSFont> {
     NSFont::menuFontOfSize(0.0)
@@ -434,7 +444,7 @@ fn attributed(text: &str, font: &NSFont, color: Option<&NSColor>) -> Retained<NS
 
 /// `text`, cut with a trailing "…" to fit `width` points in `font`.
 fn fit(text: &str, font: &NSFont, width: f64) -> String {
-    let fits = |text: &str| attributed(text, font, None).size().width <= width;
+    let fits = |text: &str| text_width(text, font) <= width;
     if fits(text) {
         return text.to_owned();
     }
