@@ -19,9 +19,9 @@ reads and writes the config file with the code of `cicada config`. A new crate `
 native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
 health, the nodes, the running turns and the types with their actor counts, an Actors page that lists the actors
 under an address prefix with a read-only pane of the selected actor, a Messages page of the pending messages with
-Show Actor, an Outcomes page of the finished messages by status with their cause chain and the failed count in the
-sidebar, a Types page with registered schemas, and a Watches page with a filter and Show Actor, for a context of
-`cicada config`.
+Show Actor, a Running Turns page with Show Actor, an Outcomes page of the finished messages by status with their
+cause chain and the failed count in the sidebar, a Nodes page with each node's running turns, a Types page with
+registered schemas, and a Watches page with a filter and Show Actor, for a context of `cicada config`.
 `cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
 its menu.
 
@@ -41,7 +41,7 @@ directly or use `..` in matches.
   dependency and supersedes ADR 0011 in part for a native macOS console. `Inspector::new().run()` owns the main
   thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
   elsewhere, or before macOS 14, it prints an error and returns exit code 1. The window has a sidebar (Overview;
-  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches; those without a page say "Coming soon"), a
+  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, each with a page), a
   toolbar with back and forward, the title, a context pop-up and Refresh, and the Overview: tiles for actors, pending,
   oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
   turns with a mark when there are more, and the types with their actor counts. A refresh is by hand and bounded: at
@@ -115,6 +115,24 @@ directly or use `..` in matches.
   those places as they were. Back to an outcome shows it as it was read, also when its row is no longer listed, and
   selects its row when it is listed or once a page brings it. A context switch clears back and forward and drops pending
   reads. Covered by the tests in `crates/cicada-inspector/src/tests/outcomes.rs`; the window has a manual check list.
+- `cicada-inspector`: the Running Turns page. Its table lists the turns running now on the actors under the prefix in
+  the search field, 100 at a time as it scrolls, by the server's cursor, with the actor, message id, node, lease end
+  and whether an operator asked to cancel. The server pages turns by actor address, so an actor shows once even while
+  leases begin and end between pages. Selecting a turn fills the pane from its row, with no read; Show Actor goes to
+  its actor on the Actors page. Back to a turn reads the actor's turn again by its exact address: a turn running now
+  shows as it is, which may be another message, with its row selected when listed or once a page brings it; a turn
+  that ended shows as it was read, marked "no longer running"; a failed read shows its error with Retry. ⌘R reloads the
+  list from the top and clears the selection. Covered by the tests in `crates/cicada-inspector/src/tests/turns.rs`.
+- `cicada-inspector`: the Nodes page. Its table lists every node from `/nodes`: id, status (alive, suspect or dead,
+  computed by the server in the store's clock), hosted types, label, host name, last heartbeat as a time, and running
+  turns. No age is measured on the Mac's clock; the footer says the status is as of the last read, with the Mac's time
+  of that read in its tooltip. The list is read on the first visit, on the page's ⌘R and after a context switch (at once
+  when the page shows, else at its next visit), never with the Overview's refresh; the search field filters it by id
+  prefix with no read. A failed read shows its error with Retry and keeps no list. Selecting a node reads it with its
+  running turns, each with Show Actor; a gone node says "not found", a failed read shows Retry, and a read is dropped
+  when the selection changes, the filter hides the node, on ⌘R and on a context switch. Back to a Nodes place selects
+  its node and reads it fresh. Every read has the 10 s deadline. Covered by the tests in
+  `crates/cicada-inspector/src/tests/nodes.rs`; the window has a manual check list.
 - `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
   on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
   window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
