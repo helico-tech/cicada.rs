@@ -9,7 +9,7 @@ use tokio::{runtime::Handle, sync::watch, task::JoinHandle, time::Instant};
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, within};
 use crate::pager::Paging;
-use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
+use crate::refresh::{Budget, Done, Readiness, Refresh, RefreshPage, Stale, as_of};
 
 /// The rows matching the Types search field.
 #[derive(Clone, Default)]
@@ -142,9 +142,9 @@ impl Types {
         }
     }
 
-    /// Re-reads the registered types and the selected schema without clearing them.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Re-reads the registered types and the selected schema without clearing them; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Cancels a soft refresh when this page is left.

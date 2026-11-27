@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use cicada::ActorAddress;
 use cicada::api::MessageView;
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
@@ -17,7 +18,7 @@ use tokio::task::JoinHandle;
 use crate::json::{self, Json};
 use crate::model::{Limits, Part};
 use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
-use crate::refresh::{RefreshPage, Stale};
+use crate::refresh::{Done, RefreshPage, Stale};
 
 /// What the Messages table shows.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -173,9 +174,9 @@ impl Messages {
         }
     }
 
-    /// Re-reads the loaded range without clearing the view or changing the list generation.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Re-reads the loaded range without clearing the view or changing the list generation; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Cancels a soft refresh when this page is left.
@@ -234,6 +235,11 @@ impl Messages {
         let mut state = self.shared.lock();
         state.pending = None;
         self.shared.select(&mut state, id);
+    }
+
+    /// The actor the pane shows, if any.
+    pub fn pane_actor(&self) -> Option<ActorAddress> {
+        self.shared.pane.borrow().message.as_ref().map(|message| message.to.clone())
     }
 
     /// The selected message's id.

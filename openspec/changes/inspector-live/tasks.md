@@ -4,7 +4,7 @@ Normal lane, version 0.26.0 (unreleased). Builds after `inspector-soft-refresh-a
 of both soft-refresh changes; rebase onto them when they landed first). Follow `design.md`; the spec is
 `specs/inspector/spec.md`; the design reviews are `.reviews/inspector-live.design.*` (rounds 2 to 4 are of this design).
 
-- [ ] 1. **The change source and the stream's lifecycle.** A private async trait over `ActorClient::changes`, a channel
+- [x] 1. **The change source and the stream's lifecycle.** A private async trait over `ActorClient::changes`, a channel
   implementation for tests; one stream per page and prefix (local filters leave it alone), closed on page, prefix and
   context switches and on close; reconnect backoff (1, 2, 4, 8, 16, 30 s), reset 60 s after the first valid event
   (decisions 1, 2 and 7). Verify: the lifecycle tests on virtual time.

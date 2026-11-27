@@ -1,7 +1,9 @@
 //! Coordination and request limits shared by the inspector's soft refreshes.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, MutexGuard};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -9,7 +11,7 @@ use cicada::time::Timestamp;
 use cicada_client::ClientError;
 use tokio::{
     runtime::Handle,
-    sync::Semaphore,
+    sync::{Semaphore, oneshot},
     task::JoinHandle,
     time::{Instant, timeout_at},
 };
@@ -102,12 +104,37 @@ pub(crate) enum Readiness {
     Skip,
 }
 
+/// The end of one refresh attempt: it resolves once the refresh ran, was skipped, cancelled or superseded.
+pub(crate) struct Done(Option<oneshot::Receiver<()>>);
+
+impl Done {
+    /// An attempt that ended before it started.
+    pub fn ready() -> Self {
+        Self(None)
+    }
+}
+
+impl Future for Done {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        match &mut self.0 {
+            // The sender is never used: the attempt ends when it is dropped.
+            Some(ended) => Pin::new(ended).poll(cx).map(|_| ()),
+            None => Poll::Ready(()),
+        }
+    }
+}
+
 /// The separate generation and the single remembered request of a soft refresh.
 #[derive(Default)]
 pub(crate) struct Refresh {
     generation: u64,
     pending: bool,
     task: Option<JoinHandle<()>>,
+    /// The ends of the attempts the remembered request stands for; dropped when it is skipped or cancelled, and
+    /// moved into its task when it starts.
+    waiters: Vec<oneshot::Sender<()>>,
 }
 
 impl Refresh {
@@ -125,6 +152,7 @@ impl Refresh {
     pub fn cancel(&mut self) {
         self.generation += 1;
         self.pending = false;
+        self.waiters.clear();
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -154,15 +182,20 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
     fn after(self: &Arc<Self>, _state: &mut Self::State) {}
 
     /// Requests a refresh, remembering it once if a read is already in progress.
-    fn request(self: &Arc<Self>) {
+    fn request(self: &Arc<Self>) -> Done {
         let mut state = self.lock_refresh();
-        self.request_locked(&mut state);
+        self.request_locked(&mut state)
     }
 
-    /// Requests a refresh with the state already locked, alongside any inputs that belong to this request.
-    fn request_locked(self: &Arc<Self>, state: &mut Self::State) {
-        Self::refresh(state).pending = true;
+    /// Requests a refresh with the state already locked, alongside any inputs that belong to this request; the
+    /// returned [`Done`] resolves when the attempt ends.
+    fn request_locked(self: &Arc<Self>, state: &mut Self::State) -> Done {
+        let (ended, done) = oneshot::channel();
+        let refresh = Self::refresh(state);
+        refresh.pending = true;
+        refresh.waiters.push(ended);
         self.resume(state);
+        Done(Some(done))
     }
 
     /// Gives a remembered request a chance to start after a read finishes.
@@ -174,17 +207,23 @@ pub(crate) trait RefreshPage: Send + Sync + 'static {
         let readiness = self.readiness(state);
         let refresh = Self::refresh(state);
         match readiness {
-            Readiness::Skip => refresh.pending = false,
+            Readiness::Skip => {
+                refresh.pending = false;
+                refresh.waiters.clear();
+            }
             Readiness::Wait => {}
             Readiness::Ready => {
                 refresh.pending = false;
                 refresh.generation += 1;
                 let ticket = refresh.generation;
+                let waiters = std::mem::take(&mut refresh.waiters);
                 self.starting(state);
                 let (handle, deadline) = self.runtime();
                 let budget = Budget::new(deadline);
                 let page = self.clone();
                 Self::refresh(state).task = Some(handle.spawn(async move {
+                    // Dropped when this task ends or is aborted, which ends the attempts it stands for.
+                    let _waiters = waiters;
                     page.run(ticket, budget).await;
                     let mut state = page.lock_refresh();
                     if Self::refresh(&mut state).current(ticket) {

@@ -21,7 +21,7 @@ use crate::actors::{Actors, OutlineViewport};
 use crate::messages::Messages;
 use crate::nodes::{NodePlace, Nodes};
 use crate::outcomes::{OutcomePlace, Outcomes};
-use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
+use crate::refresh::{Budget, Done, Readiness, Refresh, RefreshPage, Stale, as_of};
 use crate::turns::{RunningTurns, TurnPlace};
 use crate::types::Types;
 use crate::watches::{WatchPlace, Watches};
@@ -314,6 +314,8 @@ struct Current {
     /// Grows with every refresh and every switch of context; a refresh publishes only while it is its own.
     generation: u64,
     client: Option<ActorClient>,
+    /// Grows with every context picked.
+    context: u64,
     task: Option<JoinHandle<()>>,
     refresh: Refresh,
     read_at: Option<Timestamp>,
@@ -390,6 +392,7 @@ impl Session {
         {
             let mut current = self.shared.current.lock().expect("inspector session");
             current.supersede();
+            current.context += 1;
             self.shared.view.send_modify(|view| {
                 (view.contexts, view.contexts_error) = match contexts {
                     Ok(contexts) => (contexts, None),
@@ -459,12 +462,12 @@ impl Session {
         }));
     }
 
-    /// Re-reads a page without clearing its cached rows or selection.
-    #[allow(dead_code, reason = "used by the live refresh change")]
-    pub fn soft_refresh(&self, section: Section, viewport: Option<OutlineViewport>) {
+    /// Re-reads a page without clearing its cached rows or selection; [`Done`] when the attempt ends. Without a
+    /// `viewport`, the Actors page uses the one the view last reported.
+    pub(crate) fn soft_refresh(&self, section: Section, viewport: Option<OutlineViewport>) -> Done {
         match section {
             Section::Overview => self.shared.request(),
-            Section::Actors => self.actors.soft_refresh(viewport.unwrap_or_default()),
+            Section::Actors => self.actors.soft_refresh(viewport.unwrap_or_else(|| self.actors.viewport())),
             Section::Messages => self.messages.soft_refresh(),
             Section::RunningTurns => self.turns.soft_refresh(),
             Section::Outcomes => self.shared.outcomes.soft_refresh(),
@@ -472,6 +475,31 @@ impl Session {
             Section::Types => self.types.soft_refresh(),
             Section::Watches => self.watches.soft_refresh(),
         }
+    }
+
+    /// Cancels a page's soft refresh and drops its results, the page staying as it is.
+    pub(crate) fn cancel_live_refresh(&self, section: Section) {
+        match section {
+            Section::Nodes => self.nodes.cancel_soft_refresh(),
+            _ => self.cancel_soft_refresh(section),
+        }
+    }
+
+    /// The actor a page's pane shows, if any.
+    pub(crate) fn pane_actor(&self, section: Section) -> Option<ActorAddress> {
+        match section {
+            Section::Actors => self.actors.pane_actor(),
+            Section::Messages => self.messages.pane_actor(),
+            Section::RunningTurns => self.turns.pane_actor(),
+            Section::Outcomes => self.shared.outcomes.pane_actor(),
+            _ => None,
+        }
+    }
+
+    /// The client of the context in use, and a number that grows with every [`Self::use_context`].
+    pub fn client(&self) -> (u64, Option<ActorClient>) {
+        let current = self.shared.current.lock().expect("inspector session");
+        (current.context, current.client.clone())
     }
 
     fn cancel_soft_refresh(&self, section: Section) {

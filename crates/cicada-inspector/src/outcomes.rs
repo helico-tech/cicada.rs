@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use cicada::ActorAddress;
 use cicada::api::{MessageState, MessageStatusView, MessageView, OutcomeView, StatsView};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{MessageId, OutcomeStatus};
@@ -21,7 +22,7 @@ use tokio::time::Instant;
 use crate::json::{self, Json};
 use crate::model::{Limits, Part, within};
 use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
-use crate::refresh::{Budget, RefreshPage, Stale};
+use crate::refresh::{Budget, Done, RefreshPage, Stale};
 
 /// The messages of one page of "Caused".
 pub const CAUSED_PAGE: usize = 50;
@@ -408,9 +409,9 @@ impl Outcomes {
         }
     }
 
-    /// Re-reads the loaded range without clearing the view or changing the list generation.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Re-reads the loaded range without clearing the view or changing the list generation; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Cancels a soft refresh when this page is left.
@@ -509,6 +510,11 @@ impl Outcomes {
         });
         let selected = row.as_ref().map(|row| row.id.clone());
         self.shared.show(&mut state, row.map(Subject::Outcome), selected);
+    }
+
+    /// The actor the pane shows, if any.
+    pub fn pane_actor(&self) -> Option<ActorAddress> {
+        self.shared.pane.borrow().subject.as_ref().and_then(Subject::details).map(|details| details.message.to.clone())
     }
 
     /// The selected row's message id.

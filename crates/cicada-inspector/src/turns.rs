@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 use crate::model::{Limits, Part, within};
 use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
-use crate::refresh::{RefreshPage, Stale};
+use crate::refresh::{Done, RefreshPage, Stale};
 
 /// What the Running Turns table shows.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -183,9 +183,9 @@ impl RunningTurns {
         }
     }
 
-    /// Re-reads the loaded range without clearing the view or changing the list generation.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Re-reads the loaded range without clearing the view or changing the list generation; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Cancels a soft refresh when this page is left.
@@ -247,6 +247,11 @@ impl RunningTurns {
         });
         let selected = row.as_ref().map(|row| row.actor.clone());
         self.shared.show(&mut state, row, TurnState::Running, selected);
+    }
+
+    /// The actor the pane shows, if any.
+    pub fn pane_actor(&self) -> Option<ActorAddress> {
+        self.shared.pane.borrow().turn.as_ref().map(|turn| turn.actor.clone())
     }
 
     /// The actor of the selected row.

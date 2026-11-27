@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::model::{Limits, Part, within};
-use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
+use crate::refresh::{Budget, Done, Readiness, Refresh, RefreshPage, Stale, as_of};
 
 /// The footer's note on how current the health is.
 pub const AS_OF: &str = "as of the last read";
@@ -207,9 +207,14 @@ impl Nodes {
         state.refresh.cancel();
     }
 
-    /// Re-reads the cached nodes and the current selection without clearing them.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Cancels a soft refresh and drops its results, as pausing live updates does; the page stays visible.
+    pub fn cancel_soft_refresh(&self) {
+        self.shared.lock().refresh.cancel();
+    }
+
+    /// Re-reads the cached nodes and the current selection without clearing them; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Refresh: reads the list again; the selection is cleared, as its node may be gone.

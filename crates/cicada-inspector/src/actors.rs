@@ -24,7 +24,7 @@ use crate::json::{self, Json};
 use crate::model::{Limits, Part, TIMED_OUT, within};
 pub use crate::pager::Paging;
 use crate::pager::{Cursor, Landed, NEAR_END, PAGE, Paged, Pager, read_range};
-use crate::refresh::{Budget, Readiness, Refresh, RefreshPage, Stale, as_of};
+use crate::refresh::{Budget, Done, Readiness, Refresh, RefreshPage, Stale, as_of};
 
 /// The running turns read once per reload of the list to mark rows running.
 pub const SAMPLE: usize = 200;
@@ -128,7 +128,7 @@ impl Children {
 }
 
 /// What the rendered outline reported when a soft refresh was requested.
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OutlineViewport {
     /// The generation the view rendered.
     pub generation: u64,
@@ -504,6 +504,8 @@ struct State {
     child_ticket: u64,
     pending_viewport: OutlineViewport,
     refresh_viewport: OutlineViewport,
+    /// The viewport the view last reported, for live refreshes.
+    reported_viewport: OutlineViewport,
     deferred_children: BTreeMap<ActorPath, Cursor>,
     prefix: String,
     sample_task: Option<JoinHandle<()>>,
@@ -577,6 +579,7 @@ impl Actors {
             child_ticket: 0,
             pending_viewport: OutlineViewport::default(),
             refresh_viewport: OutlineViewport::default(),
+            reported_viewport: OutlineViewport::default(),
             deferred_children: BTreeMap::new(),
             prefix: String::new(),
             sample_task: None,
@@ -646,14 +649,29 @@ impl Actors {
         self.shared.select(&mut state, selected);
     }
 
-    /// Re-reads the loaded range of the Actors page without replacing its generation.
-    pub fn soft_refresh(&self, viewport: OutlineViewport) {
+    /// Re-reads the loaded range of the Actors page without replacing its generation; [`Done`] when it ends.
+    pub fn soft_refresh(&self, viewport: OutlineViewport) -> Done {
         let mut state = self.shared.lock();
         if matches!(self.shared.readiness(&state), Readiness::Skip) {
-            return;
+            return Done::ready();
         }
         state.pending_viewport = viewport;
-        self.shared.request_locked(&mut state);
+        self.shared.request_locked(&mut state)
+    }
+
+    /// The outline's viewport as the view last reported it, for a soft refresh started away from the view.
+    pub fn set_viewport(&self, viewport: OutlineViewport) {
+        self.shared.lock().reported_viewport = viewport;
+    }
+
+    /// The viewport last reported by [`Self::set_viewport`].
+    pub fn viewport(&self) -> OutlineViewport {
+        self.shared.lock().reported_viewport.clone()
+    }
+
+    /// The actor the pane shows, if any.
+    pub fn pane_actor(&self) -> Option<ActorAddress> {
+        self.shared.lock().selected.as_ref().map(|path| path.address().clone())
     }
 
     /// Cancels the soft refresh when leaving the page.

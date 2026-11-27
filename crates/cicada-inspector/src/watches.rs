@@ -9,7 +9,7 @@ use tokio::{runtime::Handle, sync::watch};
 
 use crate::model::{Limits, Part};
 use crate::pager::{Landed, NEAR_END, PAGE, Paged, Pager, Paging, SoftPaged};
-use crate::refresh::{RefreshPage, Stale};
+use crate::refresh::{Done, RefreshPage, Stale};
 
 /// The locally filtered table and the state of the server's paging.
 #[derive(Clone, Default)]
@@ -112,9 +112,9 @@ impl Watches {
         }
     }
 
-    /// Re-reads the loaded range without clearing the view or changing the list generation.
-    pub fn soft_refresh(&self) {
-        self.shared.request();
+    /// Re-reads the loaded range without clearing the view or changing the list generation; [`Done`] when it ends.
+    pub fn soft_refresh(&self) -> Done {
+        self.shared.request()
     }
 
     /// Cancels a soft refresh when this page is left.
