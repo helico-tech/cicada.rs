@@ -406,7 +406,10 @@ A hidden outcome returns 404; resending its id within the dedup window still cou
 
 ## Message causes
 
-A send from a turn records its input message as `caused_by` (`causedBy` over HTTP).
+A send from a turn records its input message as `caused_by` (`causedBy` over HTTP). An operator retry records the
+original message, and a `Stopped` notice the store writes records the message of the turn that stopped or deleted the
+actor (or whose `watch_existing` found it absent); a send from outside an actor, a `Failed` notice and a stop from
+outside a turn record none.
 `GET /messages/{id}/caused` lists direct children; follow `causedBy` to walk toward the initiating message.
 Availability follows outcome retention.
 
