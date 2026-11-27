@@ -26,8 +26,9 @@ menu match the boards, and follows `gui-mockup-boards`.
    appearance (light and dark), kept and swapped when the appearance changes. The menu asks AppKit to show item images
    where the system hides them by default (macOS 27). A row's identity (context name, turn) is its represented object,
    never its title, so joining the second line into the title on older macOS changes nothing it does. The header stays
-   the one custom view and gains the disconnecting bar (decision 5). Native items keep keyboard, VoiceOver and the
-   system highlight.
+   the one custom view and gains the disconnecting bar (decision 5). Two help rows are custom views too, for their
+   wrapped text: Stop Now's help and "Kept until the app quits". Native items keep keyboard, VoiceOver and the system
+   highlight.
 2. **Connected (board Main).** Header: "<app> worker" (the last item stays "Quit <app>"), "Connected to <context>", the switch on. "Running" with "N of M"
    on the right (M: the started worker's concurrency from its config, a new field `concurrency` of `WorkerReady`); rows:
    actor, "<message type> · attempt N", elapsed as m:ss on the right. "Context" rows: name, the server's host on the
@@ -90,6 +91,8 @@ DEP-ICON, DEP-CONNECTING, in this order):
 6. **Open Inspector…** shows only with the `inspector` feature of `cicada-tray`.
 7. **The status item while disconnecting** is the hollow, dimmed hexagon, as when not connected.
 8. **Menu, connecting** has no board (Screens).
+9. **A cancelled turn** (no board shows one) has the grey circle with a cross. The native switch keeps its system size
+   (38×22 instead of the boards' 32×18). Agreed by the owner on 2026-11-27 (DEP-CANCELLED, DEP-SWITCH).
 
 ## Tests
 
