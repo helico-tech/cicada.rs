@@ -19,6 +19,8 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::actors::Actors;
 use crate::messages::Messages;
+use crate::types::Types;
+use crate::watches::{WatchPlace, Watches};
 
 /// What the inspector says where it cannot run.
 pub const NEEDS_MACOS: &str = "the Cicada inspector requires macOS 14 or later";
@@ -256,6 +258,8 @@ pub struct Session {
     shared: Arc<Shared>,
     actors: Actors,
     messages: Messages,
+    types: Types,
+    watches: Watches,
 }
 
 struct Shared {
@@ -280,7 +284,9 @@ impl Session {
         let shared = Arc::new(Shared { view: watch::channel(View::default()).0, current: Mutex::default() });
         let actors = Actors::new(handle.clone(), limits);
         let messages = Messages::new(handle.clone(), limits);
-        Self { env, limits, handle, shared, actors, messages }
+        let types = Types::new(handle.clone(), limits);
+        let watches = Watches::new(handle.clone(), limits);
+        Self { env, limits, handle, shared, actors, messages, types, watches }
     }
 
     /// The Actors page's reads, on the client of the context in use.
@@ -293,13 +299,23 @@ impl Session {
         &self.messages
     }
 
+    /// The Types page on the client of the context in use.
+    pub fn types(&self) -> &Types {
+        &self.types
+    }
+
+    /// The Watches page on the client of the context in use.
+    pub fn watches(&self) -> &Watches {
+        &self.watches
+    }
+
     /// The views, newest last.
     pub fn view(&self) -> watch::Receiver<View> {
         self.shared.view.subscribe()
     }
 
     /// Reads the contexts again, makes the client for `picked` (`None`: as `cicada` picks one) and refreshes. The
-    /// Overview, the Actors and Messages lists and their panes of the context before are dropped.
+    /// Overview and the lists and panes of the context before are dropped.
     pub fn use_context(&self, picked: Option<String>) {
         let contexts = Contexts::load(&self.env);
         let target = cicada_app::context_client(&self.env, picked.as_deref());
@@ -331,6 +347,8 @@ impl Session {
             });
             self.actors.use_client(current.client.clone());
             self.messages.use_client(current.client.clone());
+            self.types.use_client(current.client.clone());
+            self.watches.use_client(current.client.clone());
         }
         self.refresh();
     }
@@ -368,19 +386,19 @@ impl Session {
         navigation.forget();
     }
 
-    /// Applies `change` to `navigation` and its effect on the pages. Leaving the Messages page records its prefix and
-    /// selection in the place left, and leaving the Actors page cancels a Show Actor still waiting for its page.
-    /// Arriving at a Show Actor's place, by the jump or by back or forward, starts it again; arriving at a Messages
-    /// place restores what it recorded. Returns what `change` returned.
+    /// Applies `change` to the history, remembering the Messages or Watches place left and restoring the place
+    /// reached. Leaving Actors cancels a pending Show Actor, and arriving at a Show Actor place starts it again.
+    /// Returns what `change` returned.
     pub fn navigate(&self, navigation: &mut Navigation, change: impl FnOnce(&mut Navigation) -> bool) -> bool {
         let left = navigation.current();
-        let recorded = navigation.place().messages.clone();
-        if left == Section::Messages {
-            navigation.remember(self.messages.source());
+        let recorded = navigation.place().clone();
+        match left {
+            Section::Messages => navigation.current.messages = Some(self.messages.source()),
+            Section::Watches => navigation.current.watches = Some(self.watches.source()),
+            _ => {}
         }
         if !change(navigation) {
-            // Nothing was left: the place keeps what it recorded before.
-            navigation.current.messages = recorded;
+            navigation.current = recorded;
             return false;
         }
         if left == Section::Actors {
@@ -392,6 +410,9 @@ impl Session {
         }
         if let Some((prefix, selected)) = &place.messages {
             self.messages.restore(prefix, selected.clone());
+        }
+        if let Some(watch) = &place.watches {
+            self.watches.restore(watch.clone());
         }
         true
     }
@@ -409,6 +430,8 @@ impl Session {
         self.shared.current.lock().expect("inspector session").supersede();
         self.actors.stop();
         self.messages.stop();
+        self.types.stop();
+        self.watches.stop();
         self.shared.view.send_modify(|view| view.refreshing = false);
     }
 }
@@ -475,12 +498,11 @@ impl Section {
 
     /// True for an item with a page; the others say "Coming soon" until their change lands.
     pub fn ready(self) -> bool {
-        matches!(self, Self::Overview | Self::Actors | Self::Messages)
+        matches!(self, Self::Overview | Self::Actors | Self::Messages | Self::Types | Self::Watches)
     }
 }
 
-/// A place in the history: an item of the sidebar, for a Show Actor the actor it went to on the Actors page, and for
-/// the Messages page what it showed when it was left.
+/// A place in the history: a sidebar item, with a Show Actor destination or a Messages or Watches selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Place {
     /// The item shown.
@@ -489,6 +511,8 @@ pub struct Place {
     pub actor: Option<ActorAddress>,
     /// The Messages page's prefix and selected message when this place was left, restored on a return to it.
     pub messages: Option<(String, Option<MessageId>)>,
+    /// The Watches page's filter and selection when this place was left.
+    pub watches: Option<WatchPlace>,
 }
 
 /// The sidebar's selection with a back and forward history, as in a browser.
@@ -519,12 +543,7 @@ impl Navigation {
 
     /// Records a Show Actor: the Actors page with `actor` as its target, after the current place.
     pub fn jump(&mut self, actor: ActorAddress) {
-        self.go(Place { section: Section::Actors, actor: Some(actor), messages: None });
-    }
-
-    /// Records what the Messages page shows in the current place, for a return to it.
-    pub fn remember(&mut self, messages: (String, Option<MessageId>)) {
-        self.current.messages = Some(messages);
+        self.go(Place { section: Section::Actors, actor: Some(actor), ..Place::default() });
     }
 
     /// Forgets the history and what the current place restores: after a context switch, a place of the context

@@ -2,9 +2,12 @@
 #![allow(unsafe_code)]
 
 mod actors;
+mod browse;
 mod content;
 mod json_text;
 mod messages;
+mod types;
+mod watches;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::process::ExitCode;
@@ -12,6 +15,8 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use cicada::ActorAddress;
+use cicada::api::WatchView;
 use cicada_app::Env;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -38,9 +43,13 @@ use crate::json::Json;
 use crate::lifecycle::WindowSlot;
 use crate::messages::{MessagePane, MessagesView};
 use crate::model::{Limits, Navigation, Section, Session, View, check_macos};
+use crate::types::{TypePane, TypesView};
+use crate::watches::WatchesView;
 use actors::{CellContent, Item, ItemId, Items, Page};
 use content::FlippedView;
 use messages::MessagesPage;
+use types::TypesPage;
+use watches::WatchesPage;
 
 /// The rows of the sidebar: the Overview, then the items under Browse.
 #[derive(Clone, Copy)]
@@ -67,16 +76,21 @@ const REFRESH: &str = "inspector.refresh";
 const REFRESH_KEY: &str = "r";
 const SEARCH: &str = "inspector.search";
 const PANE: &str = "inspector.pane";
-/// The identifier of the Messages table, which shares the sidebar's data source and delegate.
-const MESSAGES_TABLE: &str = "inspector.messages";
+/// The identifiers of the lists sharing the sidebar's data source and delegate.
+const TABLES: [(Section, &str); 3] = [
+    (Section::Messages, "inspector.messages"),
+    (Section::Types, "inspector.types"),
+    (Section::Watches, "inspector.watches"),
+];
 
 /// True for the pages with a table, the search field and the pane.
-fn paged(section: Section) -> bool {
-    matches!(section, Section::Actors | Section::Messages)
+fn browsable(section: Section) -> bool {
+    matches!(section, Section::Actors | Section::Messages | Section::Types | Section::Watches)
 }
 
-fn is_messages(table: &NSTableView) -> bool {
-    table.identifier().is_some_and(|identifier| identifier.to_string() == MESSAGES_TABLE)
+fn table_section(table: &NSTableView) -> Option<Section> {
+    let identifier = table.identifier()?.to_string();
+    TABLES.iter().find(|(_, id)| *id == identifier).map(|(section, _)| *section)
 }
 
 /// A main-thread inspector in an existing macOS 14 or later AppKit application.
@@ -194,7 +208,14 @@ struct Controller {
     messages_shown: RefCell<MessagesView>,
     /// The payload the Messages pane's text view holds.
     payload_shown: RefCell<Option<Arc<Json>>>,
-    /// Whether the pane shows on the Actors and Messages pages; elsewhere the pane is collapsed.
+    types_list: RefCell<watch::Receiver<TypesView>>,
+    types_pane: RefCell<watch::Receiver<TypePane>>,
+    types_shown: RefCell<TypesView>,
+    types_pane_shown: RefCell<TypePane>,
+    watches_list: RefCell<watch::Receiver<WatchesView>>,
+    watches_pane: RefCell<watch::Receiver<Option<Arc<WatchView>>>>,
+    watches_shown: RefCell<WatchesView>,
+    /// Whether the pane shows on browse pages with a table; elsewhere the pane is collapsed.
     pane_shown: Cell<bool>,
     /// The section last rendered, to place the pane only when the page changes.
     rendered: Cell<Option<Section>>,
@@ -297,14 +318,16 @@ define_class!(
                 let view = c.view.borrow().borrow().clone();
                 let section = c.navigation.borrow().current();
                 content::render(&window.document, &window.content, section, &view);
-                if section == Section::Actors {
-                    self.render_pane();
-                    self.check_more();
-                } else if section == Section::Messages {
-                    let list = c.messages_shown.borrow().clone();
-                    window.messages.show_footer(&list, view.target_error.as_deref());
-                    self.render_message_pane();
-                    self.check_more_messages();
+                self.render_section_pane(section);
+                match section {
+                    Section::Actors => self.check_more(),
+                    Section::Messages => {
+                        let list = c.messages_shown.borrow().clone();
+                        window.messages.show_footer(&list, view.target_error.as_deref());
+                        self.check_more_messages();
+                    }
+                    Section::Watches => self.check_more_watches(),
+                    _ => {}
                 }
             }
         }
@@ -317,16 +340,18 @@ define_class!(
     unsafe impl NSTableViewDataSource for Target {
         #[unsafe(method(numberOfRowsInTableView:))]
         fn number_of_rows(&self, table: &NSTableView) -> NSInteger {
-            if is_messages(table) {
-                self.ivars().messages_shown.borrow().rows.len() as NSInteger
-            } else {
-                ROWS as NSInteger
+            let c = self.ivars();
+            match table_section(table) {
+                Some(Section::Messages) => c.messages_shown.borrow().rows.len() as NSInteger,
+                Some(Section::Types) => c.types_shown.borrow().rows.len() as NSInteger,
+                Some(Section::Watches) => c.watches_shown.borrow().rows.len() as NSInteger,
+                _ => ROWS as NSInteger,
             }
         }
     }
 
     // SAFETY: These callbacks have the signatures required by NSTableViewDelegate and are used by the sidebar and the
-    // Messages table, told apart by the table's identifier.
+    // browse tables, told apart by their identifiers.
     unsafe impl NSTableViewDelegate for Target {
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn view_for_row(
@@ -335,23 +360,33 @@ define_class!(
             column: Option<&NSTableColumn>,
             row: NSInteger,
         ) -> Option<Retained<NSView>> {
-            if is_messages(table) {
-                let column = column.map(|column| column.identifier().to_string()).unwrap_or_default();
-                let text = messages::cell_text(&self.ivars().messages_shown.borrow(), row, &column);
-                text.map(|text| messages::cell(self.mtm(), &text, &column))
-            } else {
-                row_at(row).map(|row| sidebar_cell(self.mtm(), row))
+            let c = self.ivars();
+            let column = column.map(|column| column.identifier().to_string()).unwrap_or_default();
+            match table_section(table) {
+                Some(Section::Messages) => {
+                    let text = messages::cell_text(&c.messages_shown.borrow(), row, &column);
+                    text.map(|text| messages::cell(self.mtm(), &text, &column))
+                }
+                Some(Section::Types) => {
+                    let text = types::cell_text(&c.types_shown.borrow(), row, &column);
+                    text.map(|(text, full)| browse::cell(self.mtm(), &text, &full))
+                }
+                Some(Section::Watches) => {
+                    let text = watches::cell_text(&c.watches_shown.borrow(), row, &column);
+                    text.map(|text| browse::cell(self.mtm(), &text, &text))
+                }
+                _ => row_at(row).map(|row| sidebar_cell(self.mtm(), row)),
             }
         }
 
         #[unsafe(method(tableView:isGroupRow:))]
         fn is_group_row(&self, table: &NSTableView, row: NSInteger) -> bool {
-            !is_messages(table) && matches!(row_at(row), Some(Row::Group(_)))
+            table_section(table).is_none() && matches!(row_at(row), Some(Row::Group(_)))
         }
 
         #[unsafe(method(tableView:shouldSelectRow:))]
         fn should_select_row(&self, table: &NSTableView, row: NSInteger) -> bool {
-            is_messages(table) || matches!(row_at(row), Some(Row::Item(_)))
+            table_section(table).is_some() || matches!(row_at(row), Some(Row::Item(_)))
         }
 
         #[unsafe(method(tableViewSelectionDidChange:))]
@@ -375,6 +410,16 @@ define_class!(
                 let id = row.and_then(|row| c.messages_shown.borrow().rows.get(row).map(|message| message.id.clone()));
                 c.session.messages().select(id.as_ref());
                 self.render_message_pane();
+            } else if is(window.types.list.table.as_ref()) {
+                let row = usize::try_from(window.types.list.table.selectedRow()).ok();
+                let name = row.and_then(|row| c.types_shown.borrow().rows.get(row).map(|row| row.name.clone()));
+                c.session.types().select(name.as_deref());
+                self.render_types_pane();
+            } else if is(window.watches.list.table.as_ref()) {
+                let row = usize::try_from(window.watches.list.table.selectedRow()).ok();
+                let watch = row.and_then(|row| c.watches_shown.borrow().rows.get(row).cloned());
+                c.session.watches().select(watch.as_deref());
+                self.render_watch_pane();
             }
         }
     }
@@ -505,6 +550,22 @@ define_class!(
                     self.render_message_pane();
                 }
                 self.check_more_messages();
+            } else if section == Section::Types {
+                c.session.types().set_pane_visible(!self.window().pane_item.isCollapsed());
+                if c.types_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_types();
+                }
+                if c.types_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_types_pane();
+                }
+            } else if section == Section::Watches {
+                if c.watches_list.borrow().has_changed().unwrap_or(false) {
+                    self.render_watches();
+                }
+                if c.watches_pane.borrow().has_changed().unwrap_or(false) {
+                    self.render_watch_pane();
+                }
+                self.check_more_watches();
             }
         }
 
@@ -519,23 +580,29 @@ define_class!(
             // Every borrow ends before AppKit renders, which can call back into the target.
             let prefix = sender.stringValue().to_string();
             let section = c.navigation.borrow().current();
-            let searched = match section {
-                Section::Actors => c.list.borrow().borrow().prefix.clone(),
-                Section::Messages => c.messages_list.borrow().borrow().prefix.clone(),
-                _ => return,
-            };
-            if searched == prefix {
+            if self.search_prefix(section).as_deref() == Some(&prefix) {
                 return;
             }
-            if section == Section::Actors {
-                c.session.actors().search(&prefix);
-                self.render_list();
-                self.render_pane();
-            } else {
-                c.session.messages().search(&prefix);
-                self.render_messages();
-                self.render_message_pane();
+            match section {
+                Section::Actors => {
+                    c.session.actors().search(&prefix);
+                    self.render_list();
+                }
+                Section::Messages => {
+                    c.session.messages().search(&prefix);
+                    self.render_messages();
+                }
+                Section::Types => {
+                    c.session.types().search(&prefix);
+                    self.render_types();
+                }
+                Section::Watches => {
+                    c.session.watches().search(&prefix);
+                    self.render_watches();
+                }
+                _ => return,
             }
+            self.render_section_pane(section);
         }
 
         // SAFETY: The Retry button of the Messages footer sends this action with itself as the sender.
@@ -554,11 +621,59 @@ define_class!(
                 return;
             }
             let to = c.messages_pane.borrow().borrow().message.as_ref().map(|message| message.to.clone());
-            if let Some(to) = to {
-                c.session.show_actor(&mut c.navigation.borrow_mut(), to);
-                self.sync_search();
-                self.render();
+            self.show_actor_address(to);
+        }
+
+        // SAFETY: The Types footer sends the Retry button as sender.
+        #[unsafe(method(inspectorTypesRetry:))]
+        fn types_retry(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.types().retry();
+                self.render_types();
             }
+        }
+
+        // SAFETY: The Types schema chooser sends itself as sender.
+        #[unsafe(method(inspectorChooseSchema:))]
+        fn choose_schema(&self, sender: &NSPopUpButton) {
+            let c = self.ivars();
+            if !c.finished.get() && let Ok(schema) = usize::try_from(sender.indexOfSelectedItem()) {
+                c.session.types().choose(schema);
+                self.render_types_pane();
+            }
+        }
+
+        // SAFETY: The Watches footer sends the Retry button as sender.
+        #[unsafe(method(inspectorWatchesRetry:))]
+        fn watches_retry(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.watches().retry();
+                self.render_watches();
+            }
+        }
+
+        // SAFETY: The Watches footer sends the Load more button as sender.
+        #[unsafe(method(inspectorMoreWatches:))]
+        fn more_watches(&self, _: &NSButton) {
+            let c = self.ivars();
+            if !c.finished.get() {
+                c.session.watches().more();
+                self.render_watches();
+            }
+        }
+
+        // SAFETY: The Show Actor button beside the watch's target sends itself as sender.
+        #[unsafe(method(inspectorShowTarget:))]
+        fn show_target(&self, _: &NSButton) {
+            self.show_watch_actor(true);
+        }
+
+        // SAFETY: The Show Actor button beside the watch's watcher sends itself as sender.
+        #[unsafe(method(inspectorShowWatcher:))]
+        fn show_watcher(&self, _: &NSButton) {
+            self.show_watch_actor(false);
         }
 
         // SAFETY: The Retry buttons of outline status rows send this action with themselves as the sender.
@@ -599,14 +714,15 @@ define_class!(
         #[unsafe(method(inspectorTogglePane:))]
         fn toggle_pane(&self, _: Option<&AnyObject>) {
             let c = self.ivars();
-            if c.finished.get() || !paged(c.navigation.borrow().current()) {
+            let section = c.navigation.borrow().current();
+            if c.finished.get() || !browsable(section) {
                 return;
             }
             // From the pane's own state: the user may also have dragged it shut.
             let show = self.window().pane_item.isCollapsed();
             c.pane_shown.set(show);
             self.collapse_pane(!show);
-            self.render_pane();
+            self.render_section_pane(section);
         }
 
         // SAFETY: The Back toolbar item and menu item send this action with themselves as the sender.
@@ -656,7 +772,7 @@ define_class!(
                 Some(action) if action == sel!(inspectorTogglePane:) => {
                     let collapsed = self.window().pane_item.isCollapsed();
                     item.setTitle(if collapsed { ns_string!("Show Pane") } else { ns_string!("Hide Pane") });
-                    paged(section)
+                    browsable(section)
                 }
                 _ => true,
             }
@@ -669,6 +785,8 @@ impl Target {
         let view = session.view();
         let (list, pane) = (session.actors().list(), session.actors().pane());
         let (messages_list, messages_pane) = (session.messages().list(), session.messages().pane());
+        let (types_list, types_pane) = (session.types().list(), session.types().pane());
+        let (watches_list, watches_pane) = (session.watches().list(), session.watches().pane());
         let allocated = Self::alloc(mtm).set_ivars(Controller {
             session,
             owner,
@@ -688,6 +806,13 @@ impl Target {
             messages_pane: RefCell::new(messages_pane),
             messages_shown: RefCell::default(),
             payload_shown: RefCell::default(),
+            types_list: RefCell::new(types_list),
+            types_pane: RefCell::new(types_pane),
+            types_shown: RefCell::default(),
+            types_pane_shown: RefCell::default(),
+            watches_list: RefCell::new(watches_list),
+            watches_pane: RefCell::new(watches_pane),
+            watches_shown: RefCell::default(),
             pane_shown: Cell::new(true),
             rendered: Cell::new(None),
             contexts_shown: RefCell::default(),
@@ -742,8 +867,7 @@ impl Target {
         !c.finished.get() && c.view.borrow().borrow().target_error.is_none()
     }
 
-    /// ⌘R: the Actors page reloads its list from the top and its pane, the Messages page its list; another page
-    /// refreshes the Overview.
+    /// ⌘R reloads the current browse page or the Overview.
     fn refresh_view(&self) {
         if self.can_refresh() {
             let c = self.ivars();
@@ -751,6 +875,8 @@ impl Target {
             match section {
                 Section::Actors => c.session.actors().refresh(),
                 Section::Messages => c.session.messages().refresh(),
+                Section::Types => c.session.types().refresh(),
+                Section::Watches => c.session.watches().refresh(),
                 _ => c.session.refresh(),
             }
             self.render();
@@ -881,27 +1007,51 @@ impl Target {
         }
         let changed = c.session.navigate(&mut c.navigation.borrow_mut(), change);
         if changed {
-            self.sync_search();
             self.render();
         }
     }
 
-    /// The search field shows the prefix of the page it searches, and says what it searches.
-    fn sync_search(&self) {
+    fn show_watch_actor(&self, target: bool) {
         let c = self.ivars();
-        let section = c.navigation.borrow().current();
-        let (prefix, tip) = match section {
-            Section::Actors => (c.list.borrow().borrow().prefix.clone(), "Search actors by address prefix"),
-            Section::Messages => (
-                c.messages_list.borrow().borrow().prefix.clone(),
-                "Search pending messages by their actor's address prefix",
-            ),
+        if !c.finished.get() {
+            self.show_actor_address(c.session.watches().actor(target));
+        }
+    }
+
+    fn show_actor_address(&self, actor: Option<ActorAddress>) {
+        let c = self.ivars();
+        if let Some(actor) = actor {
+            c.session.show_actor(&mut c.navigation.borrow_mut(), actor);
+            self.render();
+        }
+    }
+
+    fn search_prefix(&self, section: Section) -> Option<String> {
+        let c = self.ivars();
+        Some(match section {
+            Section::Actors => c.list.borrow().borrow().prefix.clone(),
+            Section::Messages => c.messages_list.borrow().borrow().prefix.clone(),
+            Section::Types => c.types_list.borrow().borrow().prefix.clone(),
+            Section::Watches => c.watches_list.borrow().borrow().prefix.clone(),
+            _ => return None,
+        })
+    }
+
+    /// The search field shows the prefix and label of the page it searches.
+    fn sync_search(&self, section: Section) {
+        let (placeholder, tip) = match section {
+            Section::Actors => ("Address prefix", "Search actors by address prefix"),
+            Section::Messages => ("Address prefix", "Search pending messages by their actor's address prefix"),
+            Section::Types => ("Type name prefix", "Search registered types by name prefix"),
+            Section::Watches => ("Watcher or target prefix", "Filter loaded watches by watcher or target prefix"),
             _ => return,
         };
+        let Some(prefix) = self.search_prefix(section) else { return };
         let search = &self.window().search;
         if search.stringValue().to_string() != prefix {
             search.setStringValue(&NSString::from_str(&prefix));
         }
+        search.setPlaceholderString(Some(&NSString::from_str(placeholder)));
         search.setToolTip(Some(&NSString::from_str(tip)));
         search.setAccessibilityLabel(Some(&NSString::from_str(tip)));
     }
@@ -918,15 +1068,7 @@ impl Target {
         window.messages.show_footer(&list, target_error.as_deref());
         let selected = c.session.messages().selected().and_then(|id| list.index(&id));
         c.messages_shown.replace(list);
-        let table = &window.messages.table;
-        c.syncing.set(true);
-        table.reloadData();
-        match selected {
-            Some(row) => table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false),
-            // SAFETY: A nil sender is allowed; the syncing guard ignores the selection callback.
-            None => unsafe { table.deselectAll(None) },
-        }
-        c.syncing.set(false);
+        self.reload_table(&window.messages.table, selected);
         self.check_more_messages();
     }
 
@@ -954,6 +1096,85 @@ impl Target {
         c.payload_shown.replace(shown);
     }
 
+    /// Reloads the Types table and restores selection by name.
+    fn render_types(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let page = &self.window().types;
+        let list = c.types_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        let selected = c.types_pane.borrow().borrow().row.as_ref().and_then(|row| list.index(&row.name));
+        page.show_footer(&list, target_error.as_deref());
+        c.types_shown.replace(list);
+        self.reload_table(&page.list.table, selected);
+    }
+
+    /// Reloads the Watches table and restores selection by target and watcher.
+    fn render_watches(&self) {
+        let c = self.ivars();
+        if c.finished.get() || c.syncing.get() {
+            return;
+        }
+        let page = &self.window().watches;
+        let list = c.watches_list.borrow_mut().borrow_and_update().clone();
+        let target_error = c.view.borrow().borrow().target_error.clone();
+        let selected = c.watches_pane.borrow().borrow().as_ref().and_then(|row| list.index(row));
+        page.show_footer(&list, target_error.as_deref());
+        c.watches_shown.replace(list);
+        self.reload_table(&page.list.table, selected);
+        self.check_more_watches();
+    }
+
+    fn reload_table(&self, table: &NSTableView, selected: Option<usize>) {
+        let c = self.ivars();
+        c.syncing.set(true);
+        table.reloadData();
+        match selected {
+            Some(row) => table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false),
+            // SAFETY: A nil sender is allowed; the syncing guard ignores the selection callback.
+            None => unsafe { table.deselectAll(None) },
+        }
+        c.syncing.set(false);
+    }
+
+    fn check_more_watches(&self) {
+        let page = &self.window().watches;
+        let last = page.list.last_visible_row().unwrap_or(0);
+        self.ivars().session.watches().scroll(last);
+    }
+
+    fn render_types_pane(&self) {
+        let c = self.ivars();
+        if !c.finished.get() {
+            let window = self.window();
+            c.session.types().set_pane_visible(!window.pane_item.isCollapsed());
+            let pane = c.types_pane.borrow_mut().borrow_and_update().clone();
+            let previous = c.types_pane_shown.borrow().clone();
+            window.types.show_pane(&pane, &previous);
+            c.types_pane_shown.replace(pane);
+        }
+    }
+
+    fn render_watch_pane(&self) {
+        let c = self.ivars();
+        if !c.finished.get() {
+            let watch = c.watches_pane.borrow_mut().borrow_and_update().clone();
+            self.window().watches.show_pane(watch.as_deref());
+        }
+    }
+
+    fn render_section_pane(&self, section: Section) {
+        match section {
+            Section::Actors => self.render_pane(),
+            Section::Messages => self.render_message_pane(),
+            Section::Types => self.render_types_pane(),
+            Section::Watches => self.render_watch_pane(),
+            _ => {}
+        }
+    }
+
     /// Shows the latest view: the title, the toolbar, the sidebar's selection and the content.
     fn render(&self) {
         let c = self.ivars();
@@ -968,7 +1189,7 @@ impl Target {
         };
         window.window.setTitle(&NSString::from_str(section.title()));
         window.window.setSubtitle(&NSString::from_str(&subtitle(&view)));
-        let (actors, messages, has_pane) = (section == Section::Actors, section == Section::Messages, paged(section));
+        let has_pane = browsable(section);
         for (item, enabled) in [
             (&c.back, can_back),
             (&c.forward, can_forward),
@@ -989,29 +1210,49 @@ impl Target {
             window.sidebar.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
             c.syncing.set(false);
         }
+        self.sync_search(section);
         window.search.setEnabled(has_pane);
         window.content.setHidden(has_pane);
-        window.page.root.setHidden(!actors);
-        window.page.pane.setHidden(!actors);
-        window.messages.root.setHidden(!messages);
-        window.messages.pane.setHidden(!messages);
+        for (page, root, pane) in [
+            (Section::Actors, &*window.page.root, &**window.page.pane),
+            (Section::Messages, &*window.messages.root, &**window.messages.pane),
+            (Section::Types, &*window.types.list.root, &**window.types.pane),
+            (Section::Watches, &*window.watches.list.root, &**window.watches.pane),
+        ] {
+            root.setHidden(section != page);
+            pane.setHidden(section != page);
+        }
+        if section != Section::Types {
+            c.session.types().set_pane_visible(false);
+        }
         let before = c.rendered.replace(Some(section));
         if before != Some(section) {
-            if before.is_some_and(paged) {
+            if before.is_some_and(browsable) {
                 c.pane_shown.set(!window.pane_item.isCollapsed());
             }
             self.collapse_pane(!(has_pane && c.pane_shown.get()));
         }
         content::render(&window.document, &window.content, section, &view);
-        if actors {
-            c.session.actors().show();
-            self.render_list();
-            self.render_pane();
-        } else if messages {
-            c.session.messages().show();
-            self.render_messages();
-            self.render_message_pane();
+        match section {
+            Section::Actors => {
+                c.session.actors().show();
+                self.render_list();
+            }
+            Section::Messages => {
+                c.session.messages().show();
+                self.render_messages();
+            }
+            Section::Types => {
+                c.session.types().show();
+                self.render_types();
+            }
+            Section::Watches => {
+                c.session.watches().show();
+                self.render_watches();
+            }
+            _ => {}
         }
+        self.render_section_pane(section);
     }
 
     /// The context pop-up: the names of the config file, the context in use picked; then, when the environment wins
@@ -1136,6 +1377,8 @@ impl Target {
         }
         window.page.clear_actions();
         window.messages.clear_actions();
+        window.types.clear_actions();
+        window.watches.clear_actions();
         true
     }
 }
@@ -1166,9 +1409,10 @@ struct Window {
     search: Retained<NSSearchField>,
     /// The Actors page, next to the Overview's scroll view in the content.
     page: Page,
-    /// The Messages page, next to them.
     messages: MessagesPage,
-    /// The inspector pane's split item, collapsed outside the Actors page and by the pane toggle.
+    types: TypesPage,
+    watches: WatchesPage,
+    /// The inspector pane's split item, collapsed outside the browse pages and by the pane toggle.
     pane_item: Retained<NSSplitViewItem>,
     /// Attached once the target holds the window, as its items need the pop-up.
     toolbar: Retained<NSToolbar>,
@@ -1236,40 +1480,58 @@ impl Window {
         };
         document.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         content.setDocumentView(Some(&document));
-        // The content holds the Overview's scroll view and the Actors page; one of them shows.
+        // The content holds the Overview and the browse tables; one of them shows.
         let fill = NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
         let container =
             NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(760.0, 600.0)));
         let page = Page::new(mtm);
         let messages =
             MessagesPage::new(mtm, target.as_ref(), sel!(inspectorMessagesRetry:), sel!(inspectorShowActor:));
-        for view in [&**content, &*page.root, &*messages.root] {
+        let types = TypesPage::new(mtm, target.as_ref(), sel!(inspectorTypesRetry:), sel!(inspectorChooseSchema:));
+        let watches = WatchesPage::new(
+            mtm,
+            target.as_ref(),
+            sel!(inspectorWatchesRetry:),
+            sel!(inspectorMoreWatches:),
+            sel!(inspectorShowTarget:),
+            sel!(inspectorShowWatcher:),
+        );
+        for view in [&**content, &*page.root, &*messages.root, &*types.list.root, &*watches.list.root] {
             view.setFrame(container.bounds());
             view.setAutoresizingMask(fill);
             container.addSubview(view);
         }
         page.root.setHidden(true);
-        messages.root.setHidden(true);
-        messages.table.setIdentifier(Some(&NSString::from_str(MESSAGES_TABLE)));
+        for ((_, identifier), (table, root)) in TABLES.into_iter().zip([
+            (&*messages.table, &*messages.root),
+            (&*types.list.table, &*types.list.root),
+            (&*watches.list.table, &*watches.list.root),
+        ]) {
+            root.setHidden(true);
+            table.setIdentifier(Some(&NSString::from_str(identifier)));
+            // SAFETY: The target implements both protocols and clears them during teardown.
+            unsafe {
+                table.setDataSource(Some(ProtocolObject::from_ref(target)));
+                table.setDelegate(Some(ProtocolObject::from_ref(target)));
+            }
+        }
         // SAFETY: The target implements both protocols and clears them during teardown.
         unsafe {
             page.table.setDataSource(Some(ProtocolObject::from_ref(target)));
             page.table.setDelegate(Some(ProtocolObject::from_ref(target)));
-            messages.table.setDataSource(Some(ProtocolObject::from_ref(target)));
-            messages.table.setDelegate(Some(ProtocolObject::from_ref(target)));
         }
         let content_controller = NSViewController::new(mtm);
         content_controller.setView(&container);
         let content_item = NSSplitViewItem::splitViewItemWithViewController(&content_controller);
         content_item.setMinimumThickness(420.0);
-        // The pane holds the Actors page's pane and the Messages page's; the page shown shows its own.
+        // Each browse page shares the split item but shows its own pane.
         let panes = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(320.0, 600.0)));
-        for view in [&**page.pane, &**messages.pane] {
+        for view in [&**page.pane, &**messages.pane, &**types.pane, &**watches.pane] {
+            view.setHidden(true);
             view.setFrame(panes.bounds());
             view.setAutoresizingMask(fill);
             panes.addSubview(view);
         }
-        messages.pane.setHidden(true);
         let pane_controller = NSViewController::new(mtm);
         pane_controller.setView(&panes);
         let pane_item = NSSplitViewItem::inspectorWithViewController(&pane_controller);
@@ -1325,6 +1587,8 @@ impl Window {
             search,
             page,
             messages,
+            types,
+            watches,
             pane_item,
             toolbar,
             _split: split,
