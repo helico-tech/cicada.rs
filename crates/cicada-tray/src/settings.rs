@@ -115,11 +115,6 @@ impl SettingsForm {
         self.registered.iter().filter(picked).map(|t| t.to_string()).collect()
     }
 
-    /// The types the app registers, in its order.
-    pub fn registered(&self) -> &[&'static str] {
-        &self.registered
-    }
-
     /// The names of the contexts in the config file as last read, with a new context not yet applied at the end.
     pub fn contexts(&self) -> Vec<String> {
         let mut names = self.names.clone();

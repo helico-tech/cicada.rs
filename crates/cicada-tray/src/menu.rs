@@ -78,7 +78,7 @@ pub(crate) struct RecentRow {
 
 impl TrayState {
     /// The context with a connection, including one being started or stopped.
-    fn connection(&self) -> Option<&str> {
+    pub(crate) fn connection(&self) -> Option<&str> {
         match self {
             Self::Offline | Self::Failed { .. } => None,
             Self::Connecting { context } | Self::Online { context } | Self::Stopping { context, .. } => Some(context),
@@ -567,8 +567,7 @@ mod tests {
 
     #[test]
     fn apply_offline_only_clears_a_pending_pick() {
-        let mut control = MenuControl::default();
-        control.pending = Some("test".into());
+        let mut control = MenuControl { pending: Some("test".into()), ..MenuControl::default() };
         assert_eq!(control.apply(&TrayState::Offline, "prod".into()), None);
         assert!(control.pending.is_none());
         assert_eq!(control.tick(&TrayState::Offline), None);

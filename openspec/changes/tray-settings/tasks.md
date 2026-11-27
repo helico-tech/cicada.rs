@@ -17,7 +17,7 @@ is `specs/menu-bar-tray/spec.md`. No ADR.
 - [x] 3. **`SettingsForm` and `apply`.** Load, validate (URL, types, concurrency 1–1,000, the name rule), revert,
   apply under both locks in order with only edited fields, the partial-save report and retry; the control's `apply`
   action (decisions 5 and 6). Verify: the form and `apply` tests of the design.
-- [ ] 4. **The window.** The `appkit` window of decision 7 and the enabled Settings… item; every `unsafe` with its
+- [x] 4. **The window.** The `appkit` window of decision 7 and the enabled Settings… item; every `unsafe` with its
   reason. Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray --all-targets`, and the manual check list
   below, each item noted as done or not done in the report.
 - [ ] 5. **Changelog, docs handoff and finishing checks.** The 0.26.0 section names `ContextFile`, the window and

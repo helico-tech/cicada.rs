@@ -19,10 +19,11 @@ toml.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
-    "std", "NSAccessibilityProtocols", "NSApplication", "NSButton", "NSCell", "NSColor", "NSControl", "NSEvent",
-    "NSFont", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSMenuItemBadge", "NSParagraphStyle",
-    "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSSwitch",
-    "NSTextField", "NSView", "objc2-core-foundation",
+    "std", "block2", "NSAccessibilityProtocols", "NSApplication", "NSBox", "NSButton", "NSButtonCell", "NSCell",
+    "NSColor", "NSControl", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem",
+    "NSMenuItemBadge", "NSParagraphStyle", "NSPopUpButton", "NSResponder", "NSRunningApplication",
+    "NSSecureTextField", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSStepper", "NSSwitch", "NSTextField",
+    "NSView", "NSWindow", "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std", "NSBundle", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer",

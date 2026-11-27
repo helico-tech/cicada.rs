@@ -25,6 +25,7 @@ pub(super) struct MenuView {
     registered: Retained<NSMenu>,
     recent: Retained<NSMenu>,
     recent_item: Retained<NSMenuItem>,
+    settings: Retained<NSMenuItem>,
     quit: Retained<NSMenuItem>,
     subtitles: bool,
     running_rows: RefCell<Rows<RunningRow>>,
@@ -66,8 +67,7 @@ impl MenuView {
         let context_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Context"), mtm);
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
         let (recent, recent_item) = submenu(mtm, ns_string!("Recent Turns"));
-        let settings = item(mtm, ns_string!("Settings…"), None, ns_string!(","));
-        settings.setEnabled(false);
+        let settings = item(mtm, ns_string!("Settings…"), Some(sel!(traySettings:)), ns_string!(","));
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
         for row in [
             &header.item,
@@ -96,6 +96,7 @@ impl MenuView {
             registered,
             recent,
             recent_item,
+            settings,
             quit,
             // objc2 exposes these selectors without version attributes. The SDK declares section headers and badges
             // in 14.0, and subtitles in 14.4. The caller already checked for 14.0.
@@ -118,6 +119,7 @@ impl MenuView {
             self.header.switch.setAction(Some(sel!(trayToggle:)));
             self.header.item.setTarget(Some(target));
             self.stop_now.setTarget(Some(target));
+            self.settings.setTarget(Some(target));
             self.quit.setTarget(Some(target));
         }
     }

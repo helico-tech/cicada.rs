@@ -6,6 +6,7 @@ mod appkit;
 mod menu;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod settings;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod tray_file;
 mod turns;
 
