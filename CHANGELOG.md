@@ -22,10 +22,9 @@ the value.
 ### Added
 
 - `cicada`: `Worker::end_grace()` ends the grace period of a stop that has begun, as if it had run out: the running
-  turns are cancelled at once; a turn whose work stops before its handler ended tries to release its lease (a failed
-  release, or work that ignores cancellation, leaves the lease to expire), and the stop returns within the cancel
-  timeout (a wait for the polling loop ends too). Before a stop begins or after it ended it does nothing and is not
-  remembered, so it never shortens a later stop. Covered by
+  turns are cancelled at once, their leases are released where the worker still holds them and can, and otherwise
+  expire, and the stop returns within the cancel timeout (a wait for the polling loop ends too). Before a stop begins or
+  after it ended it does nothing and is not remembered, so it never shortens a later stop. Covered by
   `end_grace_cancels_the_running_turns_at_once_and_the_stop_returns_within_the_cancel_timeout`,
   `end_grace_before_the_stop_reaches_its_grace_wait_still_ends_it` and
   `end_grace_before_a_stop_is_not_remembered_and_the_later_stop_keeps_its_full_grace_period`.

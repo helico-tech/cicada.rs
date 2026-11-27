@@ -9,9 +9,10 @@ renewal run in tasks of their own, so they keep running and may still commit (de
 
 ## What Changes
 
-- A way to cut a running stop short: the worker cancels its running turns now, as when the grace period ends, so their
-  leases go back to the server. For example `Worker::cancel_turns()`, or a stop whose grace period drops to zero,
-  passed through `cicada-app`'s stop to a worker over HTTP.
+- A way to cut a running stop short: the worker cancels its running turns now, as when the grace period ends; their
+  leases are released where the worker still holds them and can, and otherwise expire. For example
+  `Worker::cancel_turns()`, or a stop whose grace period drops to zero, passed through `cicada-app`'s stop to a worker
+  over HTTP.
 - `Tray::stop_now()` uses it while `Stopping`, and the menu offers Stop Now with the seconds left.
 
 Decided in the design: `Worker::end_grace()`, a `StopNow` handle in `WorkerReady`, and `Tray::stop_now()`.
