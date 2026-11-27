@@ -14,8 +14,8 @@ was split off so `inspector-actors` fits five tasks (2026-11-27).
 - Rows have stable identities, so an actor shown both at the root and as a child keeps its selection and fold state
   apart, and a reload keeps the folded rows that still exist.
 
-To decide in the design: how a child's details are read (one call per visible child, or a batched read), and how a
-reload keeps fold state.
+Decided in the design: identities by path, child pages per parent, details read for the visible children (8 at a
+time), and fold state kept across a reload.
 
 ## Order
 
