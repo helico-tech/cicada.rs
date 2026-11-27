@@ -15,6 +15,8 @@
 //! watches, read only. Messages lists the pending messages to the actors under the searched prefix, 100 at a time,
 //! each once, with their id, target, type, delivery time and attempt; the pane shows the selected message's envelope
 //! and payload as highlighted JSON, and Show Actor selects its actor on the Actors page, recorded in back and forward.
+//! Types lists registered contracts and displays one schema at a time. Watches lists the stored watches, with a
+//! filter over the loaded rows and Show Actor for the watcher and any single-actor target.
 //! The other items say "Coming soon". The server comes from the contexts of `cicada config`, resolved as `cicada`
 //! resolves them. Refresh is by hand.
 
@@ -34,6 +36,10 @@ mod model;
 mod pager;
 #[cfg(test)]
 mod tests;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod types;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod watches;
 
 use std::process::ExitCode;
 

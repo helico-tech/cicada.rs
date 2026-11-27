@@ -1,5 +1,4 @@
-//! A read-only text view of highlighted JSON with the cut notice over it: the Actors pane's state and the Messages
-//! pane's payload.
+//! A read-only text view of highlighted JSON with a notice when a state, payload or schema is cut.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -21,7 +20,7 @@ pub(super) struct JsonText {
     scroll: Retained<NSScrollView>,
     text: Retained<NSTextView>,
     colors: [Retained<NSColor>; 5],
-    /// What the JSON is, for the notice: `state` or `payload`.
+    /// What the JSON is, for the notice: `state`, `payload` or `schema`.
     what: &'static str,
 }
 

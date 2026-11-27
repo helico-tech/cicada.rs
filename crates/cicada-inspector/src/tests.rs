@@ -6,6 +6,8 @@
 mod actors;
 mod json;
 mod messages;
+mod types;
+mod watches;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -167,6 +169,11 @@ fn answer(status: StatusCode, body: &Value) -> Response {
     let json = if status.is_success() { "application/json" } else { "application/problem+json" };
     response.headers_mut().insert(header::CONTENT_TYPE, json.parse().unwrap());
     response
+}
+
+/// Awaits a published model state with a wall-clock bound.
+async fn view_until<T: Clone>(view: &mut tokio::sync::watch::Receiver<T>, done: impl FnMut(&T) -> bool) -> T {
+    timeout(Duration::from_secs(10), view.wait_for(done)).await.expect("model update in time").unwrap().clone()
 }
 
 fn no_rule() -> Rule {
@@ -584,7 +591,7 @@ fn a_failed_stats_shows_its_error_on_the_tiles() {
     let tiles = tiles(&Part::Failed(error.clone()), chrono::Utc::now());
     assert!(tiles.iter().all(|tile| tile.error && tile.value == "—" && tile.note == error));
     let ready: Vec<_> = Section::BROWSE.into_iter().filter(|section| section.ready()).collect();
-    assert_eq!(ready, [Section::Actors, Section::Messages]);
+    assert_eq!(ready, [Section::Actors, Section::Messages, Section::Types, Section::Watches]);
     assert!(Section::Overview.ready());
     assert_eq!(crate::model::check_macos((13, 6, 0)), Err(crate::model::NEEDS_MACOS));
     assert_eq!(crate::model::check_macos((14, 0, 0)), Ok(()));
