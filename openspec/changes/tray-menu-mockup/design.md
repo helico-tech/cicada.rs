@@ -36,31 +36,38 @@ menu match the boards, and follows `gui-mockup-boards`.
 3. **Not connected (board Disconnected).** Header: "Not connected", the switch off. After a failed connection, a row
    with the red icon: "Couldn't reach <context>" over "<error> at HH:MM" (the tray records when it failed; the error is
    display text: credentials, URL queries and control characters removed, cut at 200 characters). No Running section and
-   no submenus. The Context rows: picking one selects it (the blue circle and the target of Connect) without connecting,
-   also after a failure; then "Connect to <selected>" (⌘K), which, like the switch, connects to the selected context;
-   then Open Inspector… (with the `inspector` feature), Settings…, Quit <app>.
+   no submenus. With no contexts at all the header says "Not connected · Run cicada config" and there is no Connect row.
+   The Context rows: picking one selects it (the blue circle and the target of Connect) without connecting, also after a
+   failure; the pick lives in `MenuControl`, starts from the config file's current context, survives the reload of the
+   contexts when the menu opens while that name still exists, and is never written to the file (the CLI's current
+   context stays); then "Connect to <selected>" (⌘K), which, like the switch, connects to the selected context; then
+   Open Inspector… (with the `inspector` feature), Settings…, Quit <app>.
 4. **Submenus (boards Running and Registered).** Registered Types: "Actor Types" header; a checkmark for each type the
    worker runs, the name, on the right "N running" or "Not on this worker"; "Background Tasks" with "Not available over
    HTTP"; "Choose Types…" opens Settings. Recent Turns: "Finished on this worker" header; each row an icon, the actor, a
    second line and the finish time on the right: done (green check, "<type> · done in m:ss"), failed (red cross, "<type>
-   · <error, first line, cut at 80>"), rescheduled (orange clock, "<type> · <error> · retry HH:MM", or "retry now"),
-   cancelled (grey, "<type> · cancelled"), abandoned (red cross, "<type> · abandoned"); "Kept until the app quits" at
-   the end. The "N failed" on the Recent Turns row counts failed and abandoned, as today.
-5. **Disconnecting (board Disconnecting).** Header: "Disconnecting from <context>…", the switch dimmed. Below it, while
-   the grace period runs, a bar at elapsed / grace (the worker's `grace_period`, from when stopping began) with "Taking
-   no new turns" and "N s left" (the grace left, not the cancel timeout); once the grace ends, after Stop Now, or with a
-   grace of zero, the bar is full and the text is "Cancelling turns…". "Finishing" with the count and the running rows
-   with the orange clock icon; Stop Now, enabled while the worker is ready as today, then the help "Stopping now cancels
-   these turns. Their messages stay and run again later." as a disabled row, then Quit <app>. No Context section,
-   submenus, Inspector or Settings while disconnecting. Turns still listed when the tray goes offline after Stop Now
-   stay as the existing requirement "Turns after Stop Now" says.
+   · <error, first line, cut at 80>"), rescheduled after a failure (red cross as on board Running, "<type> · <error>,
+   retry HH:MM", the retry's time, or the finish time plus a retry delay, or "retry now"), cancelled (grey, "<type> ·
+   cancelled"), abandoned (red cross, "<type> · abandoned"); "Kept until the app quits" at the end. The "N failed" on
+   the Recent Turns row counts failed, abandoned and rescheduled turns, as board Main counts the retried one.
+5. **Disconnecting (board Disconnecting).** Header: "Disconnecting from <context>…", the switch dimmed. Below it, once
+   the worker was ready and while the grace period runs, a bar at elapsed / grace (the worker's `grace_period`, from
+   when stopping began) with "Taking no new turns" and "N s left" (the grace left, not the cancel timeout); once the
+   grace ends, after Stop Now, or with a grace of zero, the bar is full and the text is "Cancelling turns…". "Finishing"
+   with the count and the running rows with the orange clock icon; Stop Now, offered only when the worker was ready, as
+   today (a stop before the worker was ready shows no bar and no Stop Now), then the help "Stopping now cancels these
+   turns. Their messages stay and run again later." as a disabled row, then Quit <app>. No Context section, submenus,
+   Inspector or Settings while disconnecting. Turns still listed when the tray goes offline after Stop Now stay as the
+   existing requirement "Turns after Stop Now" says.
 6. **The server's host.** `cicada_app::Contexts` gains `host(name) -> Option<String>`: the host and port of the
    context's server URL, never its user, password, path or query. The tray shows it under the context's name.
 7. **The status item.** A template image drawn from the boards' hexagon path: a filled dot when connected, a hollow
    one at 55% opacity otherwise, instead of `bolt.fill`.
 8. **Where it lives.** The portable menu model (`menu.rs`) holds every text, count and row kind, tested on every
    platform; `appkit/view.rs` draws them. `cicada-app` gains `Contexts::host` and `WorkerReady::concurrency` (additive;
-   `WorkerReady` is `#[non_exhaustive]`). `Contexts` keeps only each parsed host and port, never the URL.
+   `WorkerReady` is `#[non_exhaustive]`). `Contexts` keeps only each parsed host and port, never the URL. The new tray
+   data (when stopping began, the grace period, whether Stop Now was used, when a connection failed) stays crate-private
+   beside `TrayState`, whose public variants do not change.
 
 ## Departures from the board
 
