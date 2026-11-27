@@ -14,7 +14,8 @@ The Types and Watches items of the inspector's sidebar still say "Coming soon". 
   still offered when the filter leaves no row visible; Show Actor for the watcher and, for a one-actor target, for it.
 - Read only.
 
-To decide in the design: how the pane picks among a type's schemas, and the filter's footer.
+Decided in the design: a pop-up of schemas formatted one at a time, and a footer that says the watcher filter covers
+the loaded rows, with Load more always offered.
 
 ## Order
 
