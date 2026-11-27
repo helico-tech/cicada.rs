@@ -152,7 +152,7 @@ fn usage(error: &clap::Error) -> String {
 /// of an address is unclear it hides more, not less, and hiding twice gives what hiding once gave. It leaves alone a
 /// password with a raw `/`, `#`, `?`, `"`, `` ` `` or a space, which end the authority, an authority without `@`, an
 /// address without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
-pub(crate) fn hide_passwords(text: &str) -> String {
+pub fn hide_passwords(text: &str) -> String {
     let mut hidden = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find("://") {

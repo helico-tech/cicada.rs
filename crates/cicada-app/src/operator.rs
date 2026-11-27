@@ -31,7 +31,7 @@ pub(crate) fn error_text(error: &anyhow::Error) -> String {
 }
 
 /// How long a CLI request may take.
-const TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs `cli` with the environment `env`, writing results to `out`; `name` is the binary as it was called, for the
 /// hints. Any error means exit code 1.

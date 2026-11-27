@@ -482,6 +482,22 @@ pub fn check_server_url(server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A client for a context of the config file, resolved as the operator commands resolve their target, with their
+/// timeout (30 s), and the name of the context it uses.
+///
+/// The order is that of `cicada`: `CICADA_SERVER` and `CICADA_TOKEN` win, then the context named by `context`, else
+/// by `CICADA_CONTEXT`, else the file's `current-context`. The name returned is that effective context (`None` when no
+/// context is used, as with `CICADA_SERVER` alone), so a picker shows what is really used. The file is read as
+/// [`ContextFile::load`] reads it. The server URL is checked first ([`check_server_url`]), so that no error quotes it;
+/// the client sends the credentials of a URL as a header, and its transport errors name the URL without them.
+pub fn context_client(env: &Env, context: Option<&str>) -> anyhow::Result<(ActorClient, Option<String>)> {
+    let file = ContextFile::load(env)?;
+    let flags = Overrides { context: context.map(str::to_owned), ..Overrides::default() };
+    let target = resolve(&flags, env, &file.config, "cicada")?;
+    check_server_url(&target.server)?;
+    Ok((target.client(crate::operator::TIMEOUT)?, target.context))
+}
+
 impl Target {
     /// A client for this target whose requests carry the token and headers and give up after `timeout`.
     pub fn client(&self, timeout: Duration) -> anyhow::Result<ActorClient> {
@@ -737,6 +753,80 @@ mod tests {
         let error = config().save(&file).unwrap_err().to_string();
         assert!(error.contains("cannot write"), "{error}");
         assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    /// The config file of [`config`] in a new folder, and an environment that names it with `pairs`.
+    fn context_env(pairs: &[(&str, &str)]) -> (tempfile::TempDir, Env) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        config().save(&file).unwrap();
+        let mut env = env(pairs);
+        env.insert("CICADA_CONFIG".into(), file.to_str().unwrap().into());
+        (dir, env)
+    }
+
+    /// The base URL of a client, read from its `Debug`.
+    fn base(client: &ActorClient) -> String {
+        let text = format!("{client:?}");
+        let start = text.find("base: \"").unwrap() + 7;
+        text[start..start + text[start..].find('"').unwrap()].to_owned()
+    }
+
+    #[test]
+    fn a_context_client_resolves_as_the_operator_commands_and_names_its_context() {
+        let (_dir, e) = context_env(&[]);
+        let (client, name) = context_client(&e, None).unwrap();
+        assert_eq!((base(&client), name.as_deref()), ("http://a".into(), Some("a")), "the file's current context");
+        let (client, name) = context_client(&e, Some("b")).unwrap();
+        assert_eq!((base(&client), name.as_deref()), ("http://b".into(), Some("b")), "the named context");
+
+        let (_dir, e) = context_env(&[("CICADA_CONTEXT", "b")]);
+        let (client, name) = context_client(&e, None).unwrap();
+        assert_eq!((base(&client), name.as_deref()), ("http://b".into(), Some("b")), "CICADA_CONTEXT over the file");
+        let (_, name) = context_client(&e, Some("a")).unwrap();
+        assert_eq!(name.as_deref(), Some("a"), "the named context over CICADA_CONTEXT");
+
+        let (_dir, e) = context_env(&[("CICADA_SERVER", "http://env")]);
+        let (client, name) = context_client(&e, Some("b")).unwrap();
+        assert_eq!((base(&client), name.as_deref()), ("http://env".into(), Some("b")), "the environment wins");
+
+        let error = context_client(&e, Some("c")).unwrap_err().to_string();
+        assert_eq!(error, "no context 'c' in the config file");
+    }
+
+    #[test]
+    fn a_context_client_without_a_server_says_so_without_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let e = env(&[("CICADA_CONFIG", file.to_str().unwrap()), ("CICADA_TOKEN", "s3cret")]);
+        let error = context_client(&e, None).unwrap_err().to_string();
+        let operator = resolve(&Overrides::default(), &e, &Config::default(), "cicada").unwrap_err().to_string();
+        assert_eq!(error, operator, "the operator commands' text");
+        assert!(!error.contains("s3cret"), "{error}");
+    }
+
+    /// The client's own parse error quotes its base URL: a server URL that does not parse is refused first, without it.
+    #[test]
+    fn a_context_client_refuses_a_malformed_server_without_quoting_it() {
+        for server in ["http://user:se#cret@host", "http://user:se/cret@host", "localhost:se/cret@8080"] {
+            let (_dir, e) = context_env(&[("CICADA_SERVER", server)]);
+            let error = format!("{:#}", context_client(&e, None).unwrap_err());
+            assert!(error.contains("server URL") && !error.contains("cret") && !error.contains("user"), "{error}");
+        }
+    }
+
+    /// The credentials of the server URL go into a header; a transport error names the URL without them.
+    #[tokio::test]
+    async fn a_transport_error_of_a_context_client_hides_the_credentials() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let (_dir, e) = context_env(&[("CICADA_SERVER", &format!("http://user:s3cret@{address}"))]);
+        let (client, _) = context_client(&e, None).unwrap();
+        let error = client.health().await.unwrap_err();
+        let text = crate::operator::error_text(&anyhow::Error::new(error));
+        assert!(text.contains("HTTP request failed") && text.contains(&address.to_string()), "{text}");
+        assert!(!text.contains("s3cret") && !text.contains("user"), "{text}");
     }
 
     fn file_env(file: &Path) -> Env {
