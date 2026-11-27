@@ -21,12 +21,12 @@ menu match the boards, and follows `gui-mockup-boards`.
 
 1. **Rich rows with native items.** Every rich row is an `NSMenuItem` with an image, a title, a subtitle (macOS 14.4)
    and a badge for the text on the right (`NSMenuItemBadge` with a string, macOS 14.0). The image is the board's icon in
-   a 26 pt circle with the board's fill (green for running and done, red for failed and abandoned, orange for finishing
-   and rescheduled, blue filled for the selected context, grey otherwise), drawn as non-template images, one per kind
-   and appearance (light and dark), kept and swapped when the appearance changes. The menu asks AppKit to show item
-   images where the system hides them by default (macOS 27). A row's identity (context name, turn) is its represented
-   object, never its title, so joining the second line into the title on older macOS changes nothing it does. The header
-   stays the one custom view and gains the disconnecting bar (decision 5). Native items keep keyboard, VoiceOver and the
+   a 26 pt circle with the board's fill (green for running and done, red for failed, abandoned and rescheduled, orange
+   for finishing, blue filled for the selected context, grey otherwise), drawn as non-template images, one per kind and
+   appearance (light and dark), kept and swapped when the appearance changes. The menu asks AppKit to show item images
+   where the system hides them by default (macOS 27). A row's identity (context name, turn) is its represented object,
+   never its title, so joining the second line into the title on older macOS changes nothing it does. The header stays
+   the one custom view and gains the disconnecting bar (decision 5). Native items keep keyboard, VoiceOver and the
    system highlight.
 2. **Connected (board Main).** Header: the app's title, "Connected to <context>", the switch on. "Running" with "N of M"
    on the right (M: the started worker's concurrency from its config, a new field `concurrency` of `WorkerReady`); rows:
