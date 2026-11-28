@@ -10,6 +10,10 @@ would then be pulled from Docker Hub's `factory` namespace on a fresh machine: s
 
 - `ContainerSpec` gains a pull policy: never, if missing (today's behaviour, the default) or always. `never` with a
   missing image fails with the existing image-not-found error and pulls nothing.
+- Also, from the code review of `container-network-isolation` (note 1): the E2E check that an isolated network cannot
+  reach the host dials the first address of its subnet, which Docker gives to the probe container itself, so the
+  refusal does not come from the host. Start another container on the network first, or check that the probe's own
+  address is not the one it dials, and fix the comment (`e2e/tests/suite/container_docker.rs`).
 
 To decide in the design: the names; whether `always` re-pulls on every create or only when the job starts; how the
 fake runtime models it; the container actor's contract if the policy is part of a job's spec.
