@@ -28,7 +28,7 @@ turn caused by another work item, so a copied header names that item: there the 
 
 ## Order
 
-After `flow-request-target`. No following change.
+After `flow-request-target`. Before `test-probe`.
 
 ## Impact
 
