@@ -39,5 +39,5 @@ None.
 
 ## Status
 
-The docs checks passed (11 tests), as did the all-features container crate tests (323 tests) and Docker E2E
-(63 scenarios). Both passages are proposed for the docs session.
+The docs checks passed (11 tests), as did the all-features container crate tests (323 tests), the full gate and
+the Docker E2E gate (63 scenarios). Both passages are proposed for the docs session.

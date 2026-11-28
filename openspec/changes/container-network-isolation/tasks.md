@@ -31,6 +31,6 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   (decision 8). `docs-handoff.md` carries the paragraph and the upgrade step from "Docs this breaks" in the design;
   nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-network-isolation --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches `e2e/`).
