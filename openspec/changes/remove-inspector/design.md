@@ -10,11 +10,16 @@ the terminal UI stay.
 
 1. **Delete the crate and the tray's feature.** `crates/cicada-inspector` goes with its workspace member and
    dependency. `cicada-tray` loses the feature `inspector`, the "Open Inspector…" row (`InspectorItem`, `MenuModel`'s
-   field `inspector`) and the AppKit code that opens and closes the window (`appkit.rs`: the `Embedded` field, its
-   runtime handle, `trayOpenInspector:` and `close_inspector`). The menu keeps every other row in its order.
+   field `inspector`, the `close_inspector` parameter of `QuitRequest::begin`, and the tests
+   `a_quit_disables_the_switch_the_contexts_quit_and_the_inspector` (it keeps its other checks),
+   `open_inspector_is_feature_gated`, `the_inspector_uses_a_connection_in_any_phase_…` and
+   `every_quit_request_closes_the_inspector_…` in `menu.rs`) and the AppKit code that opens and closes the window
+   (`appkit.rs`: the `Embedded` field, its runtime handle, `trayOpenInspector:` and `close_inspector`; `appkit/view.rs`:
+   the `inspector` menu item, its row, target and update). The menu keeps every other row in its order.
    Not taken: keeping the crate unpublished in the workspace (dead code the gate still builds).
 2. **ADR 0078 supersedes ADR 0076.** ADR 0011 then holds again apart from ADR 0056's container layers; the tray keeps
-   its own ADR 0074. 0076's status and its index row say "Superseded by 0078"; 0011's row drops "and 0076".
+   its own ADR 0074. Already written with this design (commit 1889dba8): ADR 0078, 0076's status, 0011's status and
+   the index rows. No task.
 3. **`ActorClient::changes` stays** (owner, R1a). ADR 0077 stands: the client gives Rust users the change hints that
    browsers have, and it is tested on its own (`crates/cicada-client/tests/changes.rs`). Not taken: removing it with
    ADR 0077 (less code, but rebuilt when a Rust user wants live updates).
@@ -23,8 +28,9 @@ the terminal UI stay.
    inside a tray entry lose that part. Not taken: a "removed" line.
 5. **The gate drops the inspector.** `scripts/ci/feature-builds.sh` loses the check, clippy and tests with
    `--features inspector`; `scripts/ci/dependency-trees.sh` loses `cicada-inspector` from its list of application
-   crates and the allowed tray edge. Its rule stays: no library crate has `cicada-containers` or `cicada-tray` in its
-   tree.
+   crates, the allowed tray edge and the `tray-inspector` tree with its two checks (lines 51-53). The header comments of
+   both scripts stop naming the inspector. Its rule stays: no library crate has `cicada-containers` or `cicada-tray` in
+   its tree.
 6. **Specs.** The capability `inspector` is removed whole. The change-loop scenario "A screen with a board" names a
    tray screen instead of an inspector page; the rule itself stays for tray screens.
 7. **Archived changes stay** in `openspec/changes/archive/` as history; the link check skips that folder.
@@ -39,6 +45,7 @@ The docs session prepares, before landing (ADR 0045):
 - `README.md` and `docs/README.md`: every mention of the inspector.
 - `AGENTS.md`: the map row of `crates/cicada-inspector` and the mention in the tray row (`cicada-tray`'s feature).
 - `docs/architecture.md`: the crate table's `cicada-inspector` row and the tray row's last sentence.
-- `docs/guide/app.md`: the section "Inspector on macOS" (anchor `#inspector-on-macos`) and any link to it.
+- `docs/guide/app.md`: the section "Inspector on macOS" (anchor `#inspector-on-macos`), and the tray's paragraph
+  "Open Inspector" with its command `--features cicada-tray/inspector`.
 - `skills/cicada/SKILL.md`: `cicada-inspector` in the description's crate list and the route row to
   `docs/guide/app.md#inspector-on-macos`; `examples/tests/skill.rs` fails while the route points to a removed anchor.

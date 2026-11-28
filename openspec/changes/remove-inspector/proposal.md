@@ -14,7 +14,8 @@ the owner dropped the open inspector changes (`inspector-message-actions` and th
   `inspector` field) and the AppKit code that opens and closes the window. The tray itself stays.
 - The gate's checks drop the inspector: `scripts/ci/feature-builds.sh` (check, clippy and tests with `inspector`) and
   `scripts/ci/dependency-trees.sh` (the allowed tray-to-inspector edge).
-- A new ADR supersedes ADR 0076, so ADR 0011 ("library only") holds again in full, apart from the tray (ADR 0074).
+- A new ADR supersedes ADR 0076, so ADR 0011 ("library only") holds again, apart from ADR 0056's container layers;
+  the tray keeps ADR 0074.
 - The `inspector` capability spec is removed. The change-loop spec's GUI scenario stops naming an inspector page.
 - `CHANGELOG.md`: the unreleased inspector entries go, as the crate never shipped.
 
