@@ -18,7 +18,7 @@ crate's tests: `cargo test -p cicada-actors`.
   actor form needs a tagged message family. Verify: tests on virtual time with `TestActors` for each scenario of the
   spec (actor caller with a later reply and `c1`, flow caller with `r.into()`, `5` gives `Invalid`, a missing type
   name gives `SendRejected`); `cargo test -p cicada-actors`.
-- [ ] 3. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` gets an Added line for `ReplyRoute`
+- [x] 3. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` gets an Added line for `ReplyRoute`
   and ADR 0079. `docs-handoff.md` asks for the actors guide's text on requests near `step.request`, the design guide's
   ports section (from `actor-ports`), and the upgrade note that moving a field from `ReplyTo<T>` to `ReplyRoute<T>`
   keeps saved messages but changes the contract hash. Nothing blocks. No edit to `README.md`, `AGENTS.md` or the

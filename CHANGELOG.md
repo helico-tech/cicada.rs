@@ -34,6 +34,9 @@ directly or use `..` in matches.
 
 ### Added
 
+- `cicada_actors::ReplyRoute<T>` lets a port declare one reply field for flow and actor callers (ADR 0079). A flow
+  passes its `ReplyTo<T>` with `.into()`. An actor passes its address and can set a correlation id that stays with the
+  route when the port replies in a later turn.
 - `cicada-containers`: `NetworkSpec::isolated` keeps containers on an internal bridge from reaching the host and its
   published ports through that bridge. It requires Docker 28 (API 1.48). A host's own `ContainerRuntime` written
   before this change ignores the flag. Update it to honour isolation or return `Unsupported`.
