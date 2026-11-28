@@ -26,7 +26,7 @@ show it; the proposal's earlier `ports.rs` would repeat the reply example):
 - A docs handoff for a section of `docs/guide/design.md` on ports and fakes: the port module owns the ref, the
   request family and the reply family; replies go by address; a fake is another `impl Actor` for the same ref, hosted
   instead of the real one; trait injection for outside systems as with `ContainerRuntime`; one implementation per
-  type name per node; a fake's contract hash differs, so it belongs in a test store, not a shared one.
+  type name per node; the contract hash comes from the type name, the message family and the state schema, so a fake can share the real actor's hash while behaving differently; it belongs in a test store, not a shared one (corrected in the build and the code review).
 
 An explicit reply address in the request (for a caller that is not the sender, such as a flow) is `reply-route`.
 
