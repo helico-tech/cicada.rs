@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
-use bollard::models::{ContainerInspectResponse, NetworkCreateRequest, VolumeCreateRequest};
+use bollard::models::{ContainerInspectResponse, VolumeCreateRequest};
 use bollard::query_parameters::{
     ContainerArchiveInfoOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
     DownloadFromContainerOptionsBuilder, InspectContainerOptions, InspectNetworkOptions, ListContainersOptionsBuilder,
@@ -322,10 +322,6 @@ fn label_filter(label: &Label) -> HashMap<&'static str, Vec<String>> {
     HashMap::from([("label", vec![format!("{}={}", label.key, label.value)])])
 }
 
-fn labels(map: &std::collections::BTreeMap<String, String>) -> HashMap<String, String> {
-    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-}
-
 /// Sorts a refusal of a sweep: `DaemonUnavailable` ends the sweep, anything else is a skip with Docker's message.
 fn skip_or_end(swept: &mut Swept, resource: Resource, name: &str, error: &DockerError) -> Result<(), ContainerError> {
     if kind_of(error) == ErrorKind::DaemonUnavailable {
@@ -491,41 +487,40 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     async fn ensure_network(&self, spec: &NetworkSpec) -> Result<(), ContainerError> {
+        spec.check_isolation()?;
         let docker = self.docker().await?;
+        // An older daemon can report the isolated modes in its options without implementing them.
+        map::check_network(spec, docker.client_version())?;
         let name = spec.name.as_str();
-        // The internal flag of the network named exactly `name`; `None` when there is none.
+        // The flags of the network named exactly `name`; `None` when there is none.
         let existing = || async {
             match docker.inspect_network(name, None::<InspectNetworkOptions>).await {
-                Ok(network) if network.name.as_deref() == Some(name) => Ok(Some(network.internal.unwrap_or(false))),
+                Ok(network) if network.name.as_deref() == Some(name) => Ok(Some(map::network_flags(&network))),
                 Ok(_) => Ok(None),
                 Err(e) if status_code(&e) == Some(404) => Ok(None),
                 Err(e) => Err(fail("inspect network", name, &e)),
             }
         };
-        let compare = |internal: bool| {
-            if internal == spec.internal {
-                Ok(())
-            } else {
-                Err(ContainerError::new(
-                    ErrorKind::Conflict,
-                    format!("ensure network {name}: it exists with internal = {internal}, not {}", spec.internal),
-                ))
+        let compare = |(internal, isolated)| {
+            for (flag, actual, expected) in
+                [("internal", internal, spec.internal), ("isolated", isolated, spec.isolated)]
+            {
+                if actual != expected {
+                    return Err(ContainerError::new(
+                        ErrorKind::Conflict,
+                        format!("ensure network {name}: it exists with {flag} = {actual}, not {expected}"),
+                    ));
+                }
             }
+            Ok(())
         };
-        if let Some(internal) = existing().await? {
-            return compare(internal);
+        if let Some(flags) = existing().await? {
+            return compare(flags);
         }
-        let request = NetworkCreateRequest {
-            name: name.to_owned(),
-            driver: Some("bridge".to_owned()),
-            internal: Some(spec.internal),
-            labels: Some(labels(&spec.labels)),
-            ..Default::default()
-        };
-        match docker.create_network(request).await {
+        match docker.create_network(map::network_request(spec)).await {
             Ok(_) => Ok(()),
             Err(e) if status_code(&e) == Some(409) => match existing().await? {
-                Some(internal) => compare(internal),
+                Some(flags) => compare(flags),
                 None => Err(fail("create network", name, &e)),
             },
             Err(e) => Err(fail("create network", name, &e)),
@@ -537,7 +532,7 @@ impl ContainerRuntime for DockerRuntime {
         // Docker returns an existing volume of that name unchanged.
         let request = VolumeCreateRequest {
             name: Some(spec.name.clone()),
-            labels: Some(labels(&spec.labels)),
+            labels: Some(map::hash_map(&spec.labels)),
             ..Default::default()
         };
         docker.create_volume(request).await.map(drop).map_err(|e| fail("ensure volume", &spec.name, &e))
@@ -677,6 +672,24 @@ mod tests {
         assert!(!runtime.negotiated.initialized(), "a failed agreement is not kept");
         let error = runtime.sweep(&Label::new("run", "a")).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::DaemonUnavailable);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn isolation_checks_precede_network_requests() {
+        let (path, runtime) = dead_socket("network-isolation");
+        let mut spec = NetworkSpec::new("net");
+        spec.isolated = true;
+        let error = runtime.ensure_network(&spec).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidSpec, "{error}");
+        assert!(!runtime.negotiated.initialized());
+
+        let version = ClientVersion { major_version: 1, minor_version: 47 };
+        let agreed = Docker::connect_with_unix(path.to_str().unwrap(), 1, &version).unwrap();
+        runtime.negotiated.set(agreed).unwrap();
+        spec.internal = true;
+        let error = runtime.ensure_network(&spec).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         std::fs::remove_file(path).unwrap();
     }
 

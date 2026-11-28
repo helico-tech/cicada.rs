@@ -11,7 +11,7 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   rustdoc of the trait's `ensure_network` (an implementation honours `isolated` or fails with `Unsupported`) and of
   `ErrorKind::Conflict` and `Unsupported` names the new cases (decision 8). Verify: fake unit tests for the
   scenarios of `specs/container-runtime/spec.md`; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The Docker backend.** In `docker/map.rs`, three pure functions (decision 6): the check of a spec against
+- [x] 2. **The Docker backend.** In `docker/map.rs`, three pure functions (decision 6): the check of a spec against
   the agreed API version (`InvalidSpec` when isolated without internal, then `Unsupported` below 1.48 with a message
   naming the agreed version and Docker 28); the create request (both `gateway_mode_ipv4` and `gateway_mode_ipv6`
   options set to `isolated` for an isolated spec, no options otherwise); and `(internal, isolated)` read from an

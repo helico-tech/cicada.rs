@@ -4,19 +4,60 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use bollard::ClientVersion;
 use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, EndpointSettings,
-    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig, SystemInfo, SystemVersion,
+    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkCreateRequest, NetworkInspect, NetworkingConfig,
+    SystemInfo, SystemVersion,
 };
 
 use crate::dirs::{Make, Stat};
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, LogCursor, LogLine,
-    LogStream, MountKind, Networking, OUT_OF_MEMORY, Resource, RuntimeInfo, Tmpfs,
+    LogStream, MountKind, NetworkSpec, Networking, OUT_OF_MEMORY, Resource, RuntimeInfo, Tmpfs,
 };
+
+const API_ISOLATED_NETWORK: ClientVersion = ClientVersion { major_version: 1, minor_version: 48 };
+const GATEWAY_MODES: [&str; 2] =
+    ["com.docker.network.bridge.gateway_mode_ipv4", "com.docker.network.bridge.gateway_mode_ipv6"];
+
+/// Isolation needs an internal network and a daemon that implements the isolated gateway modes (Docker 28).
+pub(super) fn check_network(spec: &NetworkSpec, version: ClientVersion) -> Result<(), ContainerError> {
+    spec.check_isolation()?;
+    if spec.isolated && version < API_ISOLATED_NETWORK {
+        return Err(ContainerError::new(
+            ErrorKind::Unsupported,
+            format!(
+                "ensure network {}: isolated requires Docker 28 (API {API_ISOLATED_NETWORK}), negotiated API {version}",
+                spec.name,
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Creates a bridge with isolated gateway modes for both IP families when requested.
+pub(super) fn network_request(spec: &NetworkSpec) -> NetworkCreateRequest {
+    NetworkCreateRequest {
+        name: spec.name.clone(),
+        driver: Some("bridge".to_owned()),
+        internal: Some(spec.internal),
+        options: spec.isolated.then(|| GATEWAY_MODES.map(|key| (key.to_owned(), "isolated".to_owned())).into()),
+        labels: Some(hash_map(&spec.labels)),
+        ..Default::default()
+    }
+}
+
+/// The internal and isolated flags of an inspected network. Isolation needs both gateway modes.
+pub(super) fn network_flags(network: &NetworkInspect) -> (bool, bool) {
+    let isolated = network.options.as_ref().is_some_and(|options| {
+        GATEWAY_MODES.iter().all(|&key| options.get(key).is_some_and(|mode| mode == "isolated"))
+    });
+    (network.internal.unwrap_or(false), isolated)
+}
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
 pub(super) fn status_code(error: &DockerError) -> Option<u16> {
@@ -111,7 +152,7 @@ fn saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn hash_map(map: &BTreeMap<String, String>) -> HashMap<String, String> {
+pub(super) fn hash_map(map: &BTreeMap<String, String>) -> HashMap<String, String> {
     map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
@@ -411,6 +452,61 @@ pub(super) fn runtime_info(version: &SystemVersion, system: &SystemInfo) -> Resu
 mod tests {
     use super::*;
     use crate::{Mount, NetworkAttachment};
+
+    #[test]
+    fn isolated_networks_require_internal_and_api_1_48() {
+        let api_1_44 = ClientVersion { major_version: 1, minor_version: 44 };
+        let api_1_47 = ClientVersion { major_version: 1, minor_version: 47 };
+        let api_1_48 = ClientVersion { major_version: 1, minor_version: 48 };
+        let mut spec = NetworkSpec::new("net");
+        check_network(&spec, api_1_44).unwrap();
+        spec.isolated = true;
+        assert_eq!(check_network(&spec, api_1_47).unwrap_err().kind, ErrorKind::InvalidSpec);
+        assert_eq!(check_network(&spec, api_1_48).unwrap_err().kind, ErrorKind::InvalidSpec);
+        spec.internal = true;
+        let error = check_network(&spec, api_1_47).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(error.message.contains("Docker 28") && error.message.contains("negotiated API 1.47"), "{error}");
+        check_network(&spec, api_1_48).unwrap();
+    }
+
+    #[test]
+    fn an_isolated_bridge_request_sets_both_gateway_modes() {
+        let mut spec = NetworkSpec::new("net");
+        spec.internal = true;
+        spec.labels.insert("run".into(), "test".into());
+        assert_eq!(network_request(&spec).options, None);
+        spec.isolated = true;
+        let request = network_request(&spec);
+        assert_eq!(request.name, "net");
+        assert_eq!(request.driver.as_deref(), Some("bridge"));
+        assert_eq!(request.internal, Some(true));
+        assert_eq!(request.labels, Some(HashMap::from([("run".into(), "test".into())])));
+        assert_eq!(
+            request.options,
+            Some(HashMap::from([
+                ("com.docker.network.bridge.gateway_mode_ipv4".into(), "isolated".into()),
+                ("com.docker.network.bridge.gateway_mode_ipv6".into(), "isolated".into()),
+            ])),
+        );
+    }
+
+    #[test]
+    fn an_inspected_network_needs_both_isolated_gateway_modes() {
+        let mut network = NetworkInspect::default();
+        assert_eq!(network_flags(&network), (false, false));
+        network.internal = Some(true);
+        assert_eq!(network_flags(&network), (true, false));
+        let [ipv4, ipv6] = GATEWAY_MODES;
+        for key in [ipv4, ipv6] {
+            network.options = Some(HashMap::from([(key.into(), "isolated".into())]));
+            assert_eq!(network_flags(&network), (true, false));
+        }
+        network.options = Some(HashMap::from([(ipv4.into(), "isolated".into()), (ipv6.into(), "nat".into())]));
+        assert_eq!(network_flags(&network), (true, false));
+        network.options.as_mut().unwrap().insert(ipv6.into(), "isolated".into());
+        assert_eq!(network_flags(&network), (true, true));
+    }
 
     fn server(status_code: u16, message: &str) -> DockerError {
         DockerError::DockerResponseServerError { status_code, message: message.into() }
