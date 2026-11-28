@@ -33,7 +33,7 @@ a route does at its end (nothing); and the split, as this is likely two or three
 
 ## Order
 
-After `actor-ports`. Before `work-id-header`.
+After `reply-route`. Before `work-id-header`.
 
 ## Impact
 
