@@ -42,5 +42,6 @@ None.
 
 ## Status
 
-The reply tests passed (6 passed, 0 failed), as did the docs checks (11 passed, 0 failed). The guide subsection and
-any accompanying skill route are proposed for the docs session.
+The reply tests and docs checks passed (6 and 11 tests). Formatting, Clippy, strict OpenSpec validation and the full
+gate passed, including the PostgreSQL-enabled workspace suite (4,107 tests). The guide subsection and any
+accompanying skill route are proposed for the docs session.

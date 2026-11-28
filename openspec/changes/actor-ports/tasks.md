@@ -19,5 +19,5 @@ builder.md, Version). No design or spec deltas; follow `proposal.md`, What Chang
   points of the proposal's What Changes, linking the new tests; and an actor-design skill route if the docs session's
   new heading needs one. Nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`.
-- [ ] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate actor-ports --strict`, commit, then `python3 scripts/gate.py run`.
