@@ -5,8 +5,6 @@ mod icons;
 mod settings;
 mod view;
 
-#[cfg(feature = "inspector")]
-use std::cell::OnceCell;
 use std::cell::{Cell, RefCell};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -14,8 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cicada_app::Contexts;
-#[cfg(feature = "inspector")]
-use cicada_inspector::Embedded;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -31,8 +27,6 @@ use objc2_foundation::{
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-#[cfg(feature = "inspector")]
-use crate::menu::InspectorItem;
 use crate::menu::{Action, MenuControl, MenuInput, QuitRequest, Renders, Terminate, Worker, macos_subtitles, menu};
 use crate::settings::SettingsForm;
 use crate::{Tray, TrayState};
@@ -83,16 +77,7 @@ fn start(tray: Tray, mtm: MainThreadMarker, subtitles: bool) -> Result<(), Strin
                     }
                 }
             });
-            autoreleasepool(|_| {
-                run_app(
-                    mtm,
-                    tray,
-                    interrupted,
-                    subtitles,
-                    #[cfg(feature = "inspector")]
-                    runtime.handle().clone(),
-                )
-            })
+            autoreleasepool(|_| run_app(mtm, tray, interrupted, subtitles))
         }
         Err(error) => {
             drop(tray);
@@ -114,13 +99,7 @@ fn app_name() -> String {
     NSProcessInfo::processInfo().processName().to_string()
 }
 
-fn run_app(
-    mtm: MainThreadMarker,
-    tray: Tray,
-    interrupted: Arc<AtomicBool>,
-    subtitles: bool,
-    #[cfg(feature = "inspector")] inspector_runtime: tokio::runtime::Handle,
-) -> Result<(), String> {
+fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>, subtitles: bool) -> Result<(), String> {
     let app = NSApplication::sharedApplication(mtm);
     let accessory = NSApplicationActivationPolicy::Accessory;
     if app.activationPolicy() != accessory && !app.setActivationPolicy(accessory) {
@@ -144,10 +123,6 @@ fn run_app(
             contexts: RefCell::default(),
             control: RefCell::default(),
             settings: RefCell::default(),
-            #[cfg(feature = "inspector")]
-            inspector: OnceCell::new(),
-            #[cfg(feature = "inspector")]
-            inspector_runtime,
             menu_open: Cell::new(false),
             renders: Renders::default(),
             last_clock: Cell::new(Instant::now()),
@@ -168,7 +143,6 @@ fn run_app(
 
     app.run();
 
-    target.close_inspector();
     timer.invalidate();
     app.setDelegate(None);
     target.ivars().view.root.setDelegate(None);
@@ -188,10 +162,6 @@ struct Controller {
     control: RefCell<MenuControl>,
     /// The Settings window, made at the first Settings….
     settings: RefCell<Option<SettingsWindow>>,
-    #[cfg(feature = "inspector")]
-    inspector: OnceCell<Embedded>,
-    #[cfg(feature = "inspector")]
-    inspector_runtime: tokio::runtime::Handle,
     menu_open: Cell<bool>,
     renders: Renders,
     last_clock: Cell<Instant>,
@@ -299,19 +269,6 @@ define_class!(
         #[unsafe(method(trayQuit:))]
         fn quit(&self, _: &NSMenuItem) {
             self.begin_quit(QuitRequest::Local);
-        }
-
-        // SAFETY: Only the Open Inspector… NSMenuItem is wired to this action.
-        #[cfg(feature = "inspector")]
-        #[unsafe(method(trayOpenInspector:))]
-        fn open_inspector(&self, _: &NSMenuItem) {
-            let c = self.ivars();
-            InspectorItem::show(&c.control, &self.state(), |context| {
-                let inspector = c.inspector.get_or_init(|| {
-                    Embedded::new(self.mtm(), c.tray.environment(), c.inspector_runtime.clone())
-                });
-                inspector.show(context);
-            });
         }
 
         // SAFETY: Only the Settings… NSMenuItem is wired to this action.
@@ -487,7 +444,7 @@ impl Target {
     }
 
     fn begin_quit(&self, source: QuitRequest) -> NSApplicationTerminateReply {
-        let decision = source.begin(&self.ivars().control, &self.state(), || self.close_inspector());
+        let decision = source.begin(&self.ivars().control, &self.state());
         match decision {
             Terminate::Now => NSApplicationTerminateReply::TerminateNow,
             Terminate::Later(action) => {
@@ -495,13 +452,6 @@ impl Target {
                 self.render();
                 NSApplicationTerminateReply::TerminateLater
             }
-        }
-    }
-
-    fn close_inspector(&self) {
-        #[cfg(feature = "inspector")]
-        if let Some(inspector) = self.ivars().inspector.get() {
-            inspector.close();
         }
     }
 

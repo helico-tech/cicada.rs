@@ -703,35 +703,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cicada-inspector"
-version = "0.26.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "block2",
- "chrono",
- "cicada",
- "cicada-app",
- "cicada-axum",
- "cicada-client",
- "cicada-test",
- "futures",
- "http",
- "jsonschema",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "percent-encoding",
- "regex",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "cicada-otel"
 version = "0.26.0"
 dependencies = [
@@ -802,7 +773,6 @@ dependencies = [
  "cicada",
  "cicada-app",
  "cicada-axum",
- "cicada-inspector",
  "cicada-test",
  "objc2",
  "objc2-app-kit",

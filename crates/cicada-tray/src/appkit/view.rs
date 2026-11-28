@@ -18,8 +18,8 @@ use objc2_foundation::{NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize
 use super::Target;
 use super::icons::{self, Icons};
 use crate::menu::{
-    ACTOR_TYPES, BACKGROUND_TASKS, Bar, CHOOSE_TYPES, ContextRow, Header, InspectorItem, Lead, MENU_WIDTH, MenuModel,
-    RECENT, RECENT_WIDTH, REGISTERED_WIDTH, RecentRow, Row, RunningRow, STOP_NOW_HELP, TypeRow, row_text, text_space,
+    ACTOR_TYPES, BACKGROUND_TASKS, Bar, CHOOSE_TYPES, ContextRow, Header, Lead, MENU_WIDTH, MenuModel, RECENT,
+    RECENT_WIDTH, REGISTERED_WIDTH, RecentRow, Row, RunningRow, STOP_NOW_HELP, TypeRow, row_text, text_space,
 };
 
 /// The boards' menu width.
@@ -47,7 +47,6 @@ pub(super) struct MenuView {
     stop_now_help: Retained<NSMenuItem>,
     stop_now_separator: Retained<NSMenuItem>,
     choose_types: Retained<NSMenuItem>,
-    inspector: Option<Retained<NSMenuItem>>,
     settings: Retained<NSMenuItem>,
     quit: Retained<NSMenuItem>,
     subtitles: bool,
@@ -105,15 +104,12 @@ impl MenuView {
         let connect = item(mtm, ns_string!(""), Some(sel!(trayToggle:)), ns_string!("k"));
         let stop_now = item(mtm, ns_string!("Stop Now"), Some(sel!(trayStopNow:)), ns_string!(""));
         let stop_now_help = note(mtm, STOP_NOW_HELP, 11.0, (2.0, 4.0));
-        let inspector = InspectorItem::entry(false).map(|entry| {
-            item(mtm, &NSString::from_str(entry.title), Some(sel!(trayOpenInspector:)), &NSString::from_str(entry.key))
-        });
         let settings = item(mtm, ns_string!("Settings…"), Some(sel!(traySettings:)), ns_string!(","));
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
         let separator = || NSMenuItem::separatorItem(mtm);
         let (failure_separator, running_separator, context_separator) = (separator(), separator(), separator());
         let (top_separator, submenus_separator, stop_now_separator) = (separator(), separator(), separator());
-        let mut rows = vec![
+        for row in [
             &header.item,
             &top_separator,
             &failure,
@@ -129,12 +125,9 @@ impl MenuView {
             &stop_now,
             &stop_now_help,
             &stop_now_separator,
-        ];
-        if let Some(inspector) = &inspector {
-            rows.push(inspector);
-        }
-        rows.extend([&settings, &quit]);
-        for row in rows {
+            &settings,
+            &quit,
+        ] {
             root.addItem(row);
         }
         for hidden in [
@@ -191,7 +184,6 @@ impl MenuView {
             stop_now_help,
             stop_now_separator,
             choose_types,
-            inspector,
             settings,
             quit,
             // objc2 exposes these selectors without version attributes. The SDK declares section headers and badges
@@ -219,9 +211,6 @@ impl MenuView {
             self.connect.setTarget(Some(target));
             self.stop_now.setTarget(Some(target));
             self.choose_types.setTarget(Some(target));
-            if let Some(inspector) = &self.inspector {
-                inspector.setTarget(Some(target));
-            }
             self.settings.setTarget(Some(target));
             self.quit.setTarget(Some(target));
         }
@@ -383,12 +372,6 @@ impl MenuView {
         }
         for item in [&self.stop_now, &self.stop_now_help, &self.stop_now_separator] {
             show(item, model.stop_now);
-        }
-        if let Some(item) = &self.inspector {
-            show(item, model.inspector.is_some());
-            if let Some(entry) = model.inspector {
-                item.setEnabled(entry.enabled);
-            }
         }
         show(&self.settings, model.settings);
         let quit = (model.quit, model.quit_enabled);

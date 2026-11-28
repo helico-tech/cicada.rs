@@ -4,10 +4,10 @@ Normal lane, version 0.26.0 (unreleased). Follow `design.md`; the specs are `spe
 `specs/change-loop/spec.md`. ADR 0078 and the ADR status lines are already on `main`: no ADR task. Nothing shipped
 has the inspector, so nothing is deprecated.
 
-- [ ] 1. **Delete `cicada-inspector`.** Remove `crates/cicada-inspector`, its workspace member and dependency in
+- [x] 1. **Delete `cicada-inspector`.** Remove `crates/cicada-inspector`, its workspace member and dependency in
   `Cargo.toml`, and let `Cargo.lock` follow (decision 1). Verify: `cargo build --workspace`; `cargo tree --workspace`
   names no `cicada-inspector`.
-- [ ] 2. **The tray without the inspector.** Remove the feature `inspector` and the optional dependency of
+- [x] 2. **The tray without the inspector.** Remove the feature `inspector` and the optional dependency of
   `cicada-tray`; in `menu.rs` `InspectorItem`, `MenuModel`'s field `inspector` and the `close_inspector` parameter of
   `QuitRequest::begin`; in `appkit.rs` and `appkit/view.rs` the window, its runtime handle, the menu item and its
   action; the tests the design names (decision 1). Every other row keeps its order. Verify: `cargo test -p
