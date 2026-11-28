@@ -12,7 +12,7 @@ has the inspector, so nothing is deprecated.
   `QuitRequest::begin`; in `appkit.rs` and `appkit/view.rs` the window, its runtime handle, the menu item and its
   action; the tests the design names (decision 1). Every other row keeps its order. Verify: `cargo test -p
   cicada-tray`; `cargo clippy -p cicada-tray --all-targets -- -D warnings`.
-- [ ] 3. **`cicada_app::context_client` goes.** The function, its re-export in `lib.rs` and its tests (decision 4b);
+- [x] 3. **`cicada_app::context_client` goes.** The function, its re-export in `lib.rs` and its tests (decision 4b);
   `Contexts`, `ContextFile`, `ContextEntry` and `check_server_url` stay. Verify: `cargo test -p cicada-app`;
   `cargo check -p cicada-app --features tui`.
 - [ ] 4. **Gate scripts, changelog and docs handoff.** `scripts/ci/feature-builds.sh` and

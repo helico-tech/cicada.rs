@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
-use base64::Engine as _;
 use cicada_client::ActorClient;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -517,52 +516,6 @@ pub fn check_server_url(server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A client for a context of the config file, resolved as the operator commands resolve their target, with their
-/// timeout (30 s), and the name of the context it uses.
-///
-/// The order is that of `cicada`: `CICADA_SERVER` and `CICADA_TOKEN` win, then the context named by `context`, else
-/// by `CICADA_CONTEXT`, else the file's `current-context`. The name returned is that effective context (`None` when no
-/// context is used, as with `CICADA_SERVER` alone), so a picker shows what is really used. The file is read as
-/// [`ContextFile::load`] reads it.
-///
-/// No error and no `Debug` of the client holds the credentials of the server URL: the URL is parsed and checked first
-/// ([`check_server_url`], whose errors do not quote it), its user and password move into a sensitive
-/// `Authorization: Basic` header (which, as before, wins over a token), and the client gets the parsed URL without
-/// them. They are decoded as reqwest decoded them in the URL: a user that is not UTF-8 sends no Basic header (a token
-/// stays), and a password that is not UTF-8 is left out.
-pub fn context_client(env: &Env, context: Option<&str>) -> anyhow::Result<(ActorClient, Option<String>)> {
-    let file = ContextFile::load(env)?;
-    let flags = Overrides { context: context.map(str::to_owned), ..Overrides::default() };
-    let target = resolve(&flags, env, &file.config, "cicada")?;
-    check_server_url(&target.server)?;
-    let mut url = reqwest::Url::parse(&target.server).context("invalid server URL")?;
-    let mut headers = target.headers()?;
-    if !url.username().is_empty() || url.password().is_some() {
-        if let Some((user, password)) = url_credentials(&url) {
-            let credentials = format!("{user}:{}", password.unwrap_or_default());
-            let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-            let mut value = HeaderValue::try_from(format!("Basic {encoded}")).context("invalid server credentials")?;
-            value.set_sensitive(true);
-            headers.insert(AUTHORIZATION, value);
-        }
-        // A URL with a user or password has an authority, which takes both.
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-    }
-    let http = reqwest::Client::builder().default_headers(headers).timeout(crate::operator::TIMEOUT).build()?;
-    Ok((ActorClient::with_client(url.as_str(), http), target.context))
-}
-
-/// The Basic credentials of a URL, decoded as reqwest decodes them when they are part of a request's URL: none when
-/// the user is not UTF-8 once percent-decoded, no password when the password is not; none for neither.
-fn url_credentials(url: &reqwest::Url) -> Option<(String, Option<String>)> {
-    let decode =
-        |text: &str| percent_encoding::percent_decode_str(text).decode_utf8().ok().map(|text| text.into_owned());
-    let user = decode(url.username())?;
-    let password = url.password().and_then(decode);
-    (!user.is_empty() || password.is_some()).then_some((user, password))
-}
-
 impl Target {
     /// A client for this target whose requests carry the token and headers and give up after `timeout`.
     pub fn client(&self, timeout: Duration) -> anyhow::Result<ActorClient> {
@@ -863,147 +816,6 @@ mod tests {
         let error = config().save(&file).unwrap_err().to_string();
         assert!(error.contains("cannot write"), "{error}");
         assert_eq!(names(dir.path()), ["config.toml"]);
-    }
-
-    /// The config file of [`config`] in a new folder, and an environment that names it with `pairs`.
-    fn context_env(pairs: &[(&str, &str)]) -> (tempfile::TempDir, Env) {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("config.toml");
-        config().save(&file).unwrap();
-        let mut env = env(pairs);
-        env.insert("CICADA_CONFIG".into(), file.to_str().unwrap().into());
-        (dir, env)
-    }
-
-    /// The base URL of a client, read from its `Debug`.
-    fn base(client: &ActorClient) -> String {
-        let text = format!("{client:?}");
-        let start = text.find("base: \"").unwrap() + 7;
-        text[start..start + text[start..].find('"').unwrap()].to_owned()
-    }
-
-    #[test]
-    fn a_context_client_resolves_as_the_operator_commands_and_names_its_context() {
-        let (_dir, e) = context_env(&[]);
-        let (client, name) = context_client(&e, None).unwrap();
-        assert_eq!((base(&client), name.as_deref()), ("http://a".into(), Some("a")), "the file's current context");
-        let (client, name) = context_client(&e, Some("b")).unwrap();
-        assert_eq!((base(&client), name.as_deref()), ("http://b".into(), Some("b")), "the named context");
-
-        let (_dir, e) = context_env(&[("CICADA_CONTEXT", "b")]);
-        let (client, name) = context_client(&e, None).unwrap();
-        assert_eq!((base(&client), name.as_deref()), ("http://b".into(), Some("b")), "CICADA_CONTEXT over the file");
-        let (_, name) = context_client(&e, Some("a")).unwrap();
-        assert_eq!(name.as_deref(), Some("a"), "the named context over CICADA_CONTEXT");
-
-        let (_dir, e) = context_env(&[("CICADA_SERVER", "http://env")]);
-        let (client, name) = context_client(&e, Some("b")).unwrap();
-        assert_eq!((base(&client), name.as_deref()), ("http://env".into(), Some("b")), "the environment wins");
-
-        let error = context_client(&e, Some("c")).unwrap_err().to_string();
-        assert_eq!(error, "no context 'c' in the config file");
-    }
-
-    #[test]
-    fn a_context_client_without_a_server_says_so_without_the_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("config.toml");
-        let e = env(&[("CICADA_CONFIG", file.to_str().unwrap()), ("CICADA_TOKEN", "s3cret")]);
-        let error = context_client(&e, None).unwrap_err().to_string();
-        let operator = resolve(&Overrides::default(), &e, &Config::default(), "cicada").unwrap_err().to_string();
-        assert_eq!(error, operator, "the operator commands' text");
-        assert!(!error.contains("s3cret"), "{error}");
-    }
-
-    /// The client's own parse error quotes its base URL: a server URL that does not parse is refused first, without it.
-    #[test]
-    fn a_context_client_refuses_a_malformed_server_without_quoting_it() {
-        for server in ["http://user:se#cret@host", "http://user:se/cret@host", "localhost:se/cret@8080"] {
-            let (_dir, e) = context_env(&[("CICADA_SERVER", server)]);
-            let error = format!("{:#}", context_client(&e, None).unwrap_err());
-            assert!(error.contains("server URL") && !error.contains("cret") && !error.contains("user"), "{error}");
-        }
-    }
-
-    /// The credentials of the server URL go into a header; a transport error names the URL without them.
-    #[tokio::test]
-    async fn a_transport_error_of_a_context_client_hides_the_credentials() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        let (_dir, e) = context_env(&[("CICADA_SERVER", &format!("http://user:s3cret@{address}"))]);
-        let (client, _) = context_client(&e, None).unwrap();
-        let error = client.health().await.unwrap_err();
-        let text = crate::operator::error_text(&anyhow::Error::new(error));
-        assert!(text.contains("HTTP request failed") && text.contains(&address.to_string()), "{text}");
-        assert!(!text.contains("s3cret") && !text.contains("user"), "{text}");
-    }
-
-    /// The review's case: a server URL whose password has a space and that ends in a space passes the URL check (the
-    /// parser trims it), but the raw text plus a path does not parse. The client gets the parsed URL without the
-    /// credentials, so neither its `Debug` nor an error of a call shows the password.
-    #[tokio::test]
-    async fn a_context_client_never_shows_the_password_of_a_malformed_url() {
-        let (_dir, e) = context_env(&[("CICADA_SERVER", "http://u:dummy secret@127.0.0.1:81 ")]);
-        let (client, _) = context_client(&e, None).unwrap();
-        assert_eq!(base(&client), "http://127.0.0.1:81");
-        let debug = format!("{client:?}");
-        let error = client.health().await.unwrap_err();
-        let text = crate::operator::error_text(&anyhow::Error::new(error));
-        for shown in [debug, text] {
-            assert!(!shown.contains("dummy") && !shown.contains("secret") && !shown.contains("u:"), "{shown}");
-        }
-    }
-
-    /// The user and password of the URL still reach the server, percent-decoded, as Basic credentials that win over a
-    /// token, as reqwest sent them when they were part of the URL.
-    #[tokio::test]
-    async fn a_context_client_sends_url_credentials_as_basic_credentials() {
-        use axum::http::{HeaderMap, StatusCode};
-        let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("us er:p@ss w"));
-        let app = axum::Router::new().route(
-            "/api/health",
-            axum::routing::get(move |headers: HeaderMap| async move {
-                let sent = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-                if sent == Some(expected.as_str()) { StatusCode::OK } else { StatusCode::UNAUTHORIZED }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await });
-        let server = format!("http://us%20er:p%40ss%20w@{address}/api");
-        let (_dir, e) = context_env(&[("CICADA_SERVER", &server), ("CICADA_TOKEN", "t0ken")]);
-        let (client, _) = context_client(&e, None).unwrap();
-        assert_eq!(base(&client), format!("http://{address}/api"));
-        assert!(client.health().await.unwrap(), "the server saw the Basic credentials");
-    }
-
-    /// As reqwest did with credentials in the URL: a user that is not UTF-8 once decoded sends no Basic credentials and
-    /// the token stays; a password that is not UTF-8 is left out of them. The URL keeps no user or password.
-    #[tokio::test]
-    async fn a_context_client_decodes_url_credentials_as_reqwest_did() {
-        use axum::http::{HeaderMap, StatusCode};
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let record = seen.clone();
-        let app = axum::Router::new().route(
-            "/health",
-            axum::routing::get(move |headers: HeaderMap| async move {
-                let sent = headers.get(AUTHORIZATION).map(|v| v.to_str().unwrap().to_owned());
-                record.lock().unwrap().push(sent);
-                StatusCode::OK
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await });
-        for server in [format!("http://%FF:p@{address}"), format!("http://us:%FF@{address}")] {
-            let (_dir, e) = context_env(&[("CICADA_SERVER", &server), ("CICADA_TOKEN", "t0ken")]);
-            let (client, _) = context_client(&e, None).unwrap();
-            assert_eq!(base(&client), format!("http://{address}"));
-            assert!(client.health().await.unwrap());
-        }
-        let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("us:"));
-        assert_eq!(*seen.lock().unwrap(), [Some("Bearer t0ken".to_owned()), Some(basic)]);
     }
 
     fn file_env(file: &Path) -> Env {
