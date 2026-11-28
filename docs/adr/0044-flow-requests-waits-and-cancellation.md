@@ -7,6 +7,7 @@ Date: 2026-11-14
 Accepted for the six-change line starting with `flow-step-sends`. Extends ADR 0031. The owner requested both flow
 reply waits and cancellation and delegated design decisions to the design loop with an Opus adviser. Only the
 behavior of each landed piece is available; defining a variant does not implement its later behavior.
+Partly superseded by [ADR 0080](0080-flow-runs-end-with-an-output-or-a-failure.md): how a run ends.
 
 ## Context
 

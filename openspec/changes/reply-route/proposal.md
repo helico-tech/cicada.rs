@@ -30,7 +30,7 @@ for that match looks like, shared with `actor-ports`; correlation id and headers
 
 ## Order
 
-After `actor-ports`. Before `flow-request-target`.
+After `actor-ports`. Before `flow-ends`.
 
 ## Impact
 

@@ -14,16 +14,12 @@ with nothing armed). So Factory writes these parts as actors with explicit state
 - A run can be started with a reply route: a new `FlowMsg::Start { reply }`. The input stays in the created state, so
   a flow caller writes `step.request(id, Target::child(&run, &initial), FlowMsg::start)`. The run saves the first route
   and ignores later ones, then arms `Continue` as a host start does.
-- A run has a result: `Flow` gains an output type, and `run` returns it.
 - When the run ends, it replies to the saved route with its outcome: done with the output, cancelled after its cleanup,
-  or failed with a reason. For the failure, the runner commits a new `failed` status and the reply on the last allowed
-  attempt of a `Continue`, instead of returning the error.
+  or failed with a reason. The output and the failed end come from `flow-ends`, the first half of the split.
 - A flow caller waits on `Request<FlowOutcome<O>>`; an actor caller gets the outcome as a message.
 
-To decide in the design: the output as an associated type (breaks every `Flow` impl) or `step.finish(&value)` (breaks
-nothing, easier to misuse); the outcome's wire shape; whether the reply route is one shared type for flow and actor
-callers (`ReplyTo<T>` or an actor address, owner's question of 2026-11-28, see the reply on ports); what a run without
-a route does at its end (nothing); and the split, as this is likely two or three small changes.
+To decide in the design: the outcome's wire shape; the route as `ReplyRoute<FlowOutcome<O>>` (from `reply-route`); what
+a run without a route does at its end (nothing); and a `Start` that reaches a run that has already ended.
 
 ## Out of scope
 
@@ -33,13 +29,14 @@ a route does at its end (nothing); and the split, as this is likely two or three
 
 ## Order
 
-After `reply-route`. Before `work-id-header`.
+After `flow-ends`. Before `work-id-header`.
 
 ## Impact
 
 Crates: cicada-actors.
 
 `crates/cicada-actors/src/flow.rs` and its tests, the test flow's contract in `crates/cicada-actors/tests/contracts`.
-The contract of every flow type changes (a new message variant and state fields), so every host and worker of a flow
-type upgrades together: an ADR and an upgrade note. Docs handoff: the actors guide's flow sections, the upgrade guide,
+The contract of every flow type changes (a new message variant and state fields): a `ContractConflict` with old nodes,
+handled as `docs/operations.md` describes. Released in the same version as `flow-ends`, so flow contracts break once.
+An ADR and an upgrade note. Docs handoff: the actors guide's flow sections, the upgrade guide,
 and the design guide's text on requests.

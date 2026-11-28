@@ -5,6 +5,7 @@ Date: 2026-11-13
 ## Status
 
 Accepted for `durable-flows`. The owner delegated remaining design decisions to an Opus 5.5 adviser.
+Partly superseded by [ADR 0080](0080-flow-runs-end-with-an-output-or-a-failure.md): how a run ends.
 
 ## Context
 
