@@ -2,6 +2,7 @@
 //! `copy_in`, `make_dirs`, `copy_out`, the log pages, the pull, the pull from a private registry, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -59,6 +60,7 @@ pub fn class() -> Class {
                 step!(a_private_image_is_pulled_with_the_login_of_config_json),
                 step!(a_hardened_container_gets_its_limits_and_secret),
                 step!(ensures_repeat_and_an_internal_flag_conflicts),
+                step!(an_isolated_network_keeps_containers_from_reaching_the_host),
                 step!(a_sweep_removes_in_order_and_skips_a_network_in_use),
             ],
         )
@@ -940,6 +942,88 @@ async fn ensures_repeat_and_an_internal_flag_conflicts() {
     runtime().ensure_volume(&volume).await.unwrap();
     let listed = docker(&["volume", "ls", "-q", "--filter", &format!("name={}", volume.name)], secs(60), true).await;
     assert_eq!(listed.unwrap().text.trim(), volume.name);
+}
+
+async fn an_isolated_network_keeps_containers_from_reaching_the_host() {
+    let mut open = NetworkSpec::new(name("isolation-open"));
+    open.labels.insert(CONTAINER_LABEL.0.into(), CONTAINER_LABEL.1.into());
+    let mut internal = open.clone();
+    internal.name = name("isolation-internal");
+    internal.internal = true;
+    let mut isolated = internal.clone();
+    isolated.name = name("isolation-isolated");
+    isolated.isolated = true;
+    for spec in [&open, &internal, &isolated, &isolated] {
+        runtime().ensure_network(spec).await.unwrap();
+    }
+
+    for (existing, requested, flag) in [
+        (&open, &internal, "internal"),
+        (&internal, &open, "internal"),
+        (&internal, &isolated, "isolated"),
+        (&isolated, &internal, "isolated"),
+    ] {
+        let mut requested = requested.clone();
+        requested.name.clone_from(&existing.name);
+        let error = runtime().ensure_network(&requested).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict, "{error}");
+        assert!(error.message.contains(&format!("with {flag} =")), "{error}");
+    }
+
+    let inspect = async |network: &NetworkSpec, format: &str| {
+        let result = docker(&["network", "inspect", "-f", format, &network.name], secs(60), true).await.unwrap();
+        result.text.trim().to_owned()
+    };
+    let options = r#"{{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}} {{index .Options "com.docker.network.bridge.gateway_mode_ipv6"}}"#;
+    assert_eq!(inspect(&isolated, options).await, "isolated isolated");
+
+    let gateway = inspect(&internal, "{{range .IPAM.Config}}{{println .Gateway}}{{end}}")
+        .await
+        .lines()
+        .find_map(|address| address.parse::<Ipv4Addr>().ok())
+        .expect("the internal network has an IPv4 gateway");
+    let subnet = inspect(&isolated, "{{range .IPAM.Config}}{{println .Subnet}}{{end}}")
+        .await
+        .lines()
+        .filter_map(|subnet| subnet.split_once('/'))
+        .find_map(|(address, _)| address.parse::<Ipv4Addr>().ok())
+        .expect("the isolated network has an IPv4 subnet");
+    // An isolated bridge has no gateway address. Try the first usable address of its subnet.
+    let first = Ipv4Addr::from_bits(subnet.to_bits() + 1);
+
+    const PORT: &str = "39483";
+    let listener = name("isolation-listener");
+    let label = format!("{}={}", CONTAINER_LABEL.0, CONTAINER_LABEL.1);
+    let script = format!(
+        "mkdir -p /tmp/www && echo isolation-test > /tmp/www/index.html && exec httpd -f -p {PORT} -h /tmp/www"
+    );
+    let run = ["run", "-d", "--network", "host", "--name", &listener, "--label", &label, PULLED, "sh", "-c", &script];
+    docker(&run, secs(60), true).await.expect("start the listener on the Docker host network");
+    let local_url = format!("http://127.0.0.1:{PORT}/");
+    eventually("the listener on the host network", secs(15), async || {
+        let probe = ["exec", &listener, "wget", "-Y", "off", "-T", "2", "-O", "-", &local_url];
+        let result = docker(&probe, secs(5), true).await?;
+        Ok(result.text.lines().any(|line| line == "isolation-test").then_some(()))
+    })
+    .await;
+
+    for (suffix, network, address, code) in
+        [("isolation-control", internal, gateway, 0), ("isolation-probe", isolated, first, 1)]
+    {
+        let mut probe = spec(suffix, &format!("exec nc -n -z -w 3 {address} {PORT}"));
+        probe.image = PULLED.into();
+        probe.network = Networking::Attach(vec![NetworkAttachment::new(&network.name)]);
+        runtime().create(&probe).await.unwrap();
+        runtime().start(&probe.name).await.unwrap();
+        assert_eq!(
+            ended(&probe.name).await,
+            ContainerStatus::Exited { code },
+            "probe to {address} from {}",
+            network.name
+        );
+        runtime().remove(&probe.name).await.unwrap();
+    }
+    runtime().remove(&listener).await.unwrap();
 }
 
 async fn a_sweep_removes_in_order_and_skips_a_network_in_use() {

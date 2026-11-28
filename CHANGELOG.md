@@ -48,6 +48,9 @@ directly or use `..` in matches.
 
 ### Added
 
+- `cicada-containers`: `NetworkSpec::isolated` keeps containers on an internal bridge from reaching the host and its
+  published ports through that bridge. It requires Docker 28 (API 1.48). A host's own `ContainerRuntime` written
+  before this change ignores the flag. Update it to honour isolation or return `Unsupported`.
 - `ActorClient::changes(prefix)` follows actor change hints over Server-Sent Events with the client's configured
   headers and TLS settings. It yields changed addresses and resyncs, with typed opening and stream errors. A new
   subscription starts with a resync. The caller decides when to reconnect after a clean end or an error.

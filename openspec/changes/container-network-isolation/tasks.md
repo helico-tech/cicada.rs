@@ -20,13 +20,13 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   as today on the create race too (decisions 3–5). Verify: map unit tests for each case, including API 1.47 and
   1.48, and an inspected network with only one of the two options; `cargo test -p cicada-containers
   --all-features`.
-- [ ] 3. **E2E.** In `e2e/tests/suite/container_docker.rs`, a test as decision 7 says: an isolated network is created
+- [x] 3. **E2E.** In `e2e/tests/suite/container_docker.rs`, a test as decision 7 says: an isolated network is created
   and repeats with `Ok`; `docker network inspect` shows both options; each flag conflicts both ways; a listener
   started with the docker CLI on the host network is reached from a container on a plain internal network through
   its gateway address, and not from a container on the isolated network through the first address of its subnet.
   Label everything so the suite's sweep removes it. If host networking does not work on the E2E host, report it as
   a design question; do not drop the check. Verify: `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`.
-- [ ] 4. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` gets an Added line: `isolated` on
+- [x] 4. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` gets an Added line: `isolated` on
   `NetworkSpec`, Docker 28 for it, and that a host's own `ContainerRuntime` written before it ignores the flag
   (decision 8). `docs-handoff.md` carries the paragraph and the upgrade step from "Docs this breaks" in the design;
   nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
