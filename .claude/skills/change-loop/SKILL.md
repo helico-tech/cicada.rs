@@ -77,7 +77,7 @@ A landed change that must reach consumers at once (a security fix, a bug a consu
 
 ### GUI changes
 
-A change that adds or changes a screen (the tray menu in a state, the Settings window, an inspector page, a sheet) is
+A change that adds or changes a screen (the tray menu in a state, the Settings window, a sheet) is
 built and reviewed against the owner's mockup boards ([MOCK-RULE]):
 
 - **Screens.** Its design names each such screen with its board, or "no board". A screen without a board is built only
