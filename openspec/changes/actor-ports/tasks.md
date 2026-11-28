@@ -15,7 +15,7 @@ builder.md, Version). No design or spec deltas; follow `proposal.md`, What Chang
   and decodes it as `CartMsg` with `cicada::message::decode`, and checks the decoded fields. A comment says why: the
   match between a port's reply family and a caller's message family is checked only at runtime. Verify:
   `cargo test -p cicada-examples --test reply`.
-- [ ] 3. **Docs handoff.** `docs-handoff.md` asks for a section in `docs/guide/design.md` on ports and fakes, with the
+- [x] 3. **Docs handoff.** `docs-handoff.md` asks for a section in `docs/guide/design.md` on ports and fakes, with the
   points of the proposal's What Changes, linking the new tests; and an actor-design skill route if the docs session's
   new heading needs one. Nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`.
