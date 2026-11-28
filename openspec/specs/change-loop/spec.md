@@ -63,9 +63,9 @@ missing, changed or added without an agreed departure SHALL block landing.
 
 #### Scenario: A screen with a board
 
-- **WHEN** a change builds an inspector page that the mockup has a board for
+- **WHEN** a change builds a tray screen that the mockup has a board for
 - **THEN** the board is in the change's `mockup/` folder, the building task names it, and the code review compares the
-  page's code with it in both directions
+  screen's code with it in both directions
 
 #### Scenario: A departure found while building
 
