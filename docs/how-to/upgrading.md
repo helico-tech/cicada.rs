@@ -292,6 +292,11 @@ and get it only from the callback: code outside `cicada-app` can no longer build
 without file locks; they refuse a config path named `tray.toml`, ending in `.lock`, or ending in `/` or `/.`. Point
 `CICADA_CONFIG` at a local file with an ordinary name. See [Server and credentials](../guide/app.md#server-and-credentials).
 
+To opt an existing internal network, such as a profile network, into `NetworkSpec::isolated`, first disconnect or
+remove its containers and remove the network, then call `ensure_network` with `internal` and `isolated` both set:
+Docker cannot change these flags in place, and `ensure_network` returns `Conflict` for the old network. A
+`ContainerRuntime` of your own should honour `isolated` in `ensure_network` or return `Unsupported`.
+
 ## Upgrade to 0.25.0
 
 **Version 0.25.0 changes the contract of `cicada.placement`.** `PlacementMsg` gains `Duplicate` and the conflict mark

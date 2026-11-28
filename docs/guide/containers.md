@@ -130,6 +130,13 @@ and Docker gets the values only in the body of the create call. The hardening fi
 `drop_all_capabilities`, `no_new_privileges`, `tmpfs`, `init`, `pids_limit`) are off by default. A memory limit allows
 no swap. A `tmpfs` is `noexec` unless its `exec` is set.
 
+**Isolate a network from the host.** Set both `NetworkSpec::internal` and `NetworkSpec::isolated` (from 0.26.0) when
+containers must not reach the Docker host and its published ports through this bridge. Docker 28 or later (API 1.48)
+then leaves the bridge without a host address, with its IPv4 and IPv6 gateway modes set to `isolated`; the option is off
+by default. `ensure_network` returns `InvalidSpec` for `isolated` without `internal`, `Unsupported` when the Docker API
+is too old, and `Conflict` when either flag differs on an existing network: Docker cannot change them in place, so
+remove the old network first.
+
 ### Errors
 
 A `ContainerError` has a `kind` and a message (`<action> <name>: <Docker's message>` on Docker). Only
@@ -828,7 +835,9 @@ message, spawn a task or push into a channel from it. `OrphanWatch::new` refuses
 Implement `ContainerRuntime` for another engine. `logs_since`, `copy_out`, `make_dirs` and `info` have defaults that
 fail with `Unsupported`, so a runtime written for an older version compiles unchanged; the container actor ends a
 container `notStarted` only when `make_dirs` is unsupported. Report a container killed for lack of memory as
-`ContainerStatus::Failed` with the reason `OUT_OF_MEMORY` exactly, or the actor cannot report `outOfMemory`.
+`ContainerStatus::Failed` with the reason `OUT_OF_MEMORY` exactly, or the actor cannot report `outOfMemory`. Make
+`ensure_network` honour `NetworkSpec::isolated` or return `Unsupported`: a runtime written before it may ignore the flag
+and create a weaker network.
 
 **A wrapper must forward every method.** A runtime that wraps `DockerRuntime` to add logging, metrics or a pin must
 forward `info`, `logs_since`, `copy_out` and `make_dirs` too; otherwise the trait's defaults answer `Unsupported`.
