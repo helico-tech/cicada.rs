@@ -21,7 +21,7 @@ implementers of `TurnSource` (the enum is public).
 
 ## Order
 
-After `tray-menu-mockup`. Before `tray-settings-mockup`.
+After `tray-menu-mockup`. Before `worker-view`.
 
 ## Impact
 

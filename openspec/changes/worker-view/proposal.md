@@ -33,7 +33,7 @@ type sets keeps the latest set; and whether `GET /workers/{id}` with its running
 
 ## Order
 
-After `inspector-outcomes-mockup`. No following change.
+After `source-error-kinds`. No following change.
 
 ## Impact
 
