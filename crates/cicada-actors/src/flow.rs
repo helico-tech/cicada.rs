@@ -805,7 +805,7 @@ pub struct ReplyTo<T> {
 }
 
 impl<T> ReplyTo<T> {
-    fn new(run: ActorAddress, request: MessageId) -> Self {
+    pub(crate) fn new(run: ActorAddress, request: MessageId) -> Self {
         Self { run, request, reply: PhantomData }
     }
 }
@@ -905,7 +905,7 @@ impl<T> Eq for ReplyTo<T> {}
 #[derive(JsonSchema)]
 #[schemars(rename = "ReplyTo")]
 #[allow(dead_code)]
-struct ReplyRoute {
+struct ReplyToSchema {
     /// The run that waits for the reply.
     run: ActorAddress,
     /// The id of the request's message.
@@ -922,7 +922,7 @@ impl<T> JsonSchema for ReplyTo<T> {
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        ReplyRoute::json_schema(generator)
+        ReplyToSchema::json_schema(generator)
     }
 }
 

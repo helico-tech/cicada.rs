@@ -4,7 +4,7 @@ Normal lane: in the unreleased batch (0.26.0; check the `release:` line of `pyth
 Version). Follow `design.md`; the spec is `specs/flow-replies/spec.md`; ADR 0079 is committed with the change. Run the
 crate's tests: `cargo test -p cicada-actors`.
 
-- [ ] 1. **The type and its wire.** `crates/cicada-actors/src/reply.rs` with `ReplyRoute<T>` (`Flow(ReplyTo<T>)`,
+- [x] 1. **The type and its wire.** `crates/cicada-actors/src/reply.rs` with `ReplyRoute<T>` (`Flow(ReplyTo<T>)`,
   `Actor { to, correlation }`), exported from the crate root with a row in its table of items; hand-written `Clone`,
   `Debug`, `PartialEq`, `Eq` without bounds on `T`; `From<ReplyTo<T>>`, `ReplyRoute::actor(to)` and
   `.correlation(id)` (decision 1). Serde decided by the key and a schema named `ReplyRoute`, the same for every `T`

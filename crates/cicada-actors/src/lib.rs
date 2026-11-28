@@ -17,6 +17,7 @@
 //! | [`NodeDownMonitorActor`] | `cicada.node-down` | Publishes one `NodeDown` to a topic for each node row it sees silent for two minutes |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |
 //! | [`FlowActor`] | chosen by the [`Flow`] | Runs a multi-step job written as async code, one step or durable sleep per turn, replaying saved results |
+//! | [`ReplyRoute`] | | A reply field for requests from flows and actors |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
@@ -35,6 +36,7 @@ pub mod node_down;
 pub mod permits;
 pub mod placement;
 pub mod rate_limiter;
+mod reply;
 mod schedule;
 pub mod scheduler;
 mod stored;
@@ -74,6 +76,7 @@ pub use placement::{
     PlacementNodeStatus, PlacementNotice, PlacementNoticeKind, PlacementRefusal, PlacementState,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
+pub use reply::ReplyRoute;
 pub use schedule::{Schedule, ScheduleError};
 pub use scheduler::{Scheduler, SchedulerActor, SchedulerMsg, SchedulerState};
 pub use stored::StoredMessage;
