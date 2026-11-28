@@ -3,7 +3,7 @@
 ### Requirement: A run ends with its output
 
 `Flow` SHALL have an output type, and `run` SHALL return it. A done run SHALL keep the output in its state, checked like
-a step's result; an output that fails the check SHALL be a refusal of the runner. The state SHALL hold an output only
+a step's result but at most 60 levels deep; an output that fails the check SHALL be a refusal of the runner. The state SHALL hold an output only
 when the run is done.
 
 #### Scenario: A run with a result
@@ -13,7 +13,7 @@ when the run is done.
 
 #### Scenario: An output that cannot be saved
 
-- **WHEN** a flow's `run` returns an output 62 containers deep
+- **WHEN** a flow's `run` returns an output 61 containers deep
 - **THEN** the turn fails for good, the run stays running, and a public `Continue` after a fix recovers it
 
 ### Requirement: The flow code's errors end a run as failed

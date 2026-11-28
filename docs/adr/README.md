@@ -85,6 +85,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0078](0078-remove-the-inspector.md) | The inspector is removed before it shipped: no `cicada-inspector`, no tray feature `inspector`; the tray, the terminal UI and `ActorClient::changes` stay. |
 | [0079](0079-one-reply-route-for-flow-and-actor-callers.md) | `ReplyRoute<T>`: one reply field for flow and actor callers; the flow form keeps `ReplyTo`'s wire, the actor form is `{"actor"}`. Adds to ADR 0044. |
 | [0080](0080-flow-runs-end-with-an-output-or-a-failure.md) | `Flow::Output` is saved when a run is done; the flow code's errors on the last attempt end a run as final `failed`; runner refusals do not. Partly supersedes ADR 0031 and ADR 0044. |
+| [0081](0081-a-flow-run-as-the-target-of-a-request.md) | `FlowMsg::Start { reply }` starts a run with a reply route; its end is replied as `FlowDone`, `FlowCancelled` or `FlowFailed` in a turn of its own. |
 
 ## Design questions
 

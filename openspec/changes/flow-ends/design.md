@@ -13,7 +13,8 @@ and ADR 0044. The picks are mine, under the owner's A1 (2026-11-28). Design revi
    can call it twice or forget it, and a caller's `Request<FlowOutcome<O>>` could not be typed from the flow.
 2. **The output is saved when the run is done.** `FlowState` becomes `FlowState<I, O = ()>` with `output: Option<O>`,
    which is `Some` only on a done run. Its schema in the contract is the output type's.
-   - The output is checked like a step's result. A value that fails the check is a refusal of the runner (decision 4),
+   - The output is checked like a step's result, but at most 60 levels deep instead of 61, because
+     `flow-request-target` wraps it in `FlowDone`. A value that fails the check is a refusal of the runner (decision 4),
      as a step's result that fails the check already is.
    - A done run always has its output, and `null` is a valid one (for `()` or `None`). Decode reads a done run's
      `output` as `O` from its value, or from `null` when the field is absent, so `flow-request-target` can answer from
