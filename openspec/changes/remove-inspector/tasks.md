@@ -21,7 +21,7 @@ has the inspector, so nothing is deprecated.
   `AGENTS.md`, `skills/` or the handwritten docs. Verify: `bash scripts/ci/dependency-trees.sh`;
   `python3 -m unittest discover -s scripts -p 'test_*.py'`; `grep -rn -i inspector CHANGELOG.md scripts crates`
   finds nothing outside the 0.25.0 and older sections.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate remove-inspector --strict`, commit, then `python3 scripts/gate.py run`.
   `cargo test -p cicada-examples --test skill` and `--test docs` fail until the docs session has removed the routes and
   sections the handoff names: report that as `Docs: blocked`, not as a failure to fix.

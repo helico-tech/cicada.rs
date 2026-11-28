@@ -68,23 +68,20 @@ crates/cicada-inspector`.
 
 - ADR 0073's context names the inspector; an accepted ADR is not rewritten.
 - ADRs 0011, 0076 and 0078 and the index rows were written with the design.
-- `.claude/skills/change-loop/SKILL.md`, "GUI changes", still lists "an inspector page" among the screens. It is not
-  handwritten user documentation and the design does not name it; the change-loop session may drop the words to match
-  the spec delta.
+- `.claude/skills/change-loop/SKILL.md`, "GUI changes": `main` already dropped "an inspector page" (commit `161c731f`).
 
 ## Blocking
 
-- `cargo test -p cicada-examples --test skill`, `every_route_resolves_to_a_file_and_heading_of_this_source`
-  (`examples/tests/skill.rs:630`) fails: `skills/cicada/SKILL.md` line 108 routes to `crates/cicada-inspector`, which
-  is deleted. Replacement: item 6 (remove the route row and `cicada-inspector` from the description).
-- `cargo test -p cicada-examples --test docs` passes now, as the guide still holds the section and anchor. It stays
-  green only if items 1, 2, 5 and 6 land together, since the README, `docs/README.md` and the skill link to
-  `#inspector-on-macos`.
+Integrated. The skill route check (`cargo test -p cicada-examples --test skill`,
+`every_route_resolves_to_a_file_and_heading_of_this_source`) failed while `skills/cicada/SKILL.md` routed to
+`crates/cicada-inspector`. The owner prepared items 1 to 6 in commit `cf6f5079` of the branch `docs`: `README.md`,
+`docs/README.md`, `AGENTS.md`, `docs/architecture.md`, `docs/guide/app.md` and `skills/cicada/SKILL.md`, taken as they
+are and folded into the commit that deletes the crate.
 
 ## Status
 
-Ran on the builder's head: `cargo build --workspace`, `cargo fmt --all --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` (clean), `cargo test --workspace --no-fail-fast` (3890 passed,
-1 failed: the skill route above), `bash scripts/ci/dependency-trees.sh` (ok), the script tests (127 passed) and
-`openspec validate remove-inspector --strict` (valid). Proposed text only: nothing above is written yet, and the
-builder edited no protected file.
+Ran on the builder's head, with the owner's fix: `cargo test -p cicada-examples --test skill` (18 passed), `--test
+docs` (11 passed) and `--doc` (55 passed), `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+warnings` (clean), `cargo test --workspace --no-fail-fast` (3891 passed, 0 failed), `bash
+scripts/ci/dependency-trees.sh` (ok, before the rebase), the script tests (127 passed, before the rebase) and
+`openspec validate remove-inspector --strict` (valid). All prose above is written by the owner; none is left to write.
