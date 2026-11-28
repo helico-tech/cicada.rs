@@ -27,7 +27,7 @@ failure; and the API names.
 
 ## Order
 
-After `work-id-header`. Before `worker-view`.
+After `container-sysctls`. Before `worker-view`.
 
 ## Impact
 
