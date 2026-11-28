@@ -11,7 +11,7 @@ crate's tests: `cargo test -p cicada-actors`.
   (decision 3). The private schema struct `ReplyRoute` in `flow.rs` becomes `ReplyToSchema`. Verify: unit tests for
   both round trips, a saved `ReplyTo` decoding as `Flow`, `actor` with `run` or `request` failing, missing fields
   failing, unknown fields ignored, and equal schemas for two `T`s; `cargo test -p cicada-actors`.
-- [ ] 2. **`send`.** One `send(turn, &value)` with `ReplyTo::send`'s shape: the flow form is `ReplyTo::send`; the actor
+- [x] 2. **`send`.** One `send(turn, &value)` with `ReplyTo::send`'s shape: the flow form is `ReplyTo::send`; the actor
   form encodes the value as a message synchronously (`Invalid`, nothing buffered, when it does not), then sends it to
   `to` with `send_to`'s checks, the route's correlation id or else the turn's, no retry policy, ordinary headers and
   retention (decisions 2 and 4). Rustdoc with a doctest that shows one port field serving both callers, and that the

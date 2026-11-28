@@ -1,7 +1,10 @@
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
 
-use cicada::ActorAddress;
+use cicada::message::{self, EncodedMessage};
+use cicada::prelude::{Actor, ActorAddress, MessageId, SendOptions, Turn};
+use cicada::turn::TurnError;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::{Error, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -43,6 +46,86 @@ impl<T> ReplyRoute<T> {
         }
         self
     }
+}
+
+impl<T: Serialize> ReplyRoute<T> {
+    /// Sends `value` in the target's turn. A flow route sends as [`ReplyTo::send`]. An actor route needs a value
+    /// from a message family tagged with `#[serde(tag = "type")]`. The caller's family must accept its type name
+    /// and fields. The type name is checked as in [`Turn::send_to`], and the caller decodes the fields on delivery.
+    ///
+    /// Encoding happens when called. A value that cannot encode into the route's message returns
+    /// [`TurnError::Invalid`] and buffers nothing. The future borrows only `turn`. The reply is due now with
+    /// the observers' headers, default retention and no retry policy. It carries the replying turn's correlation
+    /// id unless the actor route supplies one. The recipient must exist at commit.
+    ///
+    /// ```
+    /// use cicada::prelude::*;
+    /// use cicada_actors::{ReplyRoute, Step};
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// # #[derive(Clone, Serialize, Deserialize)]
+    /// # struct Job(String);
+    /// # impl ActorRef for Job {
+    /// #     const TYPE: &'static str = "jobs";
+    /// #     type Message = JobMsg;
+    /// # }
+    /// #[derive(Serialize, Deserialize, JsonSchema)]
+    /// #[serde(tag = "type")]
+    /// enum JobMsg {
+    ///     Start { size: u32, reply: ReplyRoute<JobReply> },
+    /// }
+    ///
+    /// #[derive(Serialize, Deserialize, JsonSchema)]
+    /// #[serde(tag = "type")]
+    /// enum JobReply {
+    ///     Finished { size: u32 },
+    /// }
+    ///
+    /// async fn ask_from_flow(step: &mut Step, job: &Job) -> Result<JobReply, HandlerError> {
+    ///     let request = step.request("start", job, |r| JobMsg::Start { size: 3, reply: r.into() }).await?;
+    ///     step.wait("finished", &request).await
+    /// }
+    ///
+    /// // This caller's message family accepts Finished { size: u32 }.
+    /// fn ask_from_actor<A: Actor>(turn: &mut Turn<A>, job: &Job) -> HandlerResult {
+    ///     let reply = ReplyRoute::actor(turn.self_address().clone()).correlation("job-3");
+    ///     turn.send(job, JobMsg::Start { size: 3, reply })?;
+    ///     Ok(())
+    /// }
+    ///
+    /// async fn answer<A: Actor>(turn: &mut Turn<A>, message: JobMsg) -> HandlerResult {
+    ///     let JobMsg::Start { size, reply } = message;
+    ///     reply.send(turn, &JobReply::Finished { size }).await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn send<'t, A: Actor>(
+        &self,
+        turn: &'t mut Turn<A>,
+        value: &T,
+    ) -> impl Future<Output = Result<MessageId, TurnError>> + Send + use<'t, A, T> {
+        let (encoded, correlation) = match self {
+            Self::Flow(route) => (route.encode(value), None),
+            Self::Actor { to, correlation } => {
+                let encoded = message::encode(value)
+                    .map(|message| (to.clone(), message))
+                    .map_err(|error| TurnError::Invalid(error.to_string()));
+                (encoded, correlation.clone())
+            }
+        };
+        send_encoded_reply(turn, encoded, correlation)
+    }
+}
+
+pub(crate) async fn send_encoded_reply<A: Actor>(
+    turn: &mut Turn<A>,
+    encoded: Result<(ActorAddress, EncodedMessage), TurnError>,
+    correlation: Option<String>,
+) -> Result<MessageId, TurnError> {
+    let (to, encoded) = encoded?;
+    let mut options = SendOptions::new();
+    options.correlation_id = correlation.or_else(|| turn.message().correlation_id.clone());
+    turn.send_raw(&to, &encoded.message_type, encoded.payload, options).await
 }
 
 impl<T> From<ReplyTo<T>> for ReplyRoute<T> {

@@ -23,6 +23,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::reply::send_encoded_reply;
 use crate::supervisor::retry_policy;
 
 /// The most entries a journal may hold.
@@ -857,17 +858,11 @@ impl<T: Serialize> ReplyTo<T> {
         turn: &'t mut Turn<A>,
         value: &T,
     ) -> impl Future<Output = Result<MessageId, TurnError>> + Send + use<'t, A, T> {
-        let encoded = self.encode(value);
-        async move {
-            let (run, encoded) = encoded?;
-            let mut options = SendOptions::new();
-            options.correlation_id = turn.message().correlation_id.clone();
-            turn.send_raw(&run, &encoded.message_type, encoded.payload, options).await
-        }
+        send_encoded_reply(turn, self.encode(value), None)
     }
 
     /// The run and the encoded `Reply` of `value`, checked.
-    fn encode(&self, value: &T) -> Result<(ActorAddress, cicada::message::EncodedMessage), TurnError> {
+    pub(crate) fn encode(&self, value: &T) -> Result<(ActorAddress, cicada::message::EncodedMessage), TurnError> {
         let request = &self.request;
         let value = serde_json::to_value(value)
             .map_err(|e| TurnError::Invalid(format!("the reply to request {request} does not encode: {e}")))?;
