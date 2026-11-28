@@ -33,7 +33,7 @@ type sets keeps the latest set; and whether `GET /workers/{id}` with its running
 
 ## Order
 
-After `source-error-kinds`. No following change.
+After `tray-menu-mockup`. No following change.
 
 ## Impact
 
