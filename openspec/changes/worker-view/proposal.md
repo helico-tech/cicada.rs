@@ -27,7 +27,7 @@ type sets keeps the latest set; and whether `GET /workers/{id}` with its running
 ## Out of scope
 
 - New fields on the lease request (host name, version, label, concurrency): a wire change, a later change if wanted.
-- A `cicada workers` command, its terminal UI table, and a Workers view in the inspector or the tray: follow-up changes.
+- A `cicada workers` command, its terminal UI table, and a Workers view in the tray: follow-up changes.
 - Direct-store workers and nodes: they keep their node rows.
 - Any use of the list for liveness, fencing or placement decisions.
 
