@@ -23,5 +23,5 @@ crate's tests: `cargo test -p cicada-actors`.
   ports section (from `actor-ports`), and the upgrade note that moving a field from `ReplyTo<T>` to `ReplyRoute<T>`
   keeps saved messages but changes the contract hash. Nothing blocks. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-examples --test docs`.
-- [ ] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate reply-route --strict`, commit, then `python3 scripts/gate.py run`.

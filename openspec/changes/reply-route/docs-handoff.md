@@ -54,6 +54,8 @@ None.
 
 ## Status
 
-The wire, virtual-time and doctest checks passed in `cargo test -p cicada-actors` (764 tests). The documentation checks
-passed in `cargo test -p cicada-examples --test docs` (11 tests). The guide and upgrade wording above is proposed for
-the docs session.
+The wire, virtual-time and doctest checks passed in `cargo test -p cicada-actors`. The finishing checks passed:
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` with
+PostgreSQL (4116 passed, 0 failed, including `cicada-examples --test docs`, `--test skill` and its doctests) and
+`openspec validate reply-route --strict`. The guide and upgrade wording above is proposed for the docs session; none
+of it is written yet.
