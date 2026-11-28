@@ -33,7 +33,7 @@ type sets keeps the latest set; and whether `GET /workers/{id}` with its running
 
 ## Order
 
-After `tray-menu-mockup`. No following change.
+After `remove-inspector`. No following change.
 
 ## Impact
 
