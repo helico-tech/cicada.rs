@@ -12,6 +12,7 @@ the owner dropped the open inspector changes (`inspector-message-actions` and th
 - Delete `crates/cicada-inspector` and its workspace entries (`Cargo.toml` member and dependency, `Cargo.lock`).
 - `cicada-tray` loses its `inspector` feature, the "Open Inspector…" menu row (`InspectorItem`, `MenuModel`'s
   `inspector` field) and the AppKit code that opens and closes the window. The tray itself stays.
+- `cicada_app::context_client`, unreleased and called only by the inspector, goes too.
 - The gate's checks drop the inspector: `scripts/ci/feature-builds.sh` (check, clippy and tests with `inspector`) and
   `scripts/ci/dependency-trees.sh` (the allowed tray-to-inspector edge).
 - A new ADR supersedes ADR 0076, so ADR 0011 ("library only") holds again, apart from ADR 0056's container layers;
@@ -19,9 +20,8 @@ the owner dropped the open inspector changes (`inspector-message-actions` and th
 - The `inspector` capability spec is removed. The change-loop spec's GUI scenario stops naming an inspector page.
 - `CHANGELOG.md`: the unreleased inspector entries go, as the crate never shipped.
 
-To decide in the design: whether `ActorClient::changes` (ADR 0077, unreleased, written for the inspector, now without
-a consumer in the repo) stays; whether the CHANGELOG entries go or a "removed" line is written; what happens to the
-local branch `feat/inspector-message-actions`.
+Decided in the design with the owner: `ActorClient::changes` stays, the CHANGELOG entries go, the local branch
+`feat/inspector-message-actions` is deleted, and the tray's boards need no change.
 
 ## Out of scope
 
@@ -35,7 +35,7 @@ After `tray-menu-mockup`. Before `worker-view`.
 
 ## Impact
 
-Crates: cicada-inspector, cicada-tray.
+Crates: cicada-inspector, cicada-tray, cicada-app.
 
 Workspace `Cargo.toml` and `Cargo.lock`, `scripts/ci/feature-builds.sh`, `scripts/ci/dependency-trees.sh`, a new ADR
 with its row in `docs/adr/README.md`, `openspec/specs/inspector` and `openspec/specs/change-loop` deltas,

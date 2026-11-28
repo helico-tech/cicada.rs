@@ -25,7 +25,12 @@ the terminal UI stay.
    ADR 0077 (less code, but rebuilt when a Rust user wants live updates).
 4. **The unreleased inspector entries leave `CHANGELOG.md`** (owner, R2a): the crate never shipped, so a "removed" line
    would only confuse. The entries of `ActorClient::changes` and of the tray stay; sentences that name the inspector
-   inside a tray entry lose that part. Not taken: a "removed" line.
+   inside a tray entry or the summary lose that part (the summary's sentences on the inspector and `context_client`). Not taken: a "removed" line.
+4b. **`cicada_app::context_client` goes** (owner, C1b, 2026-11-28: everything made for the inspector goes). It is
+   unreleased and only the inspector calls it: the function, its re-export in `lib.rs`, its tests
+   (`a_context_client_…`, `a_transport_error_of_a_context_client_…`) and its CHANGELOG entry go. `Contexts`,
+   `ContextFile`, `ContextEntry` and `check_server_url` stay: the tray and the operator commands use them. Not taken:
+   keeping it as a general helper.
 5. **The gate drops the inspector.** `scripts/ci/feature-builds.sh` loses the check, clippy and tests with
    `--features inspector`; `scripts/ci/dependency-trees.sh` loses `cicada-inspector` from its list of application
    crates, the allowed tray edge and the `tray-inspector` tree with its two checks (lines 51-53). The header comments of
@@ -33,6 +38,9 @@ the terminal UI stay.
    its tree.
 6. **Specs.** The capability `inspector` is removed whole. The change-loop scenario "A screen with a board" names a
    tray screen instead of an inspector page; the rule itself stays for tray screens.
+6b. **No tray board changes** (owner, B1a). Boards Main, Disconnected, Registered and Running show "Open Inspector…",
+   but that row appeared only with the feature `inspector`; the default build already looked as it will now. No board
+   is copied and no departure is listed.
 7. **Archived changes stay** in `openspec/changes/archive/` as history; the link check skips that folder.
 
 The local branch `feat/inspector-message-actions` was deleted on 2026-11-28 (owner, R3a). 0.26.0 still waits for the
@@ -45,6 +53,8 @@ The docs session prepares, before landing (ADR 0045):
 - `README.md` and `docs/README.md`: every mention of the inspector.
 - `AGENTS.md`: the map row of `crates/cicada-inspector` and the mention in the tray row (`cicada-tray`'s feature).
 - `docs/architecture.md`: the crate table's `cicada-inspector` row and the tray row's last sentence.
+- `docs/guide/app.md`: the sentence on `cicada_app::context_client` in the config section.
+- `docs/guide/app.md`: the mention of `cicada_inspector::Embedded` (near line 573).
 - `docs/guide/app.md`: the section "Inspector on macOS" (anchor `#inspector-on-macos`), and the tray's paragraph
   "Open Inspector" with its command `--features cicada-tray/inspector`.
 - `skills/cicada/SKILL.md`: `cicada-inspector` in the description's crate list and the route row to
