@@ -33,7 +33,7 @@ type sets keeps the latest set; and whether `GET /workers/{id}` with its running
 
 ## Order
 
-After `remove-inspector`. Before `actor-ports`.
+After `test-probe`. No following change.
 
 ## Impact
 

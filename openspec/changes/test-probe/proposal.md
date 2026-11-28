@@ -27,7 +27,7 @@ failure; and the API names.
 
 ## Order
 
-After `work-id-header`. No following change.
+After `work-id-header`. Before `worker-view`.
 
 ## Impact
 

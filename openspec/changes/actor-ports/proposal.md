@@ -36,7 +36,7 @@ family check is a plain test with `cicada::message::{encode, decode}` or worth a
 
 ## Order
 
-After `worker-view`. Before `reply-route`.
+After `remove-inspector`. Before `reply-route`.
 
 ## Impact
 

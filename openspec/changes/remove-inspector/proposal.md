@@ -31,7 +31,7 @@ Decided in the design with the owner: `ActorClient::changes` stays, the CHANGELO
 
 ## Order
 
-After `tray-menu-mockup`. Before `worker-view`.
+After `tray-menu-mockup`. Before `actor-ports`.
 
 ## Impact
 
