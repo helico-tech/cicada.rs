@@ -15,7 +15,7 @@ has the inspector, so nothing is deprecated.
 - [x] 3. **`cicada_app::context_client` goes.** The function, its re-export in `lib.rs` and its tests (decision 4b);
   `Contexts`, `ContextFile`, `ContextEntry` and `check_server_url` stay. Verify: `cargo test -p cicada-app`;
   `cargo check -p cicada-app --features tui`.
-- [ ] 4. **Gate scripts, changelog and docs handoff.** `scripts/ci/feature-builds.sh` and
+- [x] 4. **Gate scripts, changelog and docs handoff.** `scripts/ci/feature-builds.sh` and
   `scripts/ci/dependency-trees.sh` as decision 5 says; the 0.26.0 section of `CHANGELOG.md` without the inspector and
   `context_client` (decision 4); `docs-handoff.md` from the design's "Docs this breaks". No edit to `README.md`,
   `AGENTS.md`, `skills/` or the handwritten docs. Verify: `bash scripts/ci/dependency-trees.sh`;

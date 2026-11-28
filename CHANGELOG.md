@@ -15,21 +15,7 @@ Now cancels its running turns at once instead of waiting out the grace period. I
 context, sets its server and token, and chooses the types the worker runs and how many turns run at once, kept per
 context in `tray.toml` next to the config file.
 `cicada_app::Contexts` reads the configured names and current selection for the menu, and `cicada_app::ContextFile`
-reads and writes the config file with the code of `cicada config`. A new crate `cicada-inspector` (ADR 0076) opens a
-native inspector window on macOS 14 or later with `Inspector::new().run()`: an Overview of the store's counts, the
-health, the nodes, the running turns and the types with their actor counts, an Actors page that lists the actors
-under an address prefix with a pane for the selected actor, a Messages page of the pending messages with
-Show Actor, a Running Turns page with Show Actor, an Outcomes page of the finished messages by status with their
-cause chain and the failed count in the sidebar, a Nodes page with each node's running turns, a Types page with
-registered schemas, and a Watches page with a filter and Show Actor, for a context of `cicada config`. The page on
-screen updates live from the server's change hints, and its Live pill pauses and resumes the updates.
-`cicada_app::context_client` makes the client for it. Enable the tray's `inspector` feature to open that window from
-its menu.
-
-The inspector's actor pane can pause or resume a mailbox, cancel a running turn, purge pending messages, and delete
-the actor and its descendants. Cancel Turn, Purge Mailbox and Delete ask for confirmation. A successful action
-refreshes the Actors page even while Live is paused. Send Message… sends a message to the selected actor: pick one of
-its type's message types and type a JSON payload, which is checked against that type's schema before Send is enabled.
+reads and writes the config file with the code of `cicada config`.
 
 The tray's menu follows the owner's mockup: rows with a tinted icon, a second line and a badge on the right; each
 context with its server's host; "Running N of M" with the elapsed time of each turn; a not-connected menu with the last
@@ -54,142 +40,6 @@ directly or use `..` in matches.
 - `ActorClient::changes(prefix)` follows actor change hints over Server-Sent Events with the client's configured
   headers and TLS settings. It yields changed addresses and resyncs, with typed opening and stream errors. A new
   subscription starts with a resync. The caller decides when to reconnect after a clean end or an error.
-- `cicada-inspector`: a new crate, a native macOS inspector over the HTTP API. ADR 0076 allows the tray's optional
-  dependency and supersedes ADR 0011 in part for a native macOS console. `Inspector::new().run()` owns the main
-  thread with a Dock icon and a main menu (Quit, Close ⌘W, Refresh ⌘R, Back ⌘[, Forward ⌘]) until the window closes;
-  elsewhere, or before macOS 14, it prints an error and returns exit code 1. The window has a sidebar (Overview;
-  Browse: Actors, Messages, Running Turns, Outcomes, Nodes, Types, Watches, each with a page), a
-  toolbar with back and forward, the title, a context pop-up and Refresh, and the Overview: tiles for actors, pending,
-  oldest due and failed (kept by retention; `—` from an older server), the health, the nodes, the first 20 running
-  turns with a mark when there are more, and the types with their actor counts. A refresh is bounded: at
-  most 50 types counted, 8 counts at a time, 10 s in all; a part that fails shows its error alone, and a type past
-  the 50 or the deadline shows as not counted, and a count still queued at the deadline never starts. A refresh
-  superseded by another or by a context switch is cancelled, also while in flight, and its result discarded.
-  Covered by the tests in `crates/cicada-inspector/src/tests.rs`; the window has a manual check list.
-- `cicada-inspector`: the Actors page. Its table lists the actors under the prefix typed in the toolbar's search field,
-  100 at a time as it scrolls, by the server's cursor, with their address, type, version, created time and status:
-  running when the actor is among one sample of the first 200 running turns under the prefix, read once per reload,
-  and paused from the actor, both when both hold. The footer says when the status covers only the first 200 running
-  turns, or that it is unknown when that read failed. A failed page keeps its place and shows a Retry row. Typing drops
-  the rows at once and reads the new prefix 300 ms after the last key. Selecting an actor fills the inspector pane,
-  read only: its type, version, created time, parent, pinned node and paused flag, its running turn (message, node,
-  lease, cancel requested) with the message's type and attempt when it is among the first 50 of the mailbox, the
-  state as highlighted JSON (cut at 256 KiB with a notice), and tabs for the pending messages among the mailbox's
-  first 50 and for the watches where it is the watcher and where it is the exact target. A missing actor shows "not
-  found", an idle one "idle", and each part shows its own error. A toolbar button shows and hides the pane, and so
-  does View › Hide Pane in the standalone app; ⌘R reloads the list from the top and the pane. A read that no longer
-  matches the prefix, the selection or the context is dropped, a search that leaves out the selected actor unselects
-  it, and a context switch or a closed window cancels the pending reads. Covered by the tests in
-  `crates/cicada-inspector/src/tests/actors.rs` and `tests/json.rs`; the window has a manual check list.
-- `cicada-inspector`: Actors rows fold open to show their children. Open a row to read its first 100 children, then
-  choose `more…` for the next page. An actor shown both at the root and under its parent has separate selection and
-  fold state for each row. Refresh reopens surviving rows as their pages load. A different search prefix or context
-  starts with all rows folded.
-- `cicada-inspector`: the Messages page. Its table lists the pending messages to the actors under the prefix in the
-  search field, which it shares with Actors and keeps per page, 100 at a time as it scrolls, with their id, target,
-  type, delivery time and attempt. Pages are not a snapshot: a message retried between two pages shows once, as first
-  read, and a page of only such messages still moves on to the next. The footer shows the count, an empty prefix, or a
-  failed page with Retry. Selecting a message fills the pane from its row, with no read of its own: the target,
-  sender, type, delivery time, correlation id, headers, attempt and failures, and the payload as highlighted JSON
-  (cut at 256 KiB), formatted only then; a long envelope scrolls above Show Actor and the payload. A selected
-  message that a new search's pages no longer hold, once all are read, is unselected. ⌘R reloads the list from the
-  top and clears the selection. Show Actor in the
-  pane goes to the Actors page, searches for the message's exact target address and selects that root row once the
-  first page has loaded; a gone actor shows "not found", and a failed page shows its Retry row with nothing
-  selected. The jump is recorded in back and forward: each Messages place keeps the prefix and message it had when
-  you left it, so Back returns to them (reading that prefix again when it changed since), and Forward goes to the
-  actor again. A context switch clears back and forward. Leaving the Actors page or typing a search cancels a jump
-  still waiting for its page. Messages shares the Actors list's pager. Covered by the tests in
-  `crates/cicada-inspector/src/tests/messages.rs` and, unchanged, `tests/actors.rs`; the window has a manual check
-  list.
-- `cicada-inspector`: the Types and Watches pages. Types filters the registered types by name from one read per
-  reload; it shows the contract hash with the full hash in a tooltip and the message type count. The pane lets you
-  choose State or a message schema and formats that choice as highlighted JSON, cut at 256 KiB. Watches loads 100
-  rows at a time in target and watcher order. It pages on scroll with an empty filter. A watcher or target prefix
-  filters the loaded rows, and **Load more** reads a page even when no rows match. Both pages show **Retry** on a
-  failed read. From a watch, **Show Actor** goes to the watcher or a one-actor target and records the jump in back
-  and forward. Both pages keep their filter text when you navigate and clear their selection on ⌘R.
-- `cicada-inspector`: the Outcomes page. Its table lists the finished messages of the actors under the prefix in the
-  search field, 100 at a time as it scrolls, by a status switch in the toolbar: Failed (the default), Cancelled, Done or
-  All, which adds a status column and includes purged outcomes. Rows show the message type, actor, attempt, finished
-  time and the error's first line, with the whole error in a tooltip. Pages are not a snapshot: a message on two pages
-  shows once, as first read, and a page of only such messages still moves on. Switching the status starts over from the
-  first page and clears the selection, a search still waiting and the pane. The sidebar's Outcomes item shows the
-  store's failed count from `/stats`, read with the Overview's refresh (shown as soon as `/stats` answers; a refresh
-  that a later one replaced shows nothing) and with ⌘R on Outcomes: "…" until a read answers and after a context switch,
-  the last count kept with the error in its tooltip when a read fails, and "—" from an older server that sends no count
-  or when the first read fails. Selecting an outcome fills the pane from its row, with no read of the message: the
-  status and error, attempts and failures, the last retried error, the retry policy, the envelope (id, target, sender,
-  correlation id, finished time, headers) and the payload as highlighted JSON, formatted only then; Show Actor goes to
-  its actor. The cause chain is one step at a time and follows the recorded `causedBy`: Caused by links to the message
-  recorded as this one's cause (the message whose turn sent it, the original of an operator retry, or, for a `Stopped`
-  notice, the message of the turn that stopped the actor or whose `watch_existing` found it absent), and says "No
-  recorded cause" when there is none, as for a send from outside an actor or a `Failed` notice. Caused lists the
-  messages that record this one as their cause, one level down: pending or running ones and finished ones whose outcome
-  is retained; its first 50 with "more…", Retry on a failed page, "None" when there are none and "not found" when the
-  message is unknown or past retention. Following a link is a place in back and forward that reads that message fresh
-  and shows it pending, running or finished, "not found" past retention, or its error with Retry; a status switch leaves
-  those places as they were. Back to an outcome shows it as it was read, also when its row is no longer listed, and
-  selects its row when it is listed or once a page brings it. A context switch clears back and forward and drops pending
-  reads. Covered by the tests in `crates/cicada-inspector/src/tests/outcomes.rs`; the window has a manual check list.
-- `cicada-inspector`: the Running Turns page. Its table lists the turns running now on the actors under the prefix in
-  the search field, 100 at a time as it scrolls, by the server's cursor, with the actor, message id, node, lease end
-  and whether an operator asked to cancel. The server pages turns by actor address, so an actor shows once even while
-  leases begin and end between pages. Selecting a turn fills the pane from its row, with no read; Show Actor goes to
-  its actor on the Actors page. Back to a turn reads the actor's turn again by its exact address: a turn running now
-  shows as it is, which may be another message, with its row selected when listed or once a page brings it; a turn
-  that ended shows as it was read, marked "no longer running"; a failed read shows its error with Retry. ⌘R reloads the
-  list from the top and clears the selection. Covered by the tests in `crates/cicada-inspector/src/tests/turns.rs`.
-- `cicada-inspector`: the Nodes page. Its table lists every node from `/nodes`: id, status (alive, suspect or dead,
-  computed by the server in the store's clock), hosted types, label, host name, last heartbeat as a time with the
-  fractional seconds the server sent, and running turns. No age is measured on the Mac's clock; the footer says the
-  status is as of the last read, with the Mac's time of that read in its tooltip. The list is read on the first visit,
-  on the page's ⌘R and after a context switch (at once when the page shows, else at its next visit), never with the
-  Overview's refresh; the search field filters it by id prefix with no read. A failed read shows its error with Retry
-  and keeps no list. Selecting a node reads it with its running turns, each with Show Actor; a gone node says "not
-  found", a failed read shows Retry, and a read is dropped when the selection changes, the filter hides the node, on ⌘R
-  and on a context switch. Back to a Nodes place selects its node and reads it fresh. Every read has the 10 s deadline.
-  Covered by the tests in `crates/cicada-inspector/src/tests/nodes.rs`; the window has a manual check list.
-- `cicada-inspector`: live updates. The page on screen follows one change stream of `GET /changes`: under the search
-  prefix on Actors, Messages, Running Turns and Outcomes, and for every actor on the Overview, Nodes, Types and Watches.
-  Hints are gathered for 500 ms (at most 1,000 addresses; more count as everything) and run the page's soft refresh,
-  which keeps the selection, the scroll position and the open rows, one at a time, so at most about twice a second; on
-  Actors, Messages, Running Turns and Outcomes only hints under the prefix or for the pane's actor do. Hints are best
-  effort, so a page also refreshes 30 s after its last refresh ended, and a new stream's first `resync` refreshes it
-  once after an open, a reconnect or a resume. A stream that ends or fails opens again after 1, 2, 4, 8, 16, then every
-  30 s, from 1 s again once a stream stayed up for 60 s after its first event. The toolbar's pill shows Live from the
-  stream's first event, Connecting before it, Reconnecting with the next try and the reason in its tooltip, Paused, or
-  Offline without a context. A click pauses: the stream closes, the timer stops and a refresh in flight is cancelled at
-  the click with its results dropped (on Types, the old pane shows until a changed schema is formatted, so a paused
-  refresh shows nothing of it); a click resumes. Refresh (⌘R) works in every state, and the next automatic refresh comes
-  30 s after its reload ended. No live refresh starts on a page already left, for the context before a switch or after
-  the window closed. An Actors refresh cancelled by a pause, by leaving the page or by Retry marks the root rows and the
-  open parents whose reads it dropped "not refreshed". Covered by the tests in
-  `crates/cicada-inspector/src/live/tests.rs`, `src/tests/soft_refresh/live.rs` and `src/tests/live.rs`; the pill has a
-  manual check list.
-- `cicada-tray`: the optional `inspector` feature adds Open Inspector… (⌘I while the menu is open). The window opens
-  on the tray's connected context or resolves the target as `cicada` does when offline. Another pick brings the
-  window forward with its own context. Quit, Ctrl-C and logout close it and request cancellation of its refresh before
-  the tray exits.
-- `cicada-inspector`: `Embedded::new(mtm, env, handle)` opens an inspector in a host's AppKit application with
-  `show(context)`. The host supplies its environment and Tokio runtime handle. `close()` and dropping the controller
-  close the window and request cancellation of its refresh. Reopening starts a fresh session.
-- `cicada-inspector`: Send Message… in the actor pane opens a sheet with the message types of the actor's type (from
-  the Types page's list when it holds the type, else one read of `/types`), the chosen type's schema beside a plain
-  JSON editor, and Send (⌘Return). The payload is checked 300 ms after the last edit by the server's own validator
-  settings (draft 2020-12, no `format`, nothing loaded from outside the schema), after its size (1 MiB), parse and
-  depth (64 levels); a schema the validator cannot compile is noted and lets Send through, as the server does. Send
-  keeps one message id until the type or the parsed payload changes, so Send after a timeout shows "already sent"
-  rather than sending twice. A success closes the sheet with "sent <id>" and reads the pane again; the server's 400
-  or 422 and "actor not found" show in the sheet with the payload kept, other refusals in an alert. Covered by the
-  tests in `crates/cicada-inspector/src/tests/send.rs`; the sheet has a manual check list.
-- `cicada-app`: `context_client(&Env, Option<&str>)`, a client for a context of the config file resolved as the
-  operator commands resolve it (`CICADA_SERVER` and `CICADA_TOKEN` first, then the named context, `CICADA_CONTEXT`,
-  the file's current context), with their 30 s timeout, and the name of the context in use. It checks the server URL
-  first, so no error quotes it, and moves the URL's user and password into Basic credentials (which win over a token,
-  as before), so the client's URL, its errors and its `Debug` never hold them. They are decoded as reqwest decoded
-  them: a user that is not UTF-8 sends no Basic credentials and a token stays. Covered by the `a_context_client_…`
-  tests in `crates/cicada-app/src/config.rs`.
 - `cicada`, `cicada-client`, `cicada-app`: `GET /stats` and `cicada stats` report the number of failed outcomes
   currently visible under the address prefix, using the visibility rules of `GET /outcomes`. The CLI table shows
   `-` when an older server omits the count.
@@ -234,8 +84,6 @@ directly or use `..` in matches.
 
 ### Changed
 
-- `cicada-inspector` keeps the first visible row in place when a table reloads. If that row is gone, it keeps
-  the previous scroll offset as far as the new table allows.
 - `cicada-app`: an unreadable config file is reported as `cannot read <path>: not a valid config file at line N` by
   every command, the worker included, without the parser's text, which can quote a token. `ContextEntry`, the config
   and `ContextFile` print the token, header values and a password in the server URL as `***` in `Debug`.
