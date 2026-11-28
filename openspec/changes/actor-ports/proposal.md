@@ -12,27 +12,35 @@ actor for the same ref.
 
 ## What Changes
 
-- A new worked example in `examples/` (working name `ports.rs`). A port module holds the `Inventory` ref, its request
-  family and a reply family it owns. The request carries `reply_to: ActorAddress`; the callee answers with
-  `turn.send_to(..)`, so it imports nothing of its callers. A real inventory actor and an order actor use only the
-  port.
-- Its tests on virtual time host the real order actor with a fake inventory for the same ref (one that always
-  reserves, one that refuses), and one test that each reply of the port decodes as the order's message family, since
-  that match is checked only at runtime.
-- A docs handoff for a new section of `docs/guide/design.md` (ports and fakes: where the port lives, replies by
-  address, trait injection for outside systems as with `ContainerRuntime`, one implementation per type name per node,
-  a fake's contract hash in a shared store) and the example's row in the core guide's table.
+The request/reply example already is a port: `examples/src/reply/pricing.rs` holds the `Pricing` ref, its request
+family and the reply family it owns, and the pricing actor replies to `message().from` with `send_to`, so it imports
+nothing of the cart. What is missing is the other half: a test of the real cart against fakes. So this change adds
+tests to `examples/tests/reply.rs`, not a new example (decided 2026-11-28 under the owner's A1, as the simplest way to
+show it; the proposal's earlier `ports.rs` would repeat the reply example):
 
-To decide in the design: the example's name and domain (a new one, or a port version of the saga); whether the reply
-family check is a plain test with `cicada::message::{encode, decode}` or worth a helper in `cicada-test`.
+- Two fake pricing actors in the test file, each an `impl Actor` with `type Ref = Pricing`: one that always quotes a
+  fixed price, one that always refuses. Tests on virtual time host the real `CartActor` with one fake each and check
+  the cart's lines.
+- One test that each variant of `PricingReply` decodes as a `CartMsg` (`cicada::message::{encode, decode}`), since
+  that match is checked only at runtime. A plain test; a helper in `cicada-test` waits for `test-probe`.
+- A docs handoff for a section of `docs/guide/design.md` on ports and fakes: the port module owns the ref, the
+  request family and the reply family; replies go by address; a fake is another `impl Actor` for the same ref, hosted
+  instead of the real one; trait injection for outside systems as with `ContainerRuntime`; one implementation per
+  type name per node; a fake's contract hash differs, so it belongs in a test store, not a shared one.
+
+An explicit reply address in the request (for a caller that is not the sender, such as a flow) is `reply-route`.
 
 ## Out of scope
 
+- A new example module, and rewriting the saga or other examples to the port style.
 - A generic probe actor in `cicada-test` that records messages and sends scripted replies: a later change if wanted.
 - Changes to the runtime or the public API: none are needed.
-- Rewriting the saga or other examples to the port style.
 - Adapter actors that translate between two protocols (option C) and target addresses chosen at runtime (option B,
   beyond reply addresses).
+
+## Lane
+
+Lane: fast. Tests only, plus a docs handoff; no public API, wire, schema, contract or guarantee change.
 
 ## Order
 
@@ -42,6 +50,4 @@ After `container-network-isolation`. Before `reply-route`.
 
 Crates: cicada-examples.
 
-`examples/src/ports.rs` (or its folder), its row in `examples/src/lib.rs` and `examples/tests/ports.rs`. No public API,
-wire, schema or contract change. Docs handoff: the design guide section, the core guide's example table, and an
-actor-design skill route if the new heading needs one.
+`examples/tests/reply.rs` only. No public API, wire, schema or contract change. Docs handoff: the design guide section, and an actor-design skill route if the new heading needs one.
