@@ -33,7 +33,7 @@ pub enum ErrorKind {
     DaemonUnavailable,
     /// The call does not fit the current state: `start`, `copy_in`, `copy_out`, `logs` or `logs_since` on a missing
     /// container, `copy_in` on a container that is not `Created`, or `ensure_network` on an existing network with
-    /// another `internal` flag.
+    /// another `internal` or `isolated` flag.
     Conflict,
     /// The image does not exist, or could not be pulled.
     ImageNotFound,
@@ -42,13 +42,15 @@ pub enum ErrorKind {
     InvalidSpec,
     /// The runtime does not implement the call, or cannot do it for this container: the trait's default
     /// [`logs_since`], [`copy_out`], [`make_dirs`] and [`info`] of a runtime written before them, or [`logs`] and
-    /// [`logs_since`] of a container whose log driver keeps none. A retry cannot help.
+    /// [`logs_since`] of a container whose log driver keeps none, or [`ensure_network`] on a runtime that cannot
+    /// isolate the network. A retry cannot help.
     ///
     /// [`logs`]: crate::ContainerRuntime::logs
     /// [`logs_since`]: crate::ContainerRuntime::logs_since
     /// [`copy_out`]: crate::ContainerRuntime::copy_out
     /// [`make_dirs`]: crate::ContainerRuntime::make_dirs
     /// [`info`]: crate::ContainerRuntime::info
+    /// [`ensure_network`]: crate::ContainerRuntime::ensure_network
     Unsupported,
     /// Anything else the backend reports.
     Other,

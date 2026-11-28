@@ -174,8 +174,9 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// The containers that carry `label`, with their status, in name order.
     async fn list(&self, label: &Label) -> Result<Vec<ContainerSummary>, ContainerError>;
 
-    /// Creates the network `spec.name`, or finds it. Only the `internal` flag of an existing network is compared, as it
-    /// decides isolation: another flag fails with `Conflict`.
+    /// Creates the network `spec.name`, or finds it. If its `internal` or `isolated` flag differs, fails with
+    /// `Conflict`. An `isolated` spec requires `internal`, else the call fails with `InvalidSpec`. An implementation
+    /// must honour `isolated` or fail with `Unsupported`.
     async fn ensure_network(&self, spec: &NetworkSpec) -> Result<(), ContainerError>;
 
     /// Creates the volume `spec.name`, or finds it.

@@ -4,7 +4,7 @@ Normal lane: in the unreleased batch (0.26.0; check the `release:` line of `pyth
 Version). Follow `design.md`; the specs are `specs/container-runtime/spec.md` and `specs/container-docker/spec.md`.
 Run the crate's tests with every feature: `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The spec field and the fake.** `NetworkSpec` gets `isolated: bool` (false in `new`), with a doc that says
+- [x] 1. **The spec field and the fake.** `NetworkSpec` gets `isolated: bool` (false in `new`), with a doc that says
   what it closes and that it needs `internal` (decision 1). `FakeRuntime::ensure_network` fails an isolated spec that
   is not internal with `InvalidSpec` and stores nothing, keeps `isolated` with the network, and fails with `Conflict`
   when an existing network's `internal` or `isolated` differs; the message names the flag (decisions 2 and 5). The

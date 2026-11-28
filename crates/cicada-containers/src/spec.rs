@@ -215,14 +215,28 @@ pub struct NetworkSpec {
     pub name: String,
     /// Its labels.
     pub labels: BTreeMap<String, String>,
-    /// Gives it no route outside: its containers reach only each other.
+    /// Gives its containers no route outside the network.
     pub internal: bool,
+    /// Leaves the bridge without a host address, so containers on this network cannot reach the host or its
+    /// published ports through it. Requires `internal`.
+    pub isolated: bool,
 }
 
 impl NetworkSpec {
-    /// A network `name` without labels, not internal.
+    /// A network `name` without labels, with `internal` and `isolated` both false.
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), labels: BTreeMap::new(), internal: false }
+        Self { name: name.into(), labels: BTreeMap::new(), internal: false, isolated: false }
+    }
+
+    #[cfg(any(feature = "docker", feature = "testing"))]
+    pub(crate) fn check_isolation(&self) -> Result<(), crate::ContainerError> {
+        if self.isolated && !self.internal {
+            return Err(crate::ContainerError::new(
+                crate::ErrorKind::InvalidSpec,
+                format!("ensure network {}: isolated requires internal", self.name),
+            ));
+        }
+        Ok(())
     }
 }
 

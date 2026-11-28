@@ -491,11 +491,20 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     async fn ensure_network(&self, spec: &NetworkSpec) -> Result<(), ContainerError> {
-        let mut state = self.enter(Call::EnsureNetwork(spec.clone()))?;
+        let call = Call::EnsureNetwork(spec.clone());
+        if let Err(error) = spec.check_isolation() {
+            self.lock().calls.push(call);
+            return Err(error);
+        }
+        let mut state = self.enter(call)?;
         match state.networks.get(&spec.name) {
             Some(existing) if existing.internal != spec.internal => Err(conflict(format!(
                 "network {} exists with internal = {}, not {}",
                 spec.name, existing.internal, spec.internal
+            ))),
+            Some(existing) if existing.isolated != spec.isolated => Err(conflict(format!(
+                "network {} exists with isolated = {}, not {}",
+                spec.name, existing.isolated, spec.isolated
             ))),
             Some(_) => Ok(()),
             None => {
@@ -1203,12 +1212,25 @@ mod tests {
         let fake = FakeRuntime::new();
         let mut network = NetworkSpec::new("net");
         network.internal = true;
+        network.isolated = true;
         now(fake.ensure_network(&network)).unwrap();
         now(fake.ensure_network(&network)).unwrap();
         now(fake.ensure_volume(&VolumeSpec::new("vol"))).unwrap();
         now(fake.ensure_volume(&VolumeSpec::new("vol"))).unwrap();
         let state = fake.lock();
         assert_eq!((state.networks.len(), state.volumes.len()), (1, 1));
+        assert_eq!(state.networks["net"], network);
+    }
+
+    #[test]
+    fn isolation_requires_an_internal_network() {
+        let fake = FakeRuntime::new();
+        let mut network = NetworkSpec::new("net");
+        assert!(!network.isolated);
+        network.isolated = true;
+        assert_eq!(kind(now(fake.ensure_network(&network))), ErrorKind::InvalidSpec);
+        assert!(fake.lock().networks.is_empty());
+        assert_eq!(fake.calls(), [Call::EnsureNetwork(network)]);
     }
 
     #[test]
@@ -1221,8 +1243,27 @@ mod tests {
         labelled.internal = true;
         labelled.labels.insert("other".into(), "label".into());
         now(fake.ensure_network(&labelled)).unwrap();
-        assert_eq!(kind(now(fake.ensure_network(&NetworkSpec::new("net")))), ErrorKind::Conflict);
+        let error = now(fake.ensure_network(&NetworkSpec::new("net"))).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(error.message.contains("internal = true"), "{error}");
         assert!(fake.lock().networks["net"].internal);
+    }
+
+    #[test]
+    fn an_existing_network_with_another_isolated_flag_conflicts() {
+        for isolated in [false, true] {
+            let fake = FakeRuntime::new();
+            let mut network = NetworkSpec::new("net");
+            network.internal = true;
+            network.isolated = isolated;
+            now(fake.ensure_network(&network)).unwrap();
+            let mut different = network.clone();
+            different.isolated = !isolated;
+            let error = now(fake.ensure_network(&different)).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Conflict);
+            assert!(error.message.contains(&format!("isolated = {isolated}")), "{error}");
+            assert_eq!(fake.lock().networks["net"], network);
+        }
     }
 
     #[test]
