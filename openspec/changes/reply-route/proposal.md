@@ -10,12 +10,12 @@ to give Cicada one reply route for both.
 
 ## What Changes
 
-- `cicada-actors` gains `Reply<T>`: `Flow(ReplyTo<T>)` or `Actor { to }`, with one `send(turn, &value)`. For a flow
+- `cicada-actors` gains `ReplyRoute<T>` (the design's name for `Reply<T>`): `Flow(ReplyTo<T>)` or `Actor { to }`, with one `send(turn, &value)`. For a flow
   it sends `FlowMsg::Reply` as `ReplyTo::send` does; for an actor it sends `value` as a message to `to`, so `T` is the
   port's own reply family and the caller's family holds the same variants.
-- A flow caller writes `|r| Ensure { repo, reply: r.into() }`; an actor caller writes `reply: Reply::actor(&me)`.
+- A flow caller writes `|r| Ensure { repo, reply: r.into() }`; an actor caller writes `reply: ReplyRoute::actor(address)` (with `.correlation(id)`).
 - The wire of the flow form is the wire of `ReplyTo` (`{"run", "request"}`), so a saved `ReplyTo<T>` decodes as
-  `Reply::Flow`; the actor form is `{"actor": "<address>"}`.
+  `ReplyRoute::Flow`; the actor form is `{"actor": "<address>"}`.
 
 To decide in the design: the name (`Reply`, `ReplyRoute`); whether the actor form also carries the request's message
 id for callers with several requests open (or the port's reply carries a business key); how the actor send is typed
@@ -36,6 +36,6 @@ After `actor-ports`. Before `flow-request-target`.
 
 Crates: cicada-actors.
 
-`crates/cicada-actors/src/flow.rs` (or a module of its own) and its tests; the schema of `Reply<T>` in any contract
-that uses it. A new public type; no change to existing wire, schema or contracts. Docs handoff: the design guide's
+`crates/cicada-actors/src/flow.rs` (or a module of its own) and its tests; the schema of `ReplyRoute<T>` in any contract
+that uses it. A new public type and ADR 0079; no change to existing wire, schema or contracts. Docs handoff: the design guide's
 section on ports (from `actor-ports`), the actors guide's requests text.

@@ -83,6 +83,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0076](0076-a-native-macos-inspector.md) | Superseded by 0078. |
 | [0077](0077-a-client-for-the-change-stream.md) | `ActorClient::changes` reads change hints with deadlines for opening, idleness and lifetime. Partly supersedes ADR 0035. |
 | [0078](0078-remove-the-inspector.md) | The inspector is removed before it shipped: no `cicada-inspector`, no tray feature `inspector`; the tray, the terminal UI and `ActorClient::changes` stay. |
+| [0079](0079-one-reply-route-for-flow-and-actor-callers.md) | `ReplyRoute<T>`: one reply field for flow and actor callers; the flow form keeps `ReplyTo`'s wire, the actor form is `{"actor"}`. Adds to ADR 0044. |
 
 ## Design questions
 
