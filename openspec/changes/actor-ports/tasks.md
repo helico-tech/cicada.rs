@@ -4,14 +4,14 @@ Fast lane: tests only, in the unreleased batch (0.26.0; check the `release:` lin
 builder.md, Version). No design or spec deltas; follow `proposal.md`, What Changes. Touch only
 `examples/tests/reply.rs` and `docs-handoff.md`; tests only, so no CHANGELOG line.
 
-- [ ] 1. **Fakes for the port.** In `examples/tests/reply.rs`, two fake actors with `type Ref = Pricing` (from
+- [x] 1. **Fakes for the port.** In `examples/tests/reply.rs`, two fake actors with `type Ref = Pricing` (from
   `cicada_examples::reply`): one that answers every `QuoteRequest` with `Quote` at a fixed unit price, one that
   answers with `QuoteRejected`. Each replies to `message().from` with `send_to` and the request's correlation id, as
   the real pricing actor does, and imports nothing of the cart. Tests on virtual time host the real `CartActor` with
   one fake each (not `PricingActor`) and check the cart's priced lines and its rejected line. A short comment above
   the fakes says what they show: the cart depends only on the pricing port. Verify:
   `cargo test -p cicada-examples --test reply`.
-- [ ] 2. **The reply family match.** One test encodes each variant of `PricingReply` with `cicada::message::encode`
+- [x] 2. **The reply family match.** One test encodes each variant of `PricingReply` with `cicada::message::encode`
   and decodes it as `CartMsg` with `cicada::message::decode`, and checks the decoded fields. A comment says why: the
   match between a port's reply family and a caller's message family is checked only at runtime. Verify:
   `cargo test -p cicada-examples --test reply`.
