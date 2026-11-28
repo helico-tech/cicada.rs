@@ -14,7 +14,7 @@ starts from the owner's screenshots of the pages today and lists every departure
 
 ## Order
 
-After `inspector-actors-mockup`. No following change.
+After `inspector-actors-mockup`. Before `worker-view`.
 
 ## Impact
 
