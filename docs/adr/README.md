@@ -15,7 +15,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0008](0008-rust-only.md) | Cicada for Rust stands alone: no contract with the Kotlin implementation. |
 | [0009](0009-one-baseline-schema.md) | The six early migrations are merged into one schema at version 1. |
 | [0010](0010-openspec-for-work-tracking.md) | Changes, designs and tasks live in `openspec/` (OpenSpec). |
-| [0011](0011-library-only.md) | A library only: no console, no container handles. Partly superseded by 0056 and 0076. |
+| [0011](0011-library-only.md) | A library only: no console, no container handles. Partly superseded by 0056. |
 | [0012](0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: turn hooks that only observe (replaced by one observer in 0018), one way to configure and send, ISO-8601 durations only, twelve endpoints. |
 | [0013](0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
 | [0014](0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
@@ -80,8 +80,9 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0073](0073-two-builders-in-the-change-loop.md) | Two builders at once when their changes share no crate (a `Crates:` line), the second on Codex; every change reviewed by the other model; one gate run and one landing at a time; supersedes ADR 0055's one-builder rule. |
 | [0074](0074-a-tray-crate-next-to-the-app.md) | A portable `cicada-tray` model starts an in-process HTTP worker from a host's `App` factory and tracks its state and turns. The macOS menu comes later. `App::type_names()` lists hosted types and `App::on_worker_ready` reports when the worker starts. |
 | [0075](0075-a-full-pool-says-so-once.md) | A full placement pool accepts and ignores a new node's offer instead of refusing it, keeps one pool-level `full` mark and sends one `full` notice per full period; the mark ends one silence time after the last ignored offer or when a node is added; extends ADR 0067. |
-| [0076](0076-a-native-macos-inspector.md) | A native macOS inspector crate; only the tray may depend on it. |
+| [0076](0076-a-native-macos-inspector.md) | Superseded by 0078. |
 | [0077](0077-a-client-for-the-change-stream.md) | `ActorClient::changes` reads change hints with deadlines for opening, idleness and lifetime. Partly supersedes ADR 0035. |
+| [0078](0078-remove-the-inspector.md) | The inspector is removed before it shipped: no `cicada-inspector`, no tray feature `inspector`; the tray, the terminal UI and `ActorClient::changes` stay. |
 
 ## Design questions
 

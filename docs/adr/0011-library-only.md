@@ -5,7 +5,8 @@ Date: 2026-11-09
 ## Status
 
 Accepted. Supersedes 0005, 0006 and 0007. Partly superseded by [ADR 0056](0056-shared-external-resource-crates.md):
-no container handles, and by [ADR 0076](0076-a-native-macos-inspector.md): no console, for a native macOS inspector.
+no container handles. [ADR 0076](0076-a-native-macos-inspector.md) allowed a native macOS inspector until
+[ADR 0078](0078-remove-the-inspector.md) removed it; the rule of no console holds again.
 
 ## Context
 

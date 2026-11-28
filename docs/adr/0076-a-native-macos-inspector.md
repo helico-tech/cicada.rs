@@ -7,6 +7,7 @@ Date: 2026-11-27
 Accepted for inspector-window. Supersedes in part [ADR 0011](0011-library-only.md): its rule that the repository holds
 no console, for a native macOS console only. Its removal of the browser console (`cicada-ui`) stands, and so does
 [ADR 0056](0056-shared-external-resource-crates.md)'s exception for container layers. Builds on ADR 0074 (the tray).
+Superseded by [ADR 0078](0078-remove-the-inspector.md): the inspector was removed before it shipped.
 
 ## Context
 
